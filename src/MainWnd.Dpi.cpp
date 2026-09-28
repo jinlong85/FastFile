@@ -227,7 +227,6 @@ void CMainWnd::ApplyDpiScaledChrome()
         { _T("btn_more"), UiTokens::ToolbarBtnW },
         { _T("btn_toggle_preview"), UiTokens::ToolbarBtnW },
         { _T("btn_tab_add"), 28 },
-        { _T("btn_search"), 40 },
         { _T("chk_recursive"), UiTokens::SearchChkW },
     };
     for (const auto& bw : widths) {
@@ -240,7 +239,7 @@ void CMainWnd::ApplyDpiScaledChrome()
     // Search row: align with address (~28-32), not CmdBtnH 42
     {
         const int sh = DpiScale(UiTokens::SearchBoxH);
-        for (LPCTSTR nm : { _T("btn_search"), _T("chk_recursive") }) {
+        for (LPCTSTR nm : { _T("chk_recursive") }) {
             if (CControlUI* c = m_PaintManager.FindControl(nm))
             c->SetFixedHeight(DpiScale(UiTokens::SearchBoxH));
         }
@@ -293,7 +292,7 @@ void CMainWnd::ApplyDpiScaledChrome()
     for (LPCTSTR nm : {
         _T("btn_new"), _T("btn_cut"), _T("btn_copy"), _T("btn_paste"), _T("btn_rename"),
         _T("btn_share"), _T("btn_delete"), _T("btn_sort"), _T("btn_view_menu"), _T("btn_more"),
-        _T("btn_back"), _T("btn_forward"), _T("btn_up"), _T("btn_refresh"), _T("btn_search"),
+        _T("btn_back"), _T("btn_forward"), _T("btn_up"), _T("btn_refresh"),
         _T("btn_tab_add"), _T("path_host"), _T("search_box")
     }) {
         if (CControlUI* c = m_PaintManager.FindControl(nm))

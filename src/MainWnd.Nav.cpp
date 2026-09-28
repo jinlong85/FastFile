@@ -322,6 +322,7 @@ void CMainWnd::RefreshListing()
     }
 
     UpdateListingStatusTip();
+    UpdateEmptyStateHint();
 }
 
 void CMainWnd::StoreListingCache(std::vector<DirEntry> dirs, std::vector<DirEntry> files, bool truncated)
@@ -400,6 +401,35 @@ void CMainWnd::RebuildCurrentViewFromCache()
         RebuildDetailsView(m_listingDirs, m_listingFiles, m_listingTruncated);
     }
     UpdateListingStatusTip();
+    UpdateEmptyStateHint();
+}
+
+void CMainWnd::UpdateEmptyStateHint()
+{
+    CControlUI* hint = m_PaintManager.FindControl(_T("list_empty_hint"));
+    if (!hint) return;
+
+    // "Empty" means the *view* has no items: a search filter can hide every entry of a folder
+    // that is not empty at all.
+    const bool empty = IsTileViewMode()
+        ? (!m_pIconTiles || m_pIconTiles->GetCount() == 0)
+        : (!m_pFileList || m_pFileList->GetCount() == 0);
+
+    if (!empty) {
+        if (hint->IsVisible())
+            hint->SetVisible(false);
+        return;
+    }
+
+    CDuiString text;
+    if (!m_searchFilter.empty())
+        text.Format(_T("没有找到名称包含「%s」的项目"), m_searchFilter.c_str());
+    else if (IsThisPcPath(m_currentPath))
+        text = _T("未检测到可用的驱动器");
+    else
+        text = _T("此文件夹为空");
+    hint->SetText(text);
+    hint->SetVisible(true);
 }
 
 // ---- Search filter -------------------------------------------------------

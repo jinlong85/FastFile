@@ -234,6 +234,8 @@ private:
     void RebuildCurrentViewFromCache();
     void StoreListingCache(std::vector<DirEntry> dirs, std::vector<DirEntry> files, bool truncated);
     void UpdateListingStatusTip();
+    // Shows/hides the "此文件夹为空" hint above the list (also covers "no match" when filtered).
+    void UpdateEmptyStateHint();
     bool TryReuseIconsView(const std::vector<DirEntry>& dirs, const std::vector<DirEntry>& files);
     void ClearIconView();
     void ApplyTileIconImage(CControlUI* tile, const std::wstring& bmp,

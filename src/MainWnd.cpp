@@ -278,14 +278,6 @@ void CMainWnd::OnClick(TNotifyUI& msg)
         RefreshListing();
         return;
     }
-    if (name == _T("btn_search")) {
-        ApplySearchFilter();
-        return;
-    }
-    if (name == _T("btn_search_clear")) {
-        ClearSearchFilter();
-        return;
-    }
     if (name == _T("chk_recursive")) {
         if (!m_searchFilter.empty())
             ApplySearchFilter();

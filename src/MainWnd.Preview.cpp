@@ -149,6 +149,10 @@ void CMainWnd::ShowPreviewDetails(bool showMeta, bool showImage, bool showAction
         gap->SetVisible(showMeta);
     if (CControlUI* title = m_PaintManager.FindControl(_T("preview_details_title")))
         title->SetVisible(showMeta);
+    // Hairline above "详细信息": gives the metadata block a clear start instead of running
+    // straight on from the preview title.
+    if (CControlUI* sep = m_PaintManager.FindControl(_T("preview_sep_details")))
+        sep->SetVisible(showMeta);
     if (CControlUI* gap = m_PaintManager.FindControl(_T("preview_gap_text")))
         gap->SetVisible(false);
     if (m_pPreviewPane)

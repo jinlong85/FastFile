@@ -98,11 +98,10 @@
         </HorizontalLayout>
       </HorizontalLayout>
       <Control width="6" />
-      <HorizontalLayout name="search_box" width="210" bkcolor="#FFFFFFFF" bordercolor="#FFD0D0D0" bordersize="1" padding="8,0,8,0" childvalign="vcenter">
+      <HorizontalLayout name="search_box" width="210" bkcolor="#FFFFFFFF" bordercolor="#FFD0D0D0" bordersize="1" padding="8,0,8,0" childvalign="vcenter" tooltip="输入即筛选；勾选「含子目录」后按回车开始递归搜索">
         <Edit name="edit_search" text="" textcolor="#FFB0B0B0" nativebkcolor="#FFFFFFFF" bkcolor="#FFFFFFFF" tipvalue="搜索" padding="0,0,0,0" />
       </HorizontalLayout>
       <Option name="chk_recursive" text="☐ 含子目录" width="100" height="28" font="0" textcolor="#FF5A5A5A" selected="false" align="left" valign="vcenter" textpadding="4,0,4,0" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" selectedbkcolor="#00FFFFFF" padding="6,0,0,0" tooltip="在当前文件夹及子文件夹中搜索" />
-      <Button name="btn_search" text="搜索" width="40" height="28" font="0" textcolor="#FF3B3B3B" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" padding="4,0,0,0" />
     </HorizontalLayout>
 
 <HorizontalLayout name="body_host" bkcolor="#FFFFFFFF">
@@ -129,6 +128,8 @@
       </VerticalLayout>
 
       <VerticalLayout name="list_host" bkcolor="#FFFFFFFF" padding="0,0,0,0">
+        <!-- Empty state: UpdateEmptyStateHint() shows this when the view has no items. -->
+        <Label name="list_empty_hint" text="" font="0" textcolor="#FF8A8A8A" height="30" padding="14,10,14,0" valign="vcenter" visible="false" endellipsis="true" />
         <List name="file_list" bkcolor="#FFFFFFFF" itemtextcolor="#FF1A1A1A" itemselectedbkcolor="#FFCCE8FF" itemhotbkcolor="#FFE8F4FC" itemselectedtextcolor="#FF1A1A1A" vscrollbar="true" vscrollbarstyle="width=&quot;8&quot; showbutton1=&quot;false&quot; showbutton2=&quot;false&quot; bkcolor=&quot;#FFF7F7F7&quot; thumbcolor=&quot;#FFC4C4C4&quot;" itemvalign="vcenter" multiselect="true" bordercolor="#00000000" bordersize="0" headerbkcolor="#FFF3F3F3">
           <ListHeader height="28" menu="true" bkcolor="#FFF3F3F3" bordercolor="#FFE5E5E5" bordersize="0,0,0,1">
             <ListHeaderItem name="hdr_name" text="名称" width="360" textcolor="#FF5A5A5A" sepwidth="4" sepcolor="#FFE5E5E5" dragable="true" />
@@ -149,6 +150,7 @@
         <Control name="preview_gap_action" height="10" visible="false" />
         <Button name="btn_preview_share" text="共享" width="96" height="34" visible="false" align="center" textcolor="#FF303030" bkcolor="#FFFFFFFF" hotbkcolor="#FFF3F3F3" pushedbkcolor="#FFE5E5E5" bordercolor="#FFD6D6D6" bordersize="1" borderround="6,6" tooltip="共享" foreimage="" hotforeimage="" />
         <Control name="preview_gap_image" height="16" visible="false" />
+        <Control name="preview_sep_details" height="1" bkcolor="#FFE8E8E8" visible="false" />
         <Label name="preview_details_title" text="详细信息" font="0" textcolor="#FF303030" height="26" visible="false" valign="vcenter" />
         <HorizontalLayout name="preview_row_type" height="22" visible="false">
           <Label name="preview_lbl_type" text="类型" font="0" textcolor="#FF808080" width="76" valign="vcenter" />
