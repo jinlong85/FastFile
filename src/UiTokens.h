@@ -5,6 +5,8 @@
 // Phase 2: left nav + details list density aligned with Win11 Explorer.
 // Phase 3: preview pane + status bar density (UiTokens / Win11 Explorer).
 // Phase 4: empty-preview chrome + scrollbar/nav density polish.
+// Phase 5: typography hierarchy + chrome density (command bar 48->40, address 36->32,
+//          favorites 30->26, toolbar icons 18->16, section headers no longer smaller than body).
 
 namespace UiTokens {
 
@@ -19,28 +21,28 @@ constexpr int InnerPadX = 12;       // chrome band horizontal padding (was ~8)
 constexpr int InnerPadY = 4;        // chrome band vertical padding
 constexpr int ChromeRound = 10;
 constexpr int GapGroup = SpaceSm;   // toolbar group gaps
-constexpr int SepH = 22;
+constexpr int SepH = 20;            // command-bar separators (bar is 40, buttons 32)
 constexpr int HitTabH = 24;
 constexpr int TabIconPx = 16;
 constexpr int TabMinW = 96;
 constexpr int TabMaxW = 240;
 constexpr int TabCloseW = 20;
 constexpr int HitBreadcrumbH = 30;      // address text stays vertically centered
-constexpr int CmdBtnH = 40;
+constexpr int CmdBtnH = 32;
 constexpr int TabBarH = 28;
-constexpr int ToolbarH = 48;
+constexpr int ToolbarH = 40;
 constexpr int BreadcrumbBarH = 28;     // legacy; path merged into address_bar
 constexpr int BreadcrumbSegPadX = 3;   // compact Explorer-style segment gap
 constexpr int BreadcrumbSepW = 12;
 constexpr int TitleBarH = 32;
-constexpr int FavoritesBarH = 30;
+constexpr int FavoritesBarH = 26;
 constexpr int FavBarPadY = 2;          // tighter than InnerPadY so chips fit
-constexpr int FavChipH = 24;
+constexpr int FavChipH = 22;
 constexpr int FavIconPx = 16;
 constexpr int FavLabelW = 72;          // star + fav left mark
-constexpr int AddressBarH = 36;
-constexpr int AddressBarPadY = 3;
-constexpr int SearchBoxH = 30;
+constexpr int AddressBarH = 32;
+constexpr int AddressBarPadY = 2;
+constexpr int SearchBoxH = 28;
 constexpr int SearchChkW = 100;        // ☐ 含子目录
 constexpr int ScrollBarW = 8;        // thin, low-weight Win11-like scrollbar
 
@@ -69,13 +71,14 @@ constexpr int DetailsIconPadL = SpaceXs; // left inset before icon
 constexpr int DetailsIconTextGap = SpaceXs;
 
 // ---- Phase toolbar: Win11 Explorer command-bar density ----
-constexpr int ToolbarIconPx = 20;       // denser line glyph; avoid clip with label
-constexpr int ToolbarBtnW = 40;         // icon-only command button
-constexpr int ToolbarBtnH = 40;
-constexpr int ToolbarTextBtnMinW = 88;  // New/Sort/View: icon + label + chevron
+constexpr int ToolbarIconPx = 16;       // denser line glyph; avoid clip with label
+constexpr int ToolbarGlyphPx = 16;      // Segoe MDL2 glyph size for command-bar icons
+constexpr int ToolbarBtnW = 32;         // icon-only command button
+constexpr int ToolbarBtnH = 32;
+constexpr int ToolbarTextBtnMinW = 76;  // New/Sort/View: icon + label + chevron
 constexpr int ToolbarIconPad = 8;       // left/right pad around toolbar glyphs
 constexpr int ToolbarChevronPad = 16;   // room for dropdown chevron
-constexpr int ToolbarNavBtnW = 32;      // address-row navigation buttons
+constexpr int ToolbarNavBtnW = 28;      // address-row navigation buttons
 constexpr int ToolbarGroupGap = SpaceSm;
 constexpr int ToolbarSepPad = SpaceSm;
 

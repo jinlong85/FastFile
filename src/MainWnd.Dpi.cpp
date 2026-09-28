@@ -115,7 +115,9 @@ void CMainWnd::ApplyDpiScaledFonts()
     m_PaintManager.AddFont(3, face, DpiScale(UiTokens::FontCaption), false, false, false);
     m_PaintManager.AddFont(4, faceCn, DpiScale(UiTokens::FontBody), false, false, false);
     m_PaintManager.AddFont(5, face, DpiScale(UiTokens::FontPreviewTitle), true, false, false);
-    m_PaintManager.AddFont(6, _T("Segoe MDL2 Assets"), DpiScale(18), false, false, false);
+    // Command-bar / navigation glyphs: 16 design px keeps them just above the 12px labels,
+    // matching Explorer's icon-to-label ratio (was 18, which crowded the text).
+    m_PaintManager.AddFont(6, _T("Segoe MDL2 Assets"), DpiScale(UiTokens::ToolbarGlyphPx), false, false, false);
 }
 
 void CMainWnd::ApplyDpiScaledChrome()
@@ -179,7 +181,7 @@ void CMainWnd::ApplyDpiScaledChrome()
         CControlUI* c = m_PaintManager.FindControl(name);
         if (!c) continue;
         c->SetFixedWidth(DpiScale(1));
-        c->SetFixedHeight(DpiScale(24));
+        c->SetFixedHeight(DpiScale(UiTokens::SepH));
     }
     const LPCTSTR gaps[] = {
         _T("gap_clip"), _T("gap_clip2"),
@@ -213,16 +215,16 @@ void CMainWnd::ApplyDpiScaledChrome()
     const BtnW widths[] = {
         { _T("btn_back"), UiTokens::ToolbarNavBtnW }, { _T("btn_forward"), UiTokens::ToolbarNavBtnW },
         { _T("btn_up"), UiTokens::ToolbarNavBtnW }, { _T("btn_refresh"), UiTokens::ToolbarNavBtnW },
-        { _T("btn_new_glyph"), 32 }, { _T("btn_new"), 58 },
+        { _T("btn_new_glyph"), 28 }, { _T("btn_new"), 54 },
         { _T("btn_cut"), UiTokens::ToolbarBtnW }, { _T("btn_copy"), UiTokens::ToolbarBtnW },
         { _T("btn_paste"), UiTokens::ToolbarBtnW }, { _T("btn_rename"), UiTokens::ToolbarBtnW },
         { _T("btn_share"), UiTokens::ToolbarBtnW }, { _T("btn_delete"), UiTokens::ToolbarBtnW },
-        { _T("btn_sort_glyph"), 32 }, { _T("btn_sort"), 58 },
-        { _T("btn_view_glyph"), 32 }, { _T("btn_view_menu"), 58 },
+        { _T("btn_sort_glyph"), 28 }, { _T("btn_sort"), 54 },
+        { _T("btn_view_glyph"), 28 }, { _T("btn_view_menu"), 54 },
         { _T("btn_more"), UiTokens::ToolbarBtnW },
         { _T("btn_toggle_preview"), UiTokens::ToolbarBtnW },
         { _T("btn_tab_add"), 28 },
-        { _T("btn_search"), 44 },
+        { _T("btn_search"), 40 },
         { _T("chk_recursive"), UiTokens::SearchChkW },
     };
     for (const auto& bw : widths) {
