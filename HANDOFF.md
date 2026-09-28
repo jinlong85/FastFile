@@ -117,6 +117,15 @@
    `GetWindowRect`/`SetCursorPos` 拿到的是被按 DPI 缩放的虚拟坐标，而 DWM 接口返回物理
    坐标。两者混用会得出"窗口比屏幕还大"之类的错误结论（已踩坑一次），排查窗口问题时
    先调用 `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)`
+10. **`CLabelUI` 的文字位置由 `textpadding` 决定，不是 `padding`**：`padding` 只参与布局，
+    改它不会移动文字。另外 `textpadding` 会缩小文本框，压太多会裁字——要抬升文字又要留足
+    行高，得同时把控件高度加上等量（见 `fav_bar_label` 的处理）
+11. **左侧区块标题的字体在代码里被二次设置**：`ApplyUiChromeTokens()` 会覆盖 `main.xml`，
+    之前它强制 font 3（10px），导致"小标题比正文还小"的层级倒置。改标题样式时两处都要看
+12. **文件夹空白处的右键菜单不等同于资源管理器的**：`IShellFolder::CreateViewObject` 拿到的
+    只有 Shell 自己的项（在终端中打开/授予访问权限/新建/属性…），资源管理器显示的
+    查看/排序方式/刷新 来自"视图"层，必须自己补（见 `ShowShellBackgroundContextMenu`）。
+    另外 FastFile 用自己的剪贴板，Shell 看不到，所以"粘贴"也要自己加
 
 ## 会话/配置文件（通常在 `%APPDATA%\FastFile\`）
 

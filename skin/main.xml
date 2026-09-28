@@ -109,7 +109,7 @@
 <HorizontalLayout name="body_host" bkcolor="#FFFFFFFF">
       <VerticalLayout name="left_panel" width="220" bkcolor="#FFF3F3F3" bordercolor="#FFE5E5E5" bordersize="0,0,1,0" padding="8,8,8,8">
         <!-- C: Quick Access — sepheight makes bottom edge a vertical splitter (persisted) -->
-        <VerticalLayout name="left_quick" height="168" minheight="148" maxheight="720" sepheight="8" sepimm="true" bkcolor="#FFF3F3F3" bordercolor="#FFD8D8D8" bordersize="0,0,0,1" padding="8,0,2,0">
+          <VerticalLayout name="left_quick" height="168" minheight="148" maxheight="720" sepheight="9" sepimm="true" bkcolor="#FFF3F3F3" padding="8,0,2,0">
           <Label name="nav_hdr_quick" text="快速访问" font="0" textcolor="#FF5A5A5A" height="22" padding="8,4,0,0" />
           <Control height="2" />
           <Button name="fav_thispc" text="此电脑" height="28" align="left" textcolor="#FF1A1A1A" bkcolor="#FFF3F3F3" hotbkcolor="#FFE8F4FC" pushedbkcolor="#FFCCE8FF" padding="4,0,4,0" />
@@ -119,6 +119,9 @@
           <VerticalLayout name="left_fav_pins" visible="false" />
           <Control name="left_nav_grip" height="0" visible="false" />
         </VerticalLayout>
+          <!-- Visible divider + drag affordance between the Quick Access block and the tree.
+               DuiLib's splitter band sits in the bottom 9px of left_quick, right above it. -->
+          <Control name="left_nav_divider" height="1" bkcolor="#FFD0D0D0" />
         <VerticalLayout name="left_thispc" bkcolor="#FFF3F3F3" padding="2,4,2,0">
           <Label name="nav_hdr_thispc" text="此电脑" font="0" textcolor="#FF5A5A5A" height="22" padding="8,2,0,0" />
           <Control height="2" />

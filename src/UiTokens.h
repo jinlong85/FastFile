@@ -40,6 +40,8 @@ constexpr int FavBarPadY = 2;          // tighter than InnerPadY so chips fit
 constexpr int FavChipH = 22;
 constexpr int FavIconPx = 16;
 constexpr int FavLabelW = 72;          // star + fav left mark
+constexpr int FavLabelBaselineLift = 4; // design px to raise the CJK "★ 收藏" label onto the
+                                        // Latin baseline of the chips beside it
 constexpr int AddressBarH = 32;
 constexpr int AddressBarPadY = 2;
 constexpr int SearchBoxH = 28;
@@ -157,7 +159,7 @@ inline constexpr const wchar_t* ColorListSelected  = L"#FFCCE8FF";
 inline constexpr const wchar_t* ColorListHeaderBg  = L"#FFF3F3F3";  // match chrome Surface
 inline constexpr const wchar_t* ColorNavHover      = L"#FFE8F4FC";  // align with list hover
 inline constexpr const wchar_t* ColorNavSelected   = L"#FFCCE8FF";
-inline constexpr const wchar_t* ColorNavSection    = L"#FF6B6B6B";
+inline constexpr const wchar_t* ColorNavSection    = L"#FF5A5A5A";  // same size as rows, only lighter
 inline constexpr const wchar_t* ColorTreeHotText   = L"#FF1A1A1A";
 inline constexpr const wchar_t* ColorTreeSelText   = L"#FF1A1A1A";
 

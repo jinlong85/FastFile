@@ -231,6 +231,40 @@ bool CMainWnd::TrackPopupShellMenu(IContextMenu* pMenu, HMENU hMenu, POINT ptScr
         return true;
     }
 
+    // FastFile's own entries in the folder-background menu (see ShowShellBackgroundContextMenu).
+    if (cmd == kCmdBgRefresh) {
+        RefreshListing();
+        return true;
+    }
+    if (cmd == kCmdBgPaste) {
+        OnPasteClicked();
+        return true;
+    }
+    if (cmd >= kCmdBgViewBase && cmd < kCmdBgViewBase + 6) {
+        SetViewMode(static_cast<ViewMode>(cmd - kCmdBgViewBase));
+        return true;
+    }
+    if (cmd >= kCmdBgSortBase && cmd < kCmdBgSortBase + 4) {
+        const SortColumn col = static_cast<SortColumn>(cmd - kCmdBgSortBase);
+        if (m_sortColumn == col)
+            m_sortAscending = !m_sortAscending;
+        else {
+            m_sortColumn = col;
+            m_sortAscending = true;
+        }
+        SortListingCache();
+        UpdateHeaderSortIndicators();
+        RebuildCurrentViewFromCache();
+        return true;
+    }
+    if (cmd == kCmdBgSortBase + 4 || cmd == kCmdBgSortBase + 5) {
+        m_sortAscending = (cmd == kCmdBgSortBase + 4);
+        SortListingCache();
+        UpdateHeaderSortIndicators();
+        RebuildCurrentViewFromCache();
+        return true;
+    }
+
     if (cmd >= idCmdFirst && cmd < idShellMax) {
         wchar_t verb[128] = {};
         const bool hasVerb = SUCCEEDED(pMenu->GetCommandString(cmd - idCmdFirst,
@@ -330,7 +364,57 @@ bool CMainWnd::ShowShellBackgroundContextMenu(const std::wstring& folderPath, PO
     }
 
     const UINT idShellMax = idCmdFirst + static_cast<UINT>(HRESULT_CODE(hr));
-    // Full Shell menu (IContextMenu2/3), with no FastFile-injected commands.
+
+    // Explorer's folder-background menu leads with the view items that belong to the *view* -
+    // 查看 / 排序方式 / 刷新 (and 粘贴) - not to IShellFolder. A plain CreateViewObject menu
+    // therefore lacks them, which is why ours looked like a different, shorter menu than the
+    // one Windows shows. Re-create them here, wired to FastFile's own actions.
+    HMENU hView = ::CreatePopupMenu();
+    HMENU hSort = ::CreatePopupMenu();
+    if (hView && hSort) {
+        auto checkView = [&](ViewMode m) -> UINT {
+            return (m_viewMode == m) ? (MF_STRING | MF_CHECKED) : MF_STRING;
+        };
+        ::AppendMenuW(hView, checkView(ViewMode::ExtraLargeIcons), (UINT_PTR)(kCmdBgViewBase + 0), L"超大图标");
+        ::AppendMenuW(hView, checkView(ViewMode::LargeIcons), (UINT_PTR)(kCmdBgViewBase + 1), L"大图标");
+        ::AppendMenuW(hView, checkView(ViewMode::MediumIcons), (UINT_PTR)(kCmdBgViewBase + 2), L"中等图标");
+        ::AppendMenuW(hView, checkView(ViewMode::List), (UINT_PTR)(kCmdBgViewBase + 3), L"列表");
+        ::AppendMenuW(hView, checkView(ViewMode::Details), (UINT_PTR)(kCmdBgViewBase + 4), L"详细信息");
+        ::AppendMenuW(hView, checkView(ViewMode::Tiles), (UINT_PTR)(kCmdBgViewBase + 5), L"平铺");
+
+        auto checkSort = [&](SortColumn c) -> UINT {
+            return (m_sortColumn == c) ? (MF_STRING | MF_CHECKED) : MF_STRING;
+        };
+        ::AppendMenuW(hSort, checkSort(SortColumn::Name), (UINT_PTR)(kCmdBgSortBase + 0), L"名称");
+        ::AppendMenuW(hSort, checkSort(SortColumn::Modified), (UINT_PTR)(kCmdBgSortBase + 1), L"修改日期");
+        ::AppendMenuW(hSort, checkSort(SortColumn::Type), (UINT_PTR)(kCmdBgSortBase + 2), L"类型");
+        ::AppendMenuW(hSort, checkSort(SortColumn::Size), (UINT_PTR)(kCmdBgSortBase + 3), L"大小");
+        ::AppendMenuW(hSort, MF_SEPARATOR, 0, nullptr);
+        ::AppendMenuW(hSort, m_sortAscending ? (MF_STRING | MF_CHECKED) : MF_STRING,
+            (UINT_PTR)(kCmdBgSortBase + 4), L"升序");
+        ::AppendMenuW(hSort, !m_sortAscending ? (MF_STRING | MF_CHECKED) : MF_STRING,
+            (UINT_PTR)(kCmdBgSortBase + 5), L"降序");
+
+        int pos = 0;
+        ::InsertMenuW(hMenu, pos++, MF_BYPOSITION | MF_POPUP,
+            reinterpret_cast<UINT_PTR>(hView), L"查看");
+        ::InsertMenuW(hMenu, pos++, MF_BYPOSITION | MF_POPUP,
+            reinterpret_cast<UINT_PTR>(hSort), L"排序方式");
+        ::InsertMenuW(hMenu, pos++, MF_BYPOSITION | MF_STRING, (UINT_PTR)kCmdBgRefresh, L"刷新");
+        ::InsertMenuW(hMenu, pos++, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
+        // The Shell cannot see FastFile's own clipboard, so offer 粘贴 ourselves - but only
+        // when the Shell has nothing of its own to paste, to avoid two identical entries.
+        const bool shellCanPaste = ::IsClipboardFormatAvailable(CF_HDROP) != FALSE;
+        if (!m_clipboard.empty() && !shellCanPaste) {
+            ::InsertMenuW(hMenu, pos++, MF_BYPOSITION | MF_STRING, (UINT_PTR)kCmdBgPaste, L"粘贴");
+            ::InsertMenuW(hMenu, pos++, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
+        }
+    } else {
+        if (hView) ::DestroyMenu(hView);
+        if (hSort) ::DestroyMenu(hSort);
+    }
+
+    // Full Shell menu (IContextMenu2/3) plus the FastFile view entries added above.
     TrackPopupShellMenu(pMenu, hMenu, ptScreen, idCmdFirst, idShellMax, false);
 
     ::DestroyMenu(hMenu);

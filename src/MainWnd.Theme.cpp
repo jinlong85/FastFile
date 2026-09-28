@@ -201,6 +201,8 @@ void CMainWnd::ApplyUiChromeTokens()
     // Phase 2: left nav surface + section headers + tree interaction colors
     setBk(_T("left_quick"), surf);
     setBk(_T("left_thispc"), surf);
+    // Visible divider between the two nav sections; it doubles as the splitter's grab line.
+    setBk(_T("left_nav_divider"), UiTokens::ColorSeparator);
     if (m_pDirTree) {
         m_pDirTree->SetAttribute(_T("bkcolor"), surf);
         m_pDirTree->SetAttribute(_T("itemhotbkcolor"), UiTokens::ColorListHover);
@@ -214,7 +216,10 @@ void CMainWnd::ApplyUiChromeTokens()
         if (CControlUI* h = m_PaintManager.FindControl(hdrName)) {
             h->SetFixedHeight(DpiScale(UiTokens::NavSectionHeaderH));
             h->SetAttribute(_T("textcolor"), UiTokens::ColorNavSection);
-            h->SetAttribute(_T("font"), _T("3"));  // FontCaption — Explorer section density
+            // Same size as the rows below, only lighter. Forcing font 3 (10px) made the
+            // headers smaller AND fainter than their own items, i.e. an inverted hierarchy,
+            // and it silently undid the matching change in main.xml.
+            h->SetAttribute(_T("font"), _T("0"));
             CDuiString pad;
             pad.Format(_T("%d,%d,0,0"), DpiScale(UiTokens::NavHeaderPadL), DpiScale(UiTokens::SpaceXs));
             h->SetAttribute(_T("padding"), pad);
@@ -256,6 +261,15 @@ void CMainWnd::ApplyUiChromeTokens()
         fl->SetAttribute(_T("font"), _T("0"));
         fl->SetAttribute(_T("textcolor"), UiTokens::ColorTextSecondary);
         fl->SetAttribute(_T("valign"), _T("vcenter"));
+        // CJK glyphs fall back to a different font whose visual centre sits lower than the
+        // Latin glyphs of the chip labels, so the label looked misaligned. CLabelUI positions
+        // text from "textpadding", not "padding". Two extra design px of height plus an equal
+        // bottom text pad lift the text by half the pad and keep the box tall enough to avoid
+        // clipping the taller CJK fallback glyphs.
+        CDuiString tp;
+        tp.Format(_T("0,0,0,%d"), DpiScale(UiTokens::FavLabelBaselineLift * 2));
+        fl->SetAttribute(_T("textpadding"), tp);
+        fl->SetFixedHeight(DpiScale(UiTokens::FavChipH + 2));
     }
     if (CControlUI* fh = m_PaintManager.FindControl(_T("fav_bar_hint"))) {
         fh->SetAttribute(_T("font"), _T("0"));

@@ -138,10 +138,13 @@ void CMainWnd::ShowPreviewDetails(bool showMeta, bool showImage, bool showAction
         gap->SetVisible(showImage);
     if (m_pPreviewImage)
         m_pPreviewImage->SetVisible(showImage);
+    // The preview pane no longer offers a "共享" action (it duplicated the command bar and
+    // added nothing): the button and its spacer stay hidden no matter what callers pass.
+    (void)showActions;
     if (CControlUI* gap = m_PaintManager.FindControl(_T("preview_gap_action")))
-        gap->SetVisible(showActions);
+        gap->SetVisible(false);
     if (CControlUI* share = m_PaintManager.FindControl(_T("btn_preview_share")))
-        share->SetVisible(showActions);
+        share->SetVisible(false);
     if (CControlUI* gap = m_PaintManager.FindControl(_T("preview_gap_image")))
         gap->SetVisible(showMeta);
     if (CControlUI* title = m_PaintManager.FindControl(_T("preview_details_title")))

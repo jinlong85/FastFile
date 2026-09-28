@@ -635,4 +635,10 @@ private:
     static constexpr UINT_PTR kCmdCtxRename = 9004;
     static constexpr UINT_PTR kCmdCtxRefresh = 9005;
     static constexpr UINT_PTR kCmdToggleHidden = 9201;
+    // Commands FastFile adds to the Shell *folder background* menu (Explorer's own view menu),
+    // kept well clear of the Shell's idCmdFirst..idCmdLast range.
+    static constexpr UINT_PTR kCmdBgRefresh = 9300;
+    static constexpr UINT_PTR kCmdBgPaste = 9301;
+    static constexpr UINT_PTR kCmdBgViewBase = 9310;   // +0..5 -> ViewMode
+    static constexpr UINT_PTR kCmdBgSortBase = 9320;   // +0..3 -> SortColumn, +4 asc, +5 desc
 };
