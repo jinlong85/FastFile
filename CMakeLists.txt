@@ -65,6 +65,11 @@ add_executable(FastFile WIN32
   src/UiTokens.h
   cmake/FastFile.manifest
 )
+
+# App icon (res\FastFile.rc embeds res\FastFile.ico as resource id 1)
+if(WIN32)
+  target_sources(FastFile PRIVATE res/FastFile.rc)
+endif()
 target_link_libraries(FastFile PRIVATE duilib shell32 shlwapi propsys)
 if(MSVC)
   target_compile_options(FastFile PRIVATE /W3 /utf-8)

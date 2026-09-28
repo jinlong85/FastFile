@@ -483,6 +483,15 @@ bool CMainWnd::LoadSession()
     if (count <= 0 || paths.empty())
         return false;
 
+    // User preference: always start in 此电脑, never restore the last folder. The rest of
+    // the session (view mode, preview/recursive/favourites-bar flags, column widths) is
+    // still restored below.
+    paths.clear();
+    filters.clear();
+    paths[0] = kThisPcPath;
+    count = 1;
+    active = 0;
+
     m_tabs.clear();
     m_activeTab = -1;
     for (int i = 0; i < count; ++i) {
@@ -512,6 +521,7 @@ bool CMainWnd::LoadSession()
         active = 0;
     ActivateTab(active);
     RebuildBreadcrumb();
-    UpdateStatus(_T("已恢复上次会话"));
+    // Only the settings are restored — the folder is always 此电脑 (see above).
+    UpdateStatus(_T("已就绪"));
     return true;
 }

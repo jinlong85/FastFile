@@ -293,6 +293,7 @@ private:
     void SetShowHidden(bool show);
     void ToggleShowHidden();
     void ApplyWindowCornerAndPadding();
+    void ApplyWindowIcon();
     void ApplyUiChromeTokens(); // Phase1: paddings + unified Win11 light colors
     bool TrackPopupShellMenu(IContextMenu* pMenu, HMENU hMenu, POINT ptScreen,
         UINT idCmdFirst, UINT idShellMax, bool appendHiddenToggle);

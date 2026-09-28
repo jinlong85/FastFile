@@ -105,6 +105,7 @@ void CMainWnd::InitWindow()
 
     ApplyDpiScaledChrome();
     LoadLeftNavSplitter();
+    ApplyWindowIcon();
     ApplyChromeShellIcons();
     ApplyCopyUiState();
     StartThumbWorker();
@@ -712,6 +713,30 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         }
     }
     return WindowImplBase::HandleMessage(uMsg, wParam, lParam);
+}
+
+// Push the exe's own icon (resource id 1, see res\FastFile.rc) onto the window.
+// DuiLib's CWindowWnd::RegisterWindowClass sets wc.hIcon = NULL, so without this the
+// title bar, taskbar button and Alt-Tab entry would stay blank.
+void CMainWnd::ApplyWindowIcon()
+{
+    if (!m_hWnd || !::IsWindow(m_hWnd))
+        return;
+    HINSTANCE inst = ::GetModuleHandleW(nullptr);
+    const int cxBig = ::GetSystemMetrics(SM_CXICON);
+    const int cyBig = ::GetSystemMetrics(SM_CYICON);
+    const int cxSmall = ::GetSystemMetrics(SM_CXSMICON);
+    const int cySmall = ::GetSystemMetrics(SM_CYSMICON);
+
+    // LoadImage picks the best frame for each size; the icon file ships 16/32/48/128/256.
+    HICON big = static_cast<HICON>(::LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON,
+        cxBig, cyBig, LR_DEFAULTCOLOR));
+    HICON smallIcon = static_cast<HICON>(::LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON,
+        cxSmall, cySmall, LR_DEFAULTCOLOR));
+    if (big)
+        ::SendMessageW(m_hWnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(big));
+    if (smallIcon)
+        ::SendMessageW(m_hWnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(smallIcon));
 }
 
 LRESULT CMainWnd::ResponseDefaultKeyEvent(WPARAM wParam)

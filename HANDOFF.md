@@ -261,6 +261,32 @@ if (m_viewMode != ViewMode::Details && a.isDir != b.isDir)
 `DisplayVersion`、安装完成提示三处永远一致。
 
 
+## 2026-09-29 第六批：应用图标 + 固定从“此电脑”启动
+
+### 应用图标
+1. `res\FastFile.ico`（用户提供的 System Folder 图标，内含 16/32/48/128/256 多尺寸）；
+2. `res\FastFile.rc` 里 `1 ICON "FastFile.ico"` —— 资源 id 1 就是资源管理器显示的文件图标；
+3. `CMakeLists.txt` 把 `res/FastFile.rc` 加进 target，MSVC 自动调用 rc.exe；
+4. **DuiLib 的 `CWindowWnd::RegisterWindowClass()` 把 `wc.hIcon` 设成 NULL**，所以窗口类本身
+   没有图标；`CMainWnd::ApplyWindowIcon()`（在 InitWindow 里、`ApplyDpiScaledChrome()` 之后调用）
+   用 `LoadImageW(hInst, MAKEINTRESOURCEW(1), IMAGE_ICON, cx, cy, ...)` 按系统大/小图标尺寸各取一张，
+   再 `WM_SETICON` 推给窗口 —— 标题栏、任务栏、Alt-Tab 都用它。
+   验证方法：`SendMessage(hWnd, WM_GETICON, ICON_BIG/ICON_SMALL, 0)` 应返回非 0。
+5. 安装包（`installer\build_installer.ps1`）加了 `csc /win32icon:res\FastFile.ico`，
+   所以 Setup.exe 和开始菜单快捷方式也是同一个图标。
+
+### 每次启动都进入“此电脑”
+`LoadSession()` 解析完 ini 后直接丢弃里面的标签路径：
+
+```cpp
+    paths.clear(); filters.clear();
+    paths[0] = kThisPcPath; count = 1; active = 0;
+```
+
+于是**视图模式、预览开关、含子目录、收藏栏、列宽**照旧恢复，但打开的永远是「此电脑」，
+不再回到上次的目录；状态栏提示也从「已恢复上次会话」改成「已就绪」。
+
+
 ## 当前顶部结构（自上而下）
 
 1. 系统标题栏（客户端内已去掉「FastFile 文件管理」自定义标题行）

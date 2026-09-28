@@ -69,7 +69,8 @@ $versionCs = Join-Path $stage 'version.cs'
 
 $cscArgs = @('/nologo', '/target:winexe', '/platform:anycpu', '/optimize+',
              ('/out:"' + $target + '"'),
-             '/reference:System.Windows.Forms.dll') + $resArgs +
+             '/reference:System.Windows.Forms.dll',
+             ('/win32icon:"' + (Join-Path $root 'res\FastFile.ico') + '"')) + $resArgs +
            @(('"' + (Join-Path $root 'installer\setup.cs') + '"'), ('"' + $versionCs + '"'))
 
 & $csc @cscArgs
