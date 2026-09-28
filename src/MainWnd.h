@@ -300,6 +300,9 @@ private:
     void ApplyUiChromeTokens(); // Phase1: paddings + unified Win11 light colors
     bool TrackPopupShellMenu(IContextMenu* pMenu, HMENU hMenu, POINT ptScreen,
         UINT idCmdFirst, UINT idShellMax, bool appendHiddenToggle);
+    // Hide shell-menu entries FastFile does not want to show (see the implementation)
+    void PruneShellMenu(IContextMenu* pMenu, HMENU hMenu, UINT idCmdFirst, UINT idShellMax,
+        bool backgroundMenu);
     void ForwardShellMenuMessage(UINT uMsg, WPARAM wParam, LPARAM lParam, LRESULT* pResult, bool* handled);
     void RebuildBreadcrumb();
     void OnBreadcrumbSegmentClick(CControlUI* btn);

@@ -325,6 +325,47 @@ if (m_viewMode != ViewMode::Details && a.isDir != b.isDir)
 `build\Release\FastFile.rc.res` 再构建。
 
 
+## 2026-09-29 第八批：右键菜单（去掉 PowerShell / “用 X 打开” / 空子菜单）
+
+### 菜单来源（用户要求核实）
+文件夹空白处右键走的就是 **Windows 原生 Shell 接口**：
+
+```
+SHGetDesktopFolder → IShellFolder::BindToObject
+    → IShellFolder::CreateViewObject(IID_IContextMenu)
+    → IContextMenu::QueryContextMenu(CMF_NORMAL|CMF_EXPLORE|CMF_EXTENDEDVERBS)
+    → TrackPopupMenuEx + IContextMenu2/3 消息转发（WM_INITMENUPOPUP/DRAWITEM/MEASUREITEM/MENUCHAR）
+```
+
+所以「在终端中打开」「在此处打开 PowerShell 窗口」「用 XXX 打开」「授予访问权限」「新建」
+这些都是 **Shell / 已安装的 Shell 扩展**给出来的，不是我们写死的（源码里搜不到任何一处
+硬编码文本）。我们只额外补了 查看 / 排序方式 / 刷新 / 粘贴。
+
+### 新增 `PruneShellMenu()`
+`QueryContextMenu` 之后、`TrackPopupMenuEx` 之前对菜单做一次清理：
+
+1. **预填并清理空子菜单**：对每个 `MF_POPUP` 先调 `IContextMenu2::HandleMenuMsg(
+   WM_INITMENUPOPUP)`，若子菜单仍是 0 项就删掉该项（并 `DestroyMenu`）。
+   —— Windows 11 对“文件夹背景”的 *授予访问权限* 就是空的（实测背景菜单与
+   `SHCreateShellFolderView` 的视图菜单都是 0 项），Explorer 也是直接不显示；
+   而 **选中某个文件夹**时该子菜单有内容，所以那种情况下会保留。
+2. **屏蔽旧版 PowerShell 动词**：`GCS_VERBW` 得到 verb，`_wcsicmp(verb, L"Powershell")`
+   命中就删（Explorer 在存在“在终端中打开”时也会隐藏它）。
+3. **屏蔽第三方「用 X 打开」**（仅背景菜单）：菜单文本以“用”开头且含“打开”。
+4. 清理因删除而产生的连续/首尾分隔线。
+
+两个入口都调用：背景菜单 `backgroundMenu=true`，选中项菜单 `backgroundMenu=false`
+（选中项里「用…打开」是正常的“打开方式”类动词，不动它）。
+
+### 排查手法（以后可复用）
+`%TEMP%\ff_bgmenu.txt` / `ff_viewmenu.txt` 那种临时转储最好用
+`_wfopen(..., L"w, ccs=UTF-8")` 打开，否则 `fwprintf` 会把中文写成 `?`。
+另外：要判断“Shell 到底给了哪些项/动词”，就用 `GetMenuStringW` + `GetCommandString(GCS_VERBW)`；
+要比较 Explorer 的菜单，用 `SHCreateShellFolderView` + `IShellView::GetItemObject(SVGIO_BACKGROUND)`
+生成一份对照（本项目只用于诊断，不用于实际菜单，因为视图菜单里的查看/排序/刷新会作用到
+那个隐藏的 Shell 视图而不是 FastFile 自己）。
+
+
 ## 当前顶部结构（自上而下）
 
 1. 系统标题栏（客户端内已去掉「FastFile 文件管理」自定义标题行）

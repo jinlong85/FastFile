@@ -198,6 +198,82 @@ void CMainWnd::ForwardShellMenuMessage(UINT uMsg, WPARAM wParam, LPARAM lParam, 
     }
 }
 
+// Shell menus hand us a few entries we deliberately hide:
+//   * the legacy "在此处打开 PowerShell 窗口" verb (Explorer suppresses it when the
+//     Windows Terminal entry exists);
+//   * third-party "用 <app> 打开" verbs injected into the folder background;
+//   * cascading submenus the Shell leaves empty (Windows 11 no longer fills
+//     授予访问权限 for local folders, so the entry would just be a dead arrow).
+// Cascading submenus are pre-populated here so emptiness can be detected before the menu
+// is shown; the Shell simply re-populates them again in the real menu loop.
+void CMainWnd::PruneShellMenu(IContextMenu* pMenu, HMENU hMenu, UINT idCmdFirst,
+    UINT idShellMax, bool backgroundMenu)
+{
+    if (!pMenu || !hMenu)
+        return;
+
+    IContextMenu2* pcm2 = nullptr;
+    pMenu->QueryInterface(IID_IContextMenu2, reinterpret_cast<void**>(&pcm2));
+
+    for (int pos = ::GetMenuItemCount(hMenu) - 1; pos >= 0; --pos) {
+        HMENU sub = ::GetSubMenu(hMenu, pos);
+        if (sub) {
+            if (pcm2)
+                pcm2->HandleMenuMsg(WM_INITMENUPOPUP, reinterpret_cast<WPARAM>(sub),
+                    MAKELONG(static_cast<WORD>(pos), FALSE));
+            if (::GetMenuItemCount(sub) <= 0) {
+                ::DeleteMenu(hMenu, pos, MF_BYPOSITION);
+                ::DestroyMenu(sub);
+            }
+            continue;
+        }
+
+        const UINT id = ::GetMenuItemID(hMenu, pos);
+        if (id == 0 || id == 0xFFFFFFFFu)      // separator
+            continue;
+
+        if (id >= idCmdFirst && id < idShellMax) {
+            wchar_t verb[128] = {};
+            if (SUCCEEDED(pMenu->GetCommandString(id - idCmdFirst, GCS_VERBW, nullptr,
+                    reinterpret_cast<LPSTR>(verb), _countof(verb)))
+                && ::_wcsicmp(verb, L"Powershell") == 0) {
+                ::DeleteMenu(hMenu, pos, MF_BYPOSITION);
+                continue;
+            }
+        }
+
+        if (backgroundMenu) {
+            wchar_t text[256] = {};
+            ::GetMenuStringW(hMenu, pos, text, _countof(text), MF_BYPOSITION);
+            if (text[0] == L'用' && ::wcsstr(text, L"打开") != nullptr)
+                ::DeleteMenu(hMenu, pos, MF_BYPOSITION);
+        }
+    }
+    if (pcm2)
+        pcm2->Release();
+
+    // Collapse separators left behind by the removals (and drop leading/trailing ones).
+    bool prevSep = true;
+    for (int pos = 0; pos < ::GetMenuItemCount(hMenu); ) {
+        const UINT id = ::GetMenuItemID(hMenu, pos);
+        const bool isSep = (id == 0 && ::GetSubMenu(hMenu, pos) == nullptr);
+        if (isSep && prevSep) {
+            ::DeleteMenu(hMenu, pos, MF_BYPOSITION);
+            continue;
+        }
+        prevSep = isSep;
+        ++pos;
+    }
+    while (::GetMenuItemCount(hMenu) > 0) {
+        const int last = ::GetMenuItemCount(hMenu) - 1;
+        const UINT id = ::GetMenuItemID(hMenu, last);
+        if (id == 0 && ::GetSubMenu(hMenu, last) == nullptr)
+            ::DeleteMenu(hMenu, last, MF_BYPOSITION);
+        else
+            break;
+    }
+}
+
 bool CMainWnd::TrackPopupShellMenu(IContextMenu* pMenu, HMENU hMenu, POINT ptScreen,
     UINT idCmdFirst, UINT idShellMax, bool appendHiddenToggle)
 {
@@ -369,6 +445,10 @@ bool CMainWnd::ShowShellBackgroundContextMenu(const std::wstring& folderPath, PO
 
     const UINT idShellMax = idCmdFirst + static_cast<UINT>(HRESULT_CODE(hr));
 
+    // Drop the entries Windows itself would not show here (legacy PowerShell verb,
+    // third-party "用 X 打开" verbs, empty cascading submenus).
+    PruneShellMenu(pMenu, hMenu, idCmdFirst, idShellMax, true);
+
     // Explorer's folder-background menu leads with the view items that belong to the *view* -
     // 查看 / 排序方式 / 刷新 (and 粘贴) - not to IShellFolder. A plain CreateViewObject menu
     // therefore lacks them, which is why ours looked like a different, shorter menu than the
@@ -521,6 +601,7 @@ bool CMainWnd::ShowShellContextMenu(const std::vector<std::wstring>& paths, POIN
     }
 
     const UINT idShellMax = idCmdFirst + static_cast<UINT>(HRESULT_CODE(hr));
+    PruneShellMenu(pMenu, hMenu, idCmdFirst, idShellMax, false);
     // Full Shell menu with owner-draw / cascaded submenus via IContextMenu2/3
     m_shellMenuPaths = paths;
     TrackPopupShellMenu(pMenu, hMenu, ptScreen, idCmdFirst, idShellMax, false);
