@@ -144,3 +144,23 @@ void CMainWnd::UpdateStatus(LPCTSTR text)
     if (m_pStatus && text)
         m_pStatus->SetText(text);
 }
+
+int CMainWnd::MeasureTextWidth(const std::wstring& text)
+{
+    if (text.empty())
+        return 0;
+    HWND hdcWnd = m_hWnd ? m_hWnd : ::GetDesktopWindow();
+    HDC dc = ::GetDC(hdcWnd);
+    if (!dc)
+        return 0;
+    // Measure with the font DuiLib actually renders this text with, so chips and tabs size
+    // themselves to the real glyph widths rather than a per-character guess.
+    HFONT font = m_PaintManager.GetFont(0);
+    HGDIOBJ old = font ? ::SelectObject(dc, font) : nullptr;
+    SIZE sz = {};
+    const int width = ::GetTextExtentPoint32W(dc, text.c_str(), static_cast<int>(text.size()), &sz)
+        ? static_cast<int>(sz.cx) : 0;
+    if (old) ::SelectObject(dc, old);
+    ::ReleaseDC(hdcWnd, dc);
+    return width;
+}

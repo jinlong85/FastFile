@@ -78,21 +78,10 @@ void CMainWnd::RebuildTabStrip()
         } else {
             btn->SetAttribute(_T("textcolor"), UiTokens::ColorTextTabIdle);
         }
-        SIZE textSize = { 0, 0 };
-        if (m_hWnd) {
-            HDC dc = ::GetDC(m_hWnd);
-            if (dc) {
-                HFONT font = m_PaintManager.GetFont(0);
-                HGDIOBJ old = font ? ::SelectObject(dc, font) : nullptr;
-                ::GetTextExtentPoint32W(dc, title.c_str(),
-                    static_cast<int>(title.size()), &textSize);
-                if (old) ::SelectObject(dc, old);
-                ::ReleaseDC(m_hWnd, dc);
-            }
-        }
-        if (textSize.cx <= 0)
-            textSize.cx = DpiScale(static_cast<int>(title.size()) * 8);
-        int w = textSize.cx + tabIconPad + tabIconPx + tabTextGap + tabTextPadR;
+        int textW = MeasureTextWidth(title);
+        if (textW <= 0)
+            textW = DpiScale(static_cast<int>(title.size()) * 8);   // fallback estimate
+        int w = textW + tabIconPad + tabIconPx + tabTextGap + tabTextPadR;
         if (w < DpiScale(UiTokens::TabMinW)) w = DpiScale(UiTokens::TabMinW);
         if (w > DpiScale(UiTokens::TabMaxW)) w = DpiScale(UiTokens::TabMaxW);
         btn->SetFixedWidth(w);

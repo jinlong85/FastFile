@@ -422,16 +422,20 @@ void CMainWnd::RebuildFavoritesBar()
         btn->SetAttribute(_T("bordercolor"), _T("#00FFFFFF"));
         btn->SetAttribute(_T("bordersize"), _T("0"));
         btn->SetAttribute(_T("endellipsis"), _T("true"));
+        const int textPadL = DpiScale(UiTokens::FavIconPx + 8);   // icon inset + icon + gap
+        const int textPadR = DpiScale(10);
         {
             CDuiString tp;
-            // left room for 16px icon + gap; no vertical pad (valign centers)
-            tp.Format(_T("%d,0,%d,0"), DpiScale(UiTokens::FavIconPx + 8), DpiScale(6));
+            // left room for the icon + gap, small right pad; no vertical pad (valign centers)
+            tp.Format(_T("%d,0,%d,0"), textPadL, textPadR);
             btn->SetAttribute(_T("textpadding"), tp);
         }
-        // CJK-friendly width (~13px/glyph @12pt) + icon gutter
-        int w = DpiScale(static_cast<int>(fav.displayName.size()) * 13 + 36);
-        if (w < DpiScale(84)) w = DpiScale(84);
-        if (w > DpiScale(240)) w = DpiScale(240);
+        // Size the chip to its actual label rather than estimating from the character count:
+        // the old "length * 13 + 36, clamped to 240" gave every short name a 240px box, which
+        // is what left all that empty space around the text.
+        int w = textPadL + MeasureTextWidth(fav.displayName) + textPadR;
+        if (w < DpiScale(56)) w = DpiScale(56);
+        if (w > DpiScale(320)) w = DpiScale(320);
         btn->SetFixedWidth(w);
         btn->SetToolTip(fav.path.c_str());
 

@@ -371,6 +371,10 @@ private:
     void ClearIconSelection();
     void ClearFileSelection();
     void SelectAllItems();
+    // Pixel width of `text` in the current UI font (font 0). Used to size chips/tabs to their
+    // label instead of estimating from the character count. Returns 0 if it cannot measure.
+    // (Non-const: DuiLib's CPaintManagerUI::GetFont is not const.)
+    int MeasureTextWidth(const std::wstring& text);
     bool IsFileViewBlankHit(CControlUI* hit) const;
     bool HasFileSelection() const;
     // True while a text box that should own the keyboard has focus. The address box only
