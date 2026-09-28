@@ -680,21 +680,118 @@ void CMainWnd::RebuildBreadcrumb()
     if (!m_pBreadcrumb) return;
     m_pBreadcrumb->RemoveAll();
 
-    auto addSeg = [&](const std::wstring& label, const std::wstring& path, bool isLast) {
+    // ---- 1. Build the full chain (此电脑 / drive / folder...) --------------
+    std::vector<std::pair<std::wstring, std::wstring>> chain;
+    chain.push_back({ L"此电脑", kThisPcPath });
+    // 此电脑 is a pseudo path ("::ThisPC"): never run it through NormalizePath, which
+    // would turn it into a bogus drive-relative path and fake a "本地磁盘 (:)" segment.
+    if (!IsThisPcPath(m_currentPath) && !m_currentPath.empty()) {
+        std::wstring path = NormalizePath(m_currentPath);
+        if (!path.empty()) {
+            if (path.size() >= 2 && path[1] == L':') {
+                std::wstring drive = path.substr(0, 2) + L"\\";
+                chain.push_back({ FormatDriveDisplayName(drive), NormalizePath(drive) });
+                std::wstring rest = path.size() > 3 ? path.substr(3) : L"";
+                std::wstring acc = NormalizePath(drive);
+                size_t start = 0;
+                while (start < rest.size()) {
+                    size_t slash = rest.find(L'\\', start);
+                    std::wstring part = (slash == std::wstring::npos)
+                        ? rest.substr(start) : rest.substr(start, slash - start);
+                    if (!part.empty()) {
+                        if (!acc.empty() && acc.back() != L'\\') acc.push_back(L'\\');
+                        acc += part;
+                        chain.push_back({ part, NormalizePath(acc) });
+                    }
+                    if (slash == std::wstring::npos) break;
+                    start = slash + 1;
+                }
+            } else {
+                chain.push_back({ GetLeafName(path), path });
+            }
+        }
+    }
+
+    // ---- 2. Measure every label so the row can be fitted to the address bar ----
+    const int padX = DpiScale(UiTokens::BreadcrumbSegPadX);
+    const int sepW = DpiScale(UiTokens::BreadcrumbSepW);
+    const int segH = DpiScale(UiTokens::HitBreadcrumbH);
+    struct Seg { std::wstring label; std::wstring path; int w; };
+    std::vector<Seg> segs;
+    segs.reserve(chain.size());
+    {
+        HFONT font = m_PaintManager.GetFont(0);
+        HDC dc = m_hWnd ? ::GetDC(m_hWnd) : nullptr;
+        for (const auto& c : chain) {
+            SIZE labelSize = { 0, 0 };
+            if (dc) {
+                HGDIOBJ oldFont = font ? ::SelectObject(dc, font) : nullptr;
+                ::GetTextExtentPoint32W(dc, c.first.c_str(),
+                    static_cast<int>(c.first.size()), &labelSize);
+                if (oldFont) ::SelectObject(dc, oldFont);
+            }
+            if (labelSize.cx <= 0)
+                labelSize.cx = DpiScale(static_cast<int>(c.first.size()) * 8);
+            int w = labelSize.cx + padX * 2 + DpiScale(6);
+            if (w < DpiScale(28)) w = DpiScale(28);
+            segs.push_back({ c.first, c.second, w });
+        }
+        if (dc) ::ReleaseDC(m_hWnd, dc);
+    }
+
+    // ---- 3. Fit: drop leading segments, never the folder you are in --------
+    // Explorer keeps the deepest segments and hides the top ones instead of letting
+    // the deepest label run out of the frame (that used to clip glyphs mid-stroke).
+    int avail = static_cast<int>(m_pBreadcrumb->GetWidth());
+    if (avail <= 8) avail = DpiScale(700);      // layout not ready yet: assume roomy
+    const int ellipsisW = DpiScale(20);
+    auto rowWidth = [&](size_t first) {
+        int t = (first > 0) ? (ellipsisW + sepW) : 0;
+        for (size_t i = first; i < segs.size(); ++i) {
+            if (t > 0) t += sepW;
+            t += segs[i].w;
+        }
+        return t;
+    };
+    size_t first = 0;
+    while (first + 1 < segs.size() && rowWidth(first) > avail)
+        ++first;
+
+    std::vector<Seg> shown;
+    if (first > 0)
+        shown.push_back({ L"…", segs[first - 1].path, ellipsisW });
+    for (size_t i = first; i < segs.size(); ++i)
+        shown.push_back(segs[i]);
+
+    // Shrink the tail when the deepest name alone is wider than what is left.
+    {
+        int used = 0;
+        for (size_t i = 0; i < shown.size(); ++i)
+            used += shown[i].w + (i ? sepW : 0);
+        if (!shown.empty() && used > avail) {
+            shown.back().w -= (used - avail);
+            if (shown.back().w < DpiScale(48)) shown.back().w = DpiScale(48);
+        }
+    }
+
+    // ---- 4. Emit -----------------------------------------------------------
+    for (size_t i = 0; i < shown.size(); ++i) {
+        const bool isLast = (i + 1 == shown.size());
         auto* btn = new CButtonUI;
-        btn->SetText(label.c_str());
-        btn->SetUserData(path.c_str());
-        btn->SetName(_T("bc_seg"));
-        btn->SetFixedHeight(DpiScale(UiTokens::HitBreadcrumbH));
+        btn->SetText(shown[i].label.c_str());
+        btn->SetUserData(shown[i].path.c_str());
+        btn->SetName(shown[i].label == L"…" ? _T("bc_more") : _T("bc_seg"));
+        btn->SetFixedHeight(segH);
+        btn->SetFixedWidth(shown[i].w);
         btn->SetAttribute(_T("padding"), _T("0,0,0,0"));
         {
             CDuiString tp;
-            const int padX = DpiScale(UiTokens::BreadcrumbSegPadX);
             tp.Format(_T("%d,0,%d,0"), padX, padX);
             btn->SetAttribute(_T("textpadding"), tp);
         }
         btn->SetAttribute(_T("align"), _T("center"));
         btn->SetAttribute(_T("valign"), _T("vcenter"));
+        btn->SetAttribute(_T("endellipsis"), _T("true"));
         btn->SetAttribute(_T("font"), _T("0"));
         btn->SetAttribute(_T("bkcolor"), UiTokens::ColorTransparent);
         btn->SetAttribute(_T("bordercolor"), UiTokens::ColorTransparent);
@@ -703,42 +800,20 @@ void CMainWnd::RebuildBreadcrumb()
         btn->SetAttribute(_T("pushedbkcolor"), UiTokens::ColorPressed);
         btn->SetAttribute(_T("textcolor"),
             isLast ? UiTokens::ColorTextPrimary : UiTokens::ColorTextTabIdle);
-        const int padX = DpiScale(UiTokens::BreadcrumbSegPadX);
-        SIZE labelSize = { 0, 0 };
-        if (m_hWnd) {
-            HDC dc = ::GetDC(m_hWnd);
-            if (dc) {
-                HFONT font = m_PaintManager.GetFont(0);
-                HGDIOBJ oldFont = font ? ::SelectObject(dc, font) : NULL;
-                ::GetTextExtentPoint32W(dc, label.c_str(), static_cast<int>(label.size()), &labelSize);
-                if (oldFont)
-                    ::SelectObject(dc, oldFont);
-                ::ReleaseDC(m_hWnd, dc);
-            }
-        }
-        if (labelSize.cx <= 0)
-            labelSize.cx = DpiScale(static_cast<int>(label.size()) * 8);
-        int w = labelSize.cx + padX * 2 + DpiScale(4);
-        if (w < DpiScale(36)) w = DpiScale(36);
-        if (w > DpiScale(220)) w = DpiScale(220);
-        btn->SetFixedWidth(w);
         m_pBreadcrumb->Add(btn);
         if (!isLast) {
             auto* sep = new CLabelUI;
             sep->SetText(_T(" › "));
-            sep->SetFixedWidth(DpiScale(UiTokens::BreadcrumbSepW));
-            sep->SetFixedHeight(DpiScale(UiTokens::HitBreadcrumbH));
+            sep->SetFixedWidth(sepW);
+            sep->SetFixedHeight(segH);
             sep->SetAttribute(_T("textcolor"), UiTokens::ColorTextMuted);
             sep->SetAttribute(_T("font"), _T("0"));
             sep->SetAttribute(_T("align"), _T("center"));
             sep->SetAttribute(_T("valign"), _T("vcenter"));
             m_pBreadcrumb->Add(sep);
         }
-    };
+    }
 
-    if (IsThisPcPath(m_currentPath) || m_currentPath.empty()) {
-        addSeg(L"此电脑", kThisPcPath, true);
-        
     // Click empty trailing area -> editable address (Explorer-style)
     if (!m_addressEditMode) {
         auto* filler = new CButtonUI;
@@ -748,54 +823,7 @@ void CMainWnd::RebuildBreadcrumb()
         filler->SetAttribute(_T("hotbkcolor"), UiTokens::ColorTransparent);
         filler->SetAttribute(_T("pushedbkcolor"), UiTokens::ColorTransparent);
         filler->SetAttribute(_T("bordersize"), _T("0"));
-        filler->SetFixedHeight(DpiScale(UiTokens::HitBreadcrumbH));
-        m_pBreadcrumb->Add(filler);
-    }
-
-        m_pBreadcrumb->NeedUpdate();
-        return;
-    }
-
-    std::wstring path = NormalizePath(m_currentPath);
-    std::vector<std::pair<std::wstring, std::wstring>> segs;
-    // Drive root
-    if (path.size() >= 2 && path[1] == L':') {
-        std::wstring drive = path.substr(0, 2) + L"\\";
-        segs.push_back({ FormatDriveDisplayName(drive), NormalizePath(drive) });
-        std::wstring rest = path.size() > 3 ? path.substr(3) : L"";
-        std::wstring acc = NormalizePath(drive);
-        size_t start = 0;
-        while (start < rest.size()) {
-            size_t slash = rest.find(L'\\', start);
-            std::wstring part = (slash == std::wstring::npos)
-                ? rest.substr(start) : rest.substr(start, slash - start);
-            if (!part.empty()) {
-                if (!acc.empty() && acc.back() != L'\\') acc.push_back(L'\\');
-                acc += part;
-                segs.push_back({ part, NormalizePath(acc) });
-            }
-            if (slash == std::wstring::npos) break;
-            start = slash + 1;
-        }
-    } else {
-        segs.push_back({ GetLeafName(path), path });
-    }
-
-    // Prefix 此电脑
-    addSeg(L"此电脑", kThisPcPath, false);
-    for (size_t i = 0; i < segs.size(); ++i)
-        addSeg(segs[i].first, segs[i].second, i + 1 == segs.size());
-    
-    // Click empty trailing area -> editable address (Explorer-style)
-    if (!m_addressEditMode) {
-        auto* filler = new CButtonUI;
-        filler->SetName(_T("bc_edit"));
-        filler->SetText(_T(""));
-        filler->SetAttribute(_T("bkcolor"), UiTokens::ColorTransparent);
-        filler->SetAttribute(_T("hotbkcolor"), UiTokens::ColorTransparent);
-        filler->SetAttribute(_T("pushedbkcolor"), UiTokens::ColorTransparent);
-        filler->SetAttribute(_T("bordersize"), _T("0"));
-        filler->SetFixedHeight(DpiScale(UiTokens::HitBreadcrumbH));
+        filler->SetFixedHeight(segH);
         m_pBreadcrumb->Add(filler);
     }
 

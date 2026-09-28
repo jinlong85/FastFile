@@ -251,6 +251,7 @@ private:
     static bool ResizeArgbBuffer(const std::vector<BYTE>& src, int sw, int sh,
         int dw, int dh, std::vector<BYTE>& dst);
     static bool SaveImageThumbnailPng(const std::wstring& srcPath, const std::wstring& pngPath, int cx, int cy);
+    static bool CropPngToContentAlpha(const std::wstring& pngPath);
     static bool IsImageExtension(const std::wstring& name);
     static bool IsTextExtension(const std::wstring& name);
     static bool IsVideoExtension(const std::wstring& name);
@@ -330,6 +331,11 @@ private:
     bool LoadPreviewShellIcon(const std::wstring& path, bool isDir, int iconPx);
     // Adaptive frame + centered Fit bkimage (folders: compact icon area)
     void ApplyPreviewImageBk(const std::wstring& pngPath, int imgPxW, int imgPxH, int frameDesignH);
+    // Live thumb box for the preview pane (follows the splitter width)
+    void PreviewImageBox(int& boxW, int& boxH) const;
+    // Re-fit breadcrumb / preview when the layout (not the window) changed
+    void SyncLayoutDependents();
+    void ReloadPreviewForWidth();
     // Rewrite a PNG on disk at the exact draw size so DuiLib never stretches it
     static bool ResamplePngToSize(const std::wstring& pngPath, int cx, int cy);
     static std::wstring FormatFileTimeLocal(const FILETIME& ft);
@@ -430,7 +436,9 @@ private:
 
     // A: visible vertical scrollbars on file views
     void StyleVerticalScrollBar(CContainerUI* host);
+    void StyleHorizontalScrollBar(CContainerUI* host);
     void ApplyFileViewScrollBars();
+    int MeasureListColumnWidth(const std::vector<DirEntry>& all, int iconPx);
 
     // C: left Quick Access / This PC splitter persist
     static std::wstring GetLeftNavFilePath();
@@ -571,8 +579,12 @@ private:
     IContextMenu2* m_pCtxMenu2 = nullptr;
     IContextMenu3* m_pCtxMenu3 = nullptr;
     std::wstring m_previewPath;
+    bool m_previewPathIsDir = true;
+    bool m_previewFromSelection = false;   // false => folder overview
     std::wstring m_previewBmp;
     unsigned m_previewSerial = 0;
+    int m_previewPaneW = 0;      // last laid-out preview pane width (splitter drag)
+    int m_breadcrumbFitW = 0;    // width the breadcrumb was fitted to
 
     // Virtualization state (E)
     bool m_iconVirtMode = false;
@@ -671,6 +683,7 @@ private:
     static constexpr int kPreviewMaxTextBytes = 96 * 1024;
     static constexpr UINT_PTR kTimerVirtSync = 0x4601;
     static constexpr UINT_PTR kTimerColWidth = 0x4602;
+    static constexpr UINT_PTR kTimerLayoutSync = 0x4604;
 
     static constexpr UINT_PTR kCmdCtxOpen = 9001;
     static constexpr UINT_PTR kCmdCtxCopy = 9002;

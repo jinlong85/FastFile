@@ -130,6 +130,8 @@ void CMainWnd::InitWindow()
     UpdateNavButtons();
     if (m_hWnd)
         ::SetTimer(m_hWnd, kTimerColWidth, 2000, nullptr);
+    if (m_hWnd)
+        ::SetTimer(m_hWnd, kTimerLayoutSync, 200, nullptr);
     ApplyWindowCornerAndPadding();
     SyncRecursiveCheckLabel();
     SetSearchPlaceholder(true);
@@ -438,6 +440,7 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             ::KillTimer(m_hWnd, kTimerVirtSync);
             ::KillTimer(m_hWnd, kTimerColWidth);
             ::KillTimer(m_hWnd, kTimerDetailsSync);
+            ::KillTimer(m_hWnd, kTimerLayoutSync);
         }
         StopDetailsFill();
         SaveFavorites();
@@ -454,6 +457,7 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         if (wParam == kTimerVirtSync) { SyncVisibleIconWindow(false); return 0; }
         if (wParam == kTimerColWidth) { CaptureColumnWidths(); return 0; }
         if (wParam == kTimerDetailsSync) { UpdateDetailsWindow(false); return 0; }
+        if (wParam == kTimerLayoutSync) { SyncLayoutDependents(); return 0; }
     }
     if (uMsg == WM_LBUTTONDOWN && !m_inDoDragDrop) {
         m_dragTracking = true;

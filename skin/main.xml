@@ -139,11 +139,13 @@
           </ListHeader>
         </List>
         <VerticalLayout name="icon_scroll" bkcolor="#FFFFFFFF" visible="false" padding="6,6,6,6">
-          <TileLayout name="file_icons" itemsize="190,52" columns="0" childpadding="6" childvpadding="6" vscrollbar="true" vscrollbarstyle="width=&quot;8&quot; showbutton1=&quot;false&quot; showbutton2=&quot;false&quot; bkcolor=&quot;#FFF7F7F7&quot; thumbcolor=&quot;#FFC4C4C4&quot;" hscrollbar="false" bordercolor="#00000000" />
+          <TileLayout name="file_icons" itemsize="190,52" columns="0" columnfirst="false" childpadding="6" childvpadding="6" vscrollbar="true" vscrollbarstyle="width=&quot;8&quot; showbutton1=&quot;false&quot; showbutton2=&quot;false&quot; bkcolor=&quot;#FFF7F7F7&quot; thumbcolor=&quot;#FFC4C4C4&quot;" hscrollbar="true" hscrollbarstyle="height=&quot;8&quot; showbutton1=&quot;false&quot; showbutton2=&quot;false&quot; bkcolor=&quot;#FFF7F7F7&quot; thumbcolor=&quot;#FFC4C4C4&quot;" bordercolor="#00000000" />
         </VerticalLayout>
       </VerticalLayout>
 
-      <VerticalLayout name="preview_pane" width="320" bkcolor="#FFFFFFFF" bordercolor="#00000000" bordersize="0" borderround="0,0" padding="24,24,24,24">
+      <!-- sepwidth is negative: the 6px grip sits on the LEFT edge so the pane can be
+           dragged wider/narrower (minwidth/maxwidth clamp the drag). -->
+      <VerticalLayout name="preview_pane" width="320" minwidth="180" maxwidth="760" sepwidth="-6" sepimm="true" bkcolor="#FFFFFFFF" bordercolor="#FFE5E5E5" bordersize="1,0,0,0" borderround="0,0" padding="24,24,24,24">
         <Control name="preview_image" height="196" bkcolor="#FFFFFFFF" bordercolor="#00000000" bordersize="0" borderround="0,0" visible="false" />
         <Control name="preview_gap_title" height="14" visible="false" />
         <Label name="preview_title" text="预览" font="5" textcolor="#FF1A1A1A" height="28" endellipsis="true" />

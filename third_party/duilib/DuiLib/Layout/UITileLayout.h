@@ -24,6 +24,10 @@ namespace DuiLib
 		void SetItemSize(SIZE szSize);
 		int GetColumns() const;
 		int GetRows() const;
+		// FastFile: vertical flow ("columnfirst") fills a column top->bottom before
+		// wrapping to the next one; rows come from the available height (list view).
+		bool IsColumnFirst() const;
+		void SetColumnFirst(bool bColumnFirst);
 		void SetAttribute(LPCTSTR pstrName, LPCTSTR pstrValue);
 
 	protected:
@@ -34,6 +38,7 @@ namespace DuiLib
 		int m_nColumnsFixed;
 		int m_iChildVPadding;
 		bool m_bIgnoreItemPadding;
+		bool m_bColumnFirst;
 	};
 }
 #endif // __UITILELAYOUT_H__

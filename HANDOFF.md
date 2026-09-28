@@ -80,6 +80,55 @@
 另外 `PreviewIconCompactH`(80 设计) 与 `PreviewIconPx`(48 设计) 现在只作下限，
 预览小图标实际按 120 物理像素取图。
 
+## 2026-09-29 第二批：视图/布局问题（6 项）
+
+### 1. 此电脑的驱动器磁贴（图1）
+`DriveTileButtonUI` 改为自绘：第一行盘名、中间胶囊形占用条、第三行「X 可用，共 Y」。
+条高 = 磁贴高/9（随磁贴/DPI 自适应，夹在 7–14 设计像素），文字颜色比盘名浅
+(`RGB(0x70,0x70,0x70)`)，说明行用小一号字体。磁贴文案不再写进控件文本
+（`BindIconTile` 里对 This PC 清空 label），否则会和自绘文字重叠。
+
+### 2. 平铺视图多出的「文件」二字（图2）
+`BindIconTile` / `TryReuseIconsView` 里原本拼 `类型 + 大小`；现在只拼大小，并给平铺磁贴
+打开 `multiline`，所以是「名称 / 大小」两行（和资源管理器一致）。
+
+### 3. 地址栏面包屑被裁字（图3）
+`RebuildBreadcrumb` 先量出每段文字宽度，再按地址栏**实际宽度**决定显示哪几段：
+放不下就从头丢段并用「…」占位（点「…」回到被折叠的父目录），最后一段优先保留，
+实在放不下才收缩其宽度并靠 `endellipsis` 收尾。段宽不再写死 220 上限。
+注意：**`此电脑` 是伪路径 `::ThisPC`，绝不能进 `NormalizePath`**（`GetFullPathNameW`
+会把它变成 `::\ThisPC`，于是面包屑里冒出「本地磁盘 (:)」）；判断要用原始 `m_currentPath`。
+
+### 4. 列表视图顺序 + 完整文件名（图4）
+DuiLib 的 `CTileLayoutUI` 增加 `columnfirst` 属性（本项目对 third_party 的最小改动，
+默认 false）：行数按**可用高度**算，先竖着填满一列再往右开新列。
+`ApplyTileLayoutMetrics` 在列表模式下 `SetColumnFirst(true)`、`EnableScrollBar(false,true)`
+（横向滚动条），其它模式还原。列宽由 `MeasureListColumnWidth()` 用 UI 字体量最长文件名
+得出（夹在 180–900 设计像素），因此文件名基本不再被省略。
+**坑**：TileLayout 里 `iRowIndex` 实际喂给 X 坐标、`iColumnIndex` 喂给 Y 坐标（名字是反的），
+写竖向流时必须 `Y = i%rows`、`X = i/rows`。
+
+### 5. D:\Users\<用户> 显示为空（图5）
+`ShouldHideByAttributes` 原来把 `HIDDEN | SYSTEM` 一起过滤。资源管理器的规则是
+「隐藏项」只按 HIDDEN，「受保护的操作系统文件」才是 HIDDEN+SYSTEM 两个都要。
+被重定向的用户文件夹（文档/桌面/下载/图片…在 D 盘上）属性是 **ReadOnly|System**，
+于是被误藏。现在只按 `FILE_ATTRIBUTE_HIDDEN` 判断。
+
+### 6. 缩略图不按图片长宽比（图6）
+`ExtractShellItemImage` 生成的是「方框 + 透明留白」，新增 `CropPngToContentAlpha()`
+裁掉透明边，得到紧贴内容的缩略图；`ApplyTileIconImage` 用 `PngSizeFromFile()`（读 PNG
+头，不解码）拿到真实宽高，按比例放进方形图标槽居中——竖图变窄高、横图变宽，图标视图
+不再一律方形。图标缓存版本 `_v8.png`（缩略图内容变了，必须升版本）。
+
+### 7. 预览窗格可拖动 + 自适应
+- `main.xml`：`preview_pane` 加 `sepwidth="-6" sepimm="true" minwidth="180" maxwidth="760"`。
+  **负的 sepwidth 才能把拖拽热区放在左边缘**（正的会放在右边缘）。
+- 拖动时不会来 `WM_SIZE`（DuiLib 自己重排），所以新增 200ms 的 `kTimerLayoutSync`
+  → `SyncLayoutDependents()`：面包屑宽度变了就重排面包屑；预览窗格宽度变了就
+  `ReloadPreviewForWidth()` 重新生成缩略图（`PreviewImageBox()` 按窗格宽度给出绘制尺寸，
+  图片/文件夹图标/视频帧都按新宽度重取，不会拉伸模糊或穿模）。
+  `m_previewFromSelection` 用来区分「选中项的预览」和「当前目录概览」。
+
 ## 当前顶部结构（自上而下）
 
 1. 系统标题栏（客户端内已去掉「FastFile 文件管理」自定义标题行）
@@ -166,6 +215,11 @@
     （详见「图标 / 缩略图渲染管线」）
 17. **`session.ini` 是 UTF-16LE（带 BOM）**：用别的编码重写会让路径变乱码，程序回落到
     默认目录。要改会话状态就让它自己写，或用 `[System.Text.Encoding]::Unicode`
+18. **`third_party\duilib` 有本项目的小改动**（不是 submodule，改动随仓库走）：
+    `UITileLayout` 增加了 `columnfirst`（竖向优先排列）。升级/替换 DuiLib 时要保留，
+    否则列表视图会退回横向排布
+19. **DuiLib 的 splitter 只有在控件本身是固定宽/高时才有效**（拖动改的是 `m_cxyFixed`），
+    且 `sepwidth/sepheight` 为负表示热区在左侧/上部
 
 ## 崩溃排查流程
 

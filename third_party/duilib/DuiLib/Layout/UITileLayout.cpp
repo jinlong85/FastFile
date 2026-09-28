@@ -4,7 +4,7 @@
 namespace DuiLib
 {
 	CTileLayoutUI::CTileLayoutUI() : m_nColumns(1), m_nRows(0), m_nColumnsFixed(0), m_iChildVPadding(0),
-		m_bIgnoreItemPadding(true)
+		m_bIgnoreItemPadding(true), m_bColumnFirst(false)
 	{
 		m_szItem.cx = m_szItem.cy = 80;
 	}
@@ -67,6 +67,18 @@ namespace DuiLib
 		return m_nRows;
 	}
 
+	bool CTileLayoutUI::IsColumnFirst() const
+	{
+		return m_bColumnFirst;
+	}
+
+	void CTileLayoutUI::SetColumnFirst(bool bColumnFirst)
+	{
+		if( m_bColumnFirst == bColumnFirst ) return;
+		m_bColumnFirst = bColumnFirst;
+		NeedUpdate();
+	}
+
 	void CTileLayoutUI::SetAttribute(LPCTSTR pstrName, LPCTSTR pstrValue)
 	{
 		if( _tcscmp(pstrName, _T("itemsize")) == 0 ) {
@@ -78,6 +90,7 @@ namespace DuiLib
 		}
 		else if( _tcscmp(pstrName, _T("columns")) == 0 ) SetFixedColumns(_ttoi(pstrValue));
 		else if( _tcscmp(pstrName, _T("childvpadding")) == 0 ) SetChildVPadding(_ttoi(pstrValue));
+		else if( _tcscmp(pstrName, _T("columnfirst")) == 0 ) SetColumnFirst(_tcscmp(pstrValue, _T("true")) == 0);
 		else CContainerUI::SetAttribute(pstrName, pstrValue);
 	}
 
@@ -117,7 +130,23 @@ namespace DuiLib
 		int cxNeeded = 0;
 		int cyNeeded = 0;
 		int iChildPadding = m_iChildPadding;
-		if (m_nColumnsFixed == 0) { 
+		int iPerColumn = 0;
+		if (m_bColumnFirst && m_szItem.cy > 0) {
+			// FastFile: vertical flow. Rows come from the *height* (Explorer's list view
+			// fills a column top->bottom, then starts a new column to the right).
+			const int iRowPitch = m_szItem.cy + m_iChildVPadding;
+			int nRowsFit = (rc.bottom - rc.top) / (iRowPitch > 0 ? iRowPitch : 1);
+			if (nRowsFit < 1) nRowsFit = 1;
+			iPerColumn = nRowsFit;
+			m_nColumns = (nEstimateNum + nRowsFit - 1) / nRowsFit;
+			if (m_nColumns < 1) m_nColumns = 1;
+			if (iChildPadding < 0) iChildPadding = 0;
+			const int nColsUsed = (nEstimateNum < m_nColumns) ? nEstimateNum : m_nColumns;
+			cxNeeded = nColsUsed * m_szItem.cx + (nColsUsed > 1 ? (nColsUsed - 1) * iChildPadding : 0);
+			m_nRows = nRowsFit;
+			cyNeeded = nRowsFit * m_szItem.cy + (nRowsFit - 1) * m_iChildVPadding;
+		}
+		else if (m_nColumnsFixed == 0) { 
 			if (rc.right - rc.left >= m_szItem.cx) {
 				m_nColumns = (rc.right - rc.left)/m_szItem.cx;
 				cxNeeded = rc.right - rc.left;
@@ -179,8 +208,11 @@ namespace DuiLib
 
 			UINT iChildAlign = GetChildAlign(); 
 			UINT iChildVAlign = GetChildVAlign();
-			int iColumnIndex = it1/m_nColumns;
-			int iRowIndex = it1%m_nColumns;
+			// NOTE: upstream names are the other way round — iRowIndex feeds the X
+			// position and iColumnIndex feeds the Y position. Column-first therefore
+			// walks *down* with it1%rows and only then moves right with it1/rows.
+			int iColumnIndex = m_bColumnFirst ? (iPerColumn > 0 ? it1%iPerColumn : it1) : it1/m_nColumns;
+			int iRowIndex = m_bColumnFirst ? (iPerColumn > 0 ? it1/iPerColumn : 0) : it1%m_nColumns;
 			int iPosX = rc.left + iRowIndex*(m_szItem.cx+iChildPadding);
 			if( m_pHorizontalScrollBar && m_pHorizontalScrollBar->IsVisible() ) {
 				iPosX -= m_pHorizontalScrollBar->GetScrollPos();

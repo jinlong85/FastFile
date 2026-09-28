@@ -244,6 +244,77 @@ bool CMainWnd::SaveIconToPng(HICON hIcon, const std::wstring& pngPath, int cx, i
     return bmp.Save(pngPath.c_str(), &clsidPng, nullptr) == Ok;
 }
 
+// Trim fully transparent borders from a thumb PNG. Shell/GDI+ thumbs are produced inside
+// a square box with transparent bands, and cropping those lets the icon view draw each
+// picture at its own aspect ratio.
+bool CMainWnd::CropPngToContentAlpha(const std::wstring& pngPath)
+{
+    if (pngPath.empty()) return false;
+    using namespace Gdiplus;
+    if (!EnsureGdiplus()) return false;
+
+    int cw = 0, ch = 0, cx = 0, cy = 0;
+    {
+        Bitmap bmp(pngPath.c_str());
+        if (bmp.GetLastStatus() != Ok) return false;
+        const int w = bmp.GetWidth();
+        const int h = bmp.GetHeight();
+        if (w <= 0 || h <= 0) return false;
+        BitmapData bd = {};
+        Rect rc(0, 0, w, h);
+        if (bmp.LockBits(&rc, ImageLockModeRead, PixelFormat32bppARGB, &bd) != Ok)
+            return false;
+        int minX = w, minY = h, maxX = -1, maxY = -1;
+        for (int y = 0; y < h; ++y) {
+            const BYTE* row = static_cast<const BYTE*>(bd.Scan0)
+                + static_cast<ptrdiff_t>(y) * bd.Stride;
+            for (int x = 0; x < w; ++x) {
+                if (row[x * 4 + 3] >= 8) {
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
+            }
+        }
+        bmp.UnlockBits(&bd);
+        if (maxX < 0) return false;                       // fully transparent
+        if (minX == 0 && minY == 0 && maxX == w - 1 && maxY == h - 1)
+            return true;                                  // nothing to trim
+        cx = minX; cy = minY;
+        cw = maxX - minX + 1;
+        ch = maxY - minY + 1;
+    }
+
+    const std::wstring tmp = pngPath + L".crop.png";
+    bool written = false;
+    {
+        Bitmap src(pngPath.c_str());
+        if (src.GetLastStatus() != Ok) return false;
+        Bitmap dst(cw, ch, PixelFormat32bppARGB);
+        if (dst.GetLastStatus() != Ok) return false;
+        {
+            Graphics g(&dst);
+            if (g.GetLastStatus() != Ok) return false;
+            g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
+            g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
+            g.Clear(Color(0, 0, 0, 0));
+            g.DrawImage(&src, Rect(0, 0, cw, ch), cx, cy, cw, ch, UnitPixel);
+        }
+        CLSID clsidPng = {};
+        if (!GetPngEncoderClsid(&clsidPng)) return false;
+        ::DeleteFileW(tmp.c_str());
+        written = (dst.Save(tmp.c_str(), &clsidPng, nullptr) == Ok);
+    }
+    if (!written) { ::DeleteFileW(tmp.c_str()); return false; }
+    ::DeleteFileW(pngPath.c_str());
+    if (!::MoveFileW(tmp.c_str(), pngPath.c_str())) {
+        ::DeleteFileW(tmp.c_str());
+        return false;
+    }
+    return true;
+}
+
 bool CMainWnd::SaveImageThumbnailPng(const std::wstring& srcPath, const std::wstring& pngPath, int cx, int cy)
 {
     using namespace Gdiplus;
@@ -291,7 +362,7 @@ std::wstring CMainWnd::PeekCachedIconBmp(const std::wstring& path, bool isDir, i
 
     size_t h = std::hash<std::wstring>{}(key);
     wchar_t name[80] = {};
-    swprintf_s(name, L"%08X_%s_%d_v7.png", static_cast<unsigned>(h & 0xFFFFFFFF), isDir ? L"d" : L"f", cx);
+    swprintf_s(name, L"%08X_%s_%d_v8.png", static_cast<unsigned>(h & 0xFFFFFFFF), isDir ? L"d" : L"f", cx);
     std::wstring bmpPath = m_iconCacheDir + name;
     if (::PathFileExistsW(bmpPath.c_str())) {
         std::lock_guard<std::mutex> lock(m_iconCacheMutex);
@@ -319,7 +390,7 @@ std::wstring CMainWnd::GetShellIconBmp(const std::wstring& path, bool isDir, int
 
     size_t h = std::hash<std::wstring>{}(key);
     wchar_t name[80] = {};
-    swprintf_s(name, L"%08X_%s_%d_v7.png", static_cast<unsigned>(h & 0xFFFFFFFF), isDir ? L"d" : L"f", cx);
+    swprintf_s(name, L"%08X_%s_%d_v8.png", static_cast<unsigned>(h & 0xFFFFFFFF), isDir ? L"d" : L"f", cx);
     std::wstring bmpPath = m_iconCacheDir + name;
 
     if (::PathFileExistsW(bmpPath.c_str())) {
@@ -373,7 +444,7 @@ std::wstring CMainWnd::GetShellFileIconBmp(const std::wstring& path, bool isDir,
 
     size_t h = std::hash<std::wstring>{}(key);
     wchar_t name[80] = {};
-    swprintf_s(name, L"%08X_%s_%d_ico_v7.png", static_cast<unsigned>(h & 0xFFFFFFFF), isDir ? L"d" : L"f", cx);
+    swprintf_s(name, L"%08X_%s_%d_ico_v8.png", static_cast<unsigned>(h & 0xFFFFFFFF), isDir ? L"d" : L"f", cx);
     std::wstring bmpPath = m_iconCacheDir + name;
 
     if (::PathFileExistsW(bmpPath.c_str())) {
@@ -452,7 +523,10 @@ bool CMainWnd::ExtractShellItemImage(const std::wstring& path, int cx, int cy, c
 
     const bool ok = LetterboxHBitmapToPng(hbm, cx, cy, pngPath);
     ::DeleteObject(hbm);
-    return ok;
+    if (!ok) return false;
+    // Tighten: the icon view fits the thumb by its own aspect ratio.
+    CropPngToContentAlpha(pngPath);
+    return true;
 }
 
 bool CMainWnd::ExtractShellIconSized(const std::wstring& path, bool isDir, int cx, const std::wstring& bmpPath)
@@ -726,7 +800,7 @@ std::wstring CMainWnd::GetStockIconBmp(int siid, int cx)
 
     size_t h = std::hash<std::wstring>{}(key);
     wchar_t name[80] = {};
-    swprintf_s(name, L"stk_%08X_%d_%d_v7.png", static_cast<unsigned>(h & 0xFFFFFFFFu), siid, cx);
+    swprintf_s(name, L"stk_%08X_%d_%d_v8.png", static_cast<unsigned>(h & 0xFFFFFFFFu), siid, cx);
     std::wstring bmpPath = m_iconCacheDir + name;
     if (::PathFileExistsW(bmpPath.c_str())) {
         std::lock_guard<std::mutex> lock(m_iconCacheMutex);
@@ -759,7 +833,7 @@ std::wstring CMainWnd::GetModuleIconBmp(const wchar_t* moduleFile, int index, in
 
     size_t h = std::hash<std::wstring>{}(key);
     wchar_t name[96] = {};
-    swprintf_s(name, L"mod_%08X_%d_%d_v7.png", static_cast<unsigned>(h & 0xFFFFFFFFu), index, cx);
+    swprintf_s(name, L"mod_%08X_%d_%d_v8.png", static_cast<unsigned>(h & 0xFFFFFFFFu), index, cx);
     std::wstring bmpPath = m_iconCacheDir + name;
     if (::PathFileExistsW(bmpPath.c_str())) {
         std::lock_guard<std::mutex> lock(m_iconCacheMutex);

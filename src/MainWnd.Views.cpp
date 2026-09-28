@@ -30,28 +30,120 @@ public:
         m_freeBytes = freeBytes;
         m_totalBytes = totalBytes;
     }
+    // Name + "X 可用，共 Y" are painted by hand (see PaintStatusImage) so the bar can sit
+    // between the two lines, the bar height can follow the tile, and the caption can use
+    // a lighter colour than the name.
+    void SetDriveText(const std::wstring& name, const std::wstring& caption) {
+        m_name = name;
+        m_caption = caption;
+    }
+    void SetUiDpi(UINT dpi) { m_dpi = dpi ? dpi : 96; }
+
     void PaintStatusImage(HDC hDC) override {
         CButtonUI::PaintStatusImage(hDC);
-        if (!hDC || m_totalBytes == 0) return;
-        RECT rc = GetPos();
-        rc.left += 56;
-        rc.right -= 8;
-        rc.top = rc.bottom - 10;
-        rc.bottom = rc.top + 4;
-        if (rc.right <= rc.left) return;
-        HBRUSH track = ::CreateSolidBrush(RGB(224, 224, 224));
-        ::FillRect(hDC, &rc, track);
-        ::DeleteObject(track);
-        const ULONGLONG used = m_totalBytes > m_freeBytes ? m_totalBytes - m_freeBytes : 0;
-        RECT fill = rc;
-        fill.right = fill.left + static_cast<LONG>((used * static_cast<ULONGLONG>(rc.right - rc.left)) / m_totalBytes);
-        HBRUSH usedBrush = ::CreateSolidBrush(RGB(0, 120, 212));
-        ::FillRect(hDC, &fill, usedBrush);
-        ::DeleteObject(usedBrush);
+        if (!hDC) return;
+        const RECT rc = GetPos();
+        if (rc.right - rc.left <= 0 || rc.bottom - rc.top <= 0) return;
+
+        const int dpi = static_cast<int>(m_dpi);
+        auto S = [&](int design) { return ::MulDiv(design, dpi, 96); };
+
+        const int textL = rc.left + S(56) + S(8);
+        const int textR = rc.right - S(12);
+        if (textR <= textL) return;
+
+        const int nameH = S(20);
+        int barH = (rc.bottom - rc.top) / 9;      // follows the tile height
+        if (barH < S(7)) barH = S(7);
+        if (barH > S(14)) barH = S(14);
+        const int gap = S(5);
+        const int capH = S(18);
+        const int blockH = nameH + gap + (m_totalBytes ? barH : 0) + (m_totalBytes ? gap : 0) + capH;
+        int top = rc.top + ((rc.bottom - rc.top) - blockH) / 2;
+        if (top < rc.top + S(2)) top = rc.top + S(2);
+
+        HFONT font = m_pManager ? m_pManager->GetFont(m_iFont) : nullptr;
+        HFONT smallFont = nullptr;
+        {
+            LOGFONTW lf = {};
+            if (font && ::GetObjectW(font, sizeof(lf), &lf) == sizeof(lf)) {
+                lf.lfHeight = ::MulDiv(lf.lfHeight * 16, 18, 1);   // ~11pt vs ~12pt
+                if (lf.lfHeight < -18) lf.lfHeight = -18;
+                smallFont = ::CreateFontIndirectW(&lf);
+            }
+        }
+
+        const int oldBk = ::SetBkMode(hDC, TRANSPARENT);
+        COLORREF oldColor = ::GetTextColor(hDC);
+        HGDIOBJ oldFont = nullptr;
+
+        RECT rcName = { textL, top, textR, top + nameH };
+        oldFont = font ? ::SelectObject(hDC, font) : nullptr;
+        // DuiLib stores #AARRGGBB; GDI wants 0x00BBGGRR.
+        ::SetTextColor(hDC, RGB(GetBValue(m_dwTextColor), GetGValue(m_dwTextColor), GetRValue(m_dwTextColor)));
+        ::DrawTextW(hDC, m_name.c_str(), -1, &rcName,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+        int y = top + nameH + gap;
+        if (m_totalBytes) {
+            RECT rcBar = { textL, y, textR, y + barH };
+            DrawRoundedBar(hDC, rcBar, m_freeBytes, m_totalBytes);
+            y = rcBar.bottom + gap;
+        }
+
+        RECT rcCap = { textL, y, textR, y + capH };
+        if (smallFont) ::SelectObject(hDC, smallFont);
+        ::SetTextColor(hDC, RGB(0x70, 0x70, 0x70));   // softer than the name
+        ::DrawTextW(hDC, m_caption.c_str(), -1, &rcCap,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+        if (oldFont) ::SelectObject(hDC, oldFont);
+        if (smallFont) ::DeleteObject(smallFont);
+        ::SetTextColor(hDC, oldColor);
+        ::SetBkMode(hDC, oldBk);
     }
+
 private:
+    // Pill-shaped usage bar: rounded track + rounded fill (GDI RoundRect with a matching
+    // pen so no outline shows).
+    static void DrawRoundedBar(HDC hDC, const RECT& rc, ULONGLONG freeBytes, ULONGLONG totalBytes)
+    {
+        if (rc.right <= rc.left || rc.bottom <= rc.top) return;
+        const int radius = (rc.bottom - rc.top);
+        HBRUSH track = ::CreateSolidBrush(RGB(0xE6, 0xE6, 0xE6));
+        HPEN trackPen = ::CreatePen(PS_SOLID, 1, RGB(0xE6, 0xE6, 0xE6));
+        HGDIOBJ ob = ::SelectObject(hDC, track);
+        HGDIOBJ op = ::SelectObject(hDC, trackPen);
+        ::RoundRect(hDC, rc.left, rc.top, rc.right, rc.bottom, radius, radius);
+        ::SelectObject(hDC, op);
+        ::SelectObject(hDC, ob);
+        ::DeleteObject(trackPen);
+        ::DeleteObject(track);
+
+        if (totalBytes == 0) return;
+        const ULONGLONG used = totalBytes > freeBytes ? totalBytes - freeBytes : 0;
+        const long w = rc.right - rc.left;
+        long fillW = static_cast<long>((used * static_cast<ULONGLONG>(w)) / totalBytes);
+        if (used > 0 && fillW < 2) fillW = 2;
+        if (fillW <= 0) return;
+        RECT rf = rc;
+        rf.right = rf.left + fillW;
+        HBRUSH fill = ::CreateSolidBrush(RGB(0x00, 0x78, 0xD4));
+        HPEN fillPen = ::CreatePen(PS_SOLID, 1, RGB(0x00, 0x78, 0xD4));
+        ob = ::SelectObject(hDC, fill);
+        op = ::SelectObject(hDC, fillPen);
+        ::RoundRect(hDC, rf.left, rf.top, rf.right, rf.bottom, radius, radius);
+        ::SelectObject(hDC, op);
+        ::SelectObject(hDC, ob);
+        ::DeleteObject(fillPen);
+        ::DeleteObject(fill);
+    }
+
     ULONGLONG m_freeBytes = 0;
     ULONGLONG m_totalBytes = 0;
+    std::wstring m_name;
+    std::wstring m_caption;
+    UINT m_dpi = 96;
 };
 
 } // namespace
@@ -88,6 +180,22 @@ void CMainWnd::ApplyFileViewScrollBars()
         m_pIconScroll->EnableScrollBar(false, false);
 }
 
+// Horizontal twin of StyleVerticalScrollBar (list view needs it when the columns
+// grow past the right edge). The bar itself is created by EnableScrollBar().
+void CMainWnd::StyleHorizontalScrollBar(CContainerUI* host)
+{
+    if (!host) return;
+    CScrollBarUI* sb = host->GetHorizontalScrollBar();
+    if (!sb) return;
+    sb->SetFixedHeight((std::max)(DpiScale(UiTokens::ScrollBarW), 8));
+    sb->SetShowButton1(false);
+    sb->SetShowButton2(false);
+    sb->SetAttribute(_T("bkcolor"), UiTokens::ColorScrollTrack);
+    sb->SetThumbColor(0xFFC4C4C4);
+    sb->SetAttribute(_T("button1color"), UiTokens::ColorScrollTrack);
+    sb->SetAttribute(_T("button2color"), UiTokens::ColorScrollTrack);
+}
+
 // ---- View modes ----------------------------------------------------------
 
 bool CMainWnd::IsTileViewMode() const
@@ -106,7 +214,9 @@ void CMainWnd::GetViewMetrics(int& tileW, int& tileH, int& iconPx, int& childPad
     case ViewMode::MediumIcons:
         tileW = 100; tileH = 108; iconPx = 48; childPad = UiTokens::TileChildPadMedium; maxLabel = 16; break;
     case ViewMode::List:
-        tileW = 180; tileH = UiTokens::DetailsRowH; iconPx = UiTokens::DetailsIconPx; childPad = UiTokens::TileChildPadList; maxLabel = 28; break;
+        // Width is measured from the longest name (see MeasureListColumnWidth); maxLabel
+        // only guards against absurd names now that the column can grow.
+        tileW = 180; tileH = UiTokens::DetailsRowH; iconPx = UiTokens::DetailsIconPx; childPad = UiTokens::TileChildPadList; maxLabel = 260; break;
     case ViewMode::Tiles:
         // Fits three columns in the normal content area at 150% scaling while
         // retaining an Explorer-like icon and a single readable label line.
@@ -125,12 +235,47 @@ void CMainWnd::GetViewMetrics(int& tileW, int& tileH, int& iconPx, int& childPad
     // maxLabel stays character count (not pixels)
 }
 
+int CMainWnd::MeasureListColumnWidth(const std::vector<DirEntry>& all, int /*iconPx*/)
+{
+    // Explorer's list view sizes each column to its content, so the full name shows.
+    // Measuring the longest name also keeps every column of the grid the same width.
+    const int textL = DpiScale(24);      // icon slot (ApplyTileIconImage listMode: 4..4+iconPx)
+    const int rightPad = DpiScale(12);
+    int textW = 0;
+    if (m_hWnd && !all.empty()) {
+        HDC dc = ::GetDC(m_hWnd);
+        if (dc) {
+            HFONT font = m_PaintManager.GetFont(0);
+            HGDIOBJ oldFont = font ? ::SelectObject(dc, font) : nullptr;
+            const size_t kMaxScan = 4000;   // bound the cost on huge folders
+            const size_t n = (std::min)(all.size(), kMaxScan);
+            for (size_t i = 0; i < n; ++i) {
+                SIZE sz = { 0, 0 };
+                ::GetTextExtentPoint32W(dc, all[i].name.c_str(),
+                    static_cast<int>(all[i].name.size()), &sz);
+                if (sz.cx > textW) textW = sz.cx;
+            }
+            if (oldFont) ::SelectObject(dc, oldFont);
+            ::ReleaseDC(m_hWnd, dc);
+        }
+    }
+    if (textW <= 0) textW = DpiScale(140);
+    int w = textL + textW + rightPad;
+    if (w < DpiScale(180)) w = DpiScale(180);
+    if (w > DpiScale(900)) w = DpiScale(900);
+    return w;
+}
+
 void CMainWnd::ApplyTileLayoutMetrics()
 {
     if (!m_pIconTiles) return;
     int tileW = 100, tileH = 108, iconPx = 48, childPad = 6, maxLabel = 16;
     GetViewMetrics(tileW, tileH, iconPx, childPad, maxLabel);
     m_iconPx = iconPx;
+    // List view flows top->bottom inside a column and then wraps right (Explorer order);
+    // every other mode is the usual row-major tile grid.
+    const bool listMode = (m_viewMode == ViewMode::List);
+    m_pIconTiles->SetColumnFirst(listMode);
     SIZE sz = { tileW, tileH };
     m_pIconTiles->SetItemSize(sz);
     {
@@ -138,6 +283,11 @@ void CMainWnd::ApplyTileLayoutMetrics()
         pad.Format(_T("%d"), childPad);
         m_pIconTiles->SetAttribute(_T("childpadding"), pad.GetData());
         m_pIconTiles->SetAttribute(_T("childvpadding"), pad.GetData());
+    }
+    if (listMode) {
+        // Tight rows: the column is filled top->bottom, so vertical gaps only waste space.
+        m_pIconTiles->SetAttribute(_T("childvpadding"), _T("0"));
+        m_pIconTiles->SetChildVPadding(0);
     }
     if (m_pIconScroll) {
         {
@@ -150,7 +300,8 @@ void CMainWnd::ApplyTileLayoutMetrics()
         }
     }
     if (m_pIconTiles)
-        m_pIconTiles->EnableScrollBar(true, false);
+        m_pIconTiles->EnableScrollBar(!listMode, listMode);
+    StyleHorizontalScrollBar(m_pIconTiles);
     ApplyFileViewScrollBars();
 }
 
@@ -394,25 +545,58 @@ void CMainWnd::OnIconTileClick(CControlUI* tile)
     UpdateStatus(tip.GetData());
 }
 
+// Read width/height straight out of a PNG header (cheap: no decode).
+static bool PngSizeFromFile(const std::wstring& path, int& w, int& h)
+{
+    FILE* fp = nullptr;
+    if (_wfopen_s(&fp, path.c_str(), L"rb") != 0 || !fp) return false;
+    unsigned char hdr[24] = {};
+    const size_t n = fread(hdr, 1, sizeof(hdr), fp);
+    fclose(fp);
+    static const unsigned char kSig[8] = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+    if (n < sizeof(hdr) || ::memcmp(hdr, kSig, sizeof(kSig)) != 0) return false;
+    auto be32 = [](const unsigned char* p) {
+        return static_cast<int>((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]);
+    };
+    w = be32(hdr + 16);
+    h = be32(hdr + 20);
+    return w > 0 && h > 0;
+}
+
 void CMainWnd::ApplyTileIconImage(CControlUI* tile, const std::wstring& bmp,
     int tileW, int tileH, int iconPx, bool listMode, bool tilesMode)
 {
     if (!tile || bmp.empty()) return;
-    CDuiString imgAttr;
-    if (listMode) {
-        const int y = (tileH - iconPx) / 2;
-        imgAttr.Format(_T("file='%s' dest='4,%d,%d,%d'"),
-            bmp.c_str(), y, 4 + iconPx, y + iconPx);
-    } else if (tilesMode) {
-        const int y = (tileH - iconPx) / 2;
-        imgAttr.Format(_T("file='%s' dest='8,%d,%d,%d'"),
-            bmp.c_str(), y, 8 + iconPx, y + iconPx);
-    } else {
-        const int x0 = (tileW - iconPx) / 2;
-        const int y0 = DpiScale(UiTokens::SpaceSm);
-        imgAttr.Format(_T("file='%s' dest='%d,%d,%d,%d'"),
-            bmp.c_str(), x0, y0, x0 + iconPx, y0 + iconPx);
+
+    // Picture/video thumbs are cached tightly cropped, so fit them into the square icon
+    // slot at their own aspect ratio — a portrait shot is narrow, a landscape one is wide
+    // (Explorer/360 look) instead of every thumb being forced into one square size.
+    int imgW = 0, imgH = 0;
+    int dw = iconPx, dh = iconPx;
+    if (PngSizeFromFile(bmp, imgW, imgH)) {
+        const double s = (std::min)(static_cast<double>(iconPx) / imgW,
+                                    static_cast<double>(iconPx) / imgH);
+        dw = (std::max)(1, static_cast<int>(imgW * s + 0.5));
+        dh = (std::max)(1, static_cast<int>(imgH * s + 0.5));
     }
+
+    int slotX = 0, slotY = 0;
+    if (listMode) {
+        slotX = DpiScale(4);
+        slotY = (tileH - iconPx) / 2;
+    } else if (tilesMode) {
+        slotX = DpiScale(8);
+        slotY = (tileH - iconPx) / 2;
+    } else {
+        slotX = (tileW - iconPx) / 2;
+        slotY = DpiScale(UiTokens::SpaceSm);
+    }
+    const int x0 = slotX + (iconPx - dw) / 2;
+    const int y0 = slotY + (iconPx - dh) / 2;
+
+    CDuiString imgAttr;
+    imgAttr.Format(_T("file='%s' dest='%d,%d,%d,%d'"),
+        bmp.c_str(), x0, y0, x0 + dw, y0 + dh);
     tile->SetAttribute(_T("foreimage"), imgAttr.GetData());
     tile->SetAttribute(_T("hotforeimage"), imgAttr.GetData());
 }
@@ -446,6 +630,9 @@ bool CMainWnd::TryReuseIconsView(const std::vector<DirEntry>& dirs,
 
     const int n = m_pIconTiles->GetCount();
     if (n != static_cast<int>(all.size()) || n <= 0)
+        return false;
+    // List view re-measures its column width from the names, so reuse is not safe there.
+    if (m_viewMode == ViewMode::List)
         return false;
 
     // 路径不一致则不能复用控件
@@ -499,15 +686,15 @@ bool CMainWnd::TryReuseIconsView(const std::vector<DirEntry>& dirs,
         }
         tile->SetAttribute(_T("endellipsis"), _T("true"));
 
-                std::wstring label = e.name;
-        // Tiles/icon: folder label = name only (never append 文件夹).
+        std::wstring label = e.name;
+        // Tiles: name on line 1, size on line 2. Explorer shows no type word here
+        // ("0001.jpg文件 699 KB" looked wrong), and folders stay name-only.
         if (tilesMode && !e.isDir) {
-            std::wstring typeText = L"文件";
-            std::wstring sizeText = FormatFileSize(e.size);
-            std::wstring line2 = sizeText.empty() ? typeText : (typeText + L"  " + sizeText);
+            const std::wstring sizeText = FormatFileSize(e.size);
             if (label.size() > static_cast<size_t>(maxLabel))
                 label = label.substr(0, maxLabel - 1) + L"…";
-            label = label + L"\n" + line2;
+            if (!sizeText.empty())
+                label = label + L"\n" + sizeText;
         } else {
             if (label.size() > static_cast<size_t>(maxLabel))
                 label = label.substr(0, maxLabel - 1) + L"…";
@@ -1155,6 +1342,8 @@ void CMainWnd::BindIconTile(CButtonUI* tile, int index, const DirEntry& e, UINT 
     } else if (tilesMode) {
         tile->SetAttribute(_T("align"), _T("left"));
         tile->SetAttribute(_T("valign"), _T("vcenter"));
+        // Name on line 1, size on line 2 (Explorer tiles).
+        tile->SetAttribute(_T("multiline"), _T("true"));
         {
             CDuiString tp; tp.Format(_T("%d,%d,%d,%d"), DpiScale(56), DpiScale(4), DpiScale(8), DpiScale(4));
             tile->SetAttribute(_T("textpadding"), tp);
@@ -1162,28 +1351,33 @@ void CMainWnd::BindIconTile(CButtonUI* tile, int index, const DirEntry& e, UINT 
     } else {
         tile->SetAttribute(_T("align"), _T("center"));
         tile->SetAttribute(_T("valign"), _T("bottom"));
+        tile->SetAttribute(_T("multiline"), _T("false"));
         {
             CDuiString tp; tp.Format(_T("%d,%d,%d,%d"), DpiScale(4), DpiScale(4), DpiScale(4), DpiScale(6));
             tile->SetAttribute(_T("textpadding"), tp);
         }
     }
     tile->SetAttribute(_T("endellipsis"), _T("true"));
-    if (auto* drive = dynamic_cast<DriveTileButtonUI*>(tile))
+    const bool driveTile = IsThisPcPath(m_currentPath);
+    if (auto* drive = dynamic_cast<DriveTileButtonUI*>(tile)) {
         drive->SetDriveSpace(e.size, e.capacity);
+        drive->SetUiDpi(m_dpi);
+        drive->SetDriveText(e.name, e.capacity > 0
+            ? (FormatFileSize(e.size) + L" 可用，共 " + FormatFileSize(e.capacity))
+            : std::wstring());
+    }
 
     std::wstring label = e.name;
-    if (IsThisPcPath(m_currentPath) && e.capacity > 0) {
-        label += L"\n" + FormatFileSize(e.size) + L" 可用，共 " + FormatFileSize(e.capacity);
-    }
-    // Tiles/icon: folder label = name only (never append 文件夹).
-    if (tilesMode && !e.isDir) {
-        std::wstring typeText = L"文件";
-        std::wstring sizeText = FormatFileSize(e.size);
-        std::wstring line2 = sizeText.empty() ? typeText : (typeText + L"  " + sizeText);
+    if (driveTile) {
+        // Drive tiles paint name/bar/caption themselves — keep the control's own text empty.
+        label.clear();
+    } else if (tilesMode && !e.isDir) {
+        const std::wstring sizeText = FormatFileSize(e.size);
         if (label.size() > static_cast<size_t>(maxLabel))
             label = label.substr(0, maxLabel - 1) + L"…";
-        label = label + L"\n" + line2;
-    } else if (!IsThisPcPath(m_currentPath)) {
+        if (!sizeText.empty())
+            label = label + L"\n" + sizeText;
+    } else {
         if (label.size() > static_cast<size_t>(maxLabel))
             label = label.substr(0, maxLabel - 1) + L"…";
     }
@@ -1223,6 +1417,11 @@ void CMainWnd::RebuildIconsViewFull(const std::vector<DirEntry>& all)
     m_iconPx = iconPx;
     const bool listMode = (m_viewMode == ViewMode::List);
     const bool tilesMode = (m_viewMode == ViewMode::Tiles);
+    if (listMode) {
+        tileW = MeasureListColumnWidth(all, iconPx);
+        SIZE lsz = { tileW, tileH };
+        m_pIconTiles->SetItemSize(lsz);
+    }
     const UINT gen = m_thumbGeneration.load();
 
     int added = 0;
@@ -1239,7 +1438,8 @@ void CMainWnd::RebuildIconsViewFull(const std::vector<DirEntry>& all)
     if (m_pFileList) m_pFileList->SetVisible(false);
     if (m_pIconScroll) m_pIconScroll->SetVisible(true);
     if (m_pIconTiles) {
-        m_pIconTiles->EnableScrollBar(true, false);
+        m_pIconTiles->EnableScrollBar(!listMode, listMode);
+        StyleHorizontalScrollBar(m_pIconTiles);
         SIZE sp = { 0, 0 };
         m_pIconTiles->SetScrollPos(sp);
     }
@@ -1283,6 +1483,11 @@ void CMainWnd::RebuildIconsViewVirtual(const std::vector<DirEntry>& all)
     m_iconPx = iconPx;
     const bool listMode = (m_viewMode == ViewMode::List);
     const bool tilesMode = (m_viewMode == ViewMode::Tiles);
+    if (listMode) {
+        tileW = MeasureListColumnWidth(all, iconPx);
+        SIZE lsz = { tileW, tileH };
+        m_pIconTiles->SetItemSize(lsz);
+    }
     const UINT gen = m_thumbGeneration.load();
 
     // Reuse details fill queue machinery for icon progressive create
@@ -1303,7 +1508,8 @@ void CMainWnd::RebuildIconsViewVirtual(const std::vector<DirEntry>& all)
     if (m_pFileList) m_pFileList->SetVisible(false);
     if (m_pIconScroll) m_pIconScroll->SetVisible(true);
     if (m_pIconTiles) {
-        m_pIconTiles->EnableScrollBar(true, false);
+        m_pIconTiles->EnableScrollBar(!listMode, listMode);
+        StyleHorizontalScrollBar(m_pIconTiles);
         SIZE sp = { 0, 0 };
         m_pIconTiles->SetScrollPos(sp);
     }

@@ -296,6 +296,8 @@ void CMainWnd::FillVideoPreviewMeta(const std::wstring& path)
 void CMainWnd::ClearPreview()
 {
     m_previewPath.clear();
+    m_previewPathIsDir = true;
+    m_previewFromSelection = false;
     if (!m_previewBmp.empty()) {
         m_PaintManager.RemoveImage(m_previewBmp.c_str());
         ::DeleteFileW(m_previewBmp.c_str());
@@ -348,6 +350,8 @@ void CMainWnd::UpdatePreviewForCurrentFolder()
     }
 
     m_previewPath = m_currentPath;
+    m_previewPathIsDir = true;
+    m_previewFromSelection = false;
     std::wstring title = IsThisPcPath(m_currentPath) ? L"此电脑" : GetLeafName(m_currentPath);
     if (title.empty()) title = m_currentPath;
     if (m_pPreviewTitle) m_pPreviewTitle->SetText(title.c_str());
@@ -390,6 +394,8 @@ void CMainWnd::UpdatePreviewForSelection()
 
     // Multi-select: drop cached path so a later single-select reloads.
     m_previewPath.clear();
+    m_previewPathIsDir = true;
+    m_previewFromSelection = false;
     if (!m_previewBmp.empty()) {
         m_PaintManager.RemoveImage(m_previewBmp.c_str());
         ::DeleteFileW(m_previewBmp.c_str());
@@ -428,6 +434,8 @@ void CMainWnd::UpdatePreviewPath(const std::wstring& path, bool isDir)
         m_pPreviewPane->SetVisible(true);
     if (m_previewPath == path) return;
     m_previewPath = path;
+    m_previewPathIsDir = isDir;
+    m_previewFromSelection = true;
 
     std::wstring leaf = GetLeafName(path);
     if (m_pPreviewTitle) m_pPreviewTitle->SetText(leaf.c_str());
@@ -485,6 +493,42 @@ void CMainWnd::UpdatePreviewPath(const std::wstring& path, bool isDir)
     if (m_pPreviewText) m_pPreviewText->SetText(_T("暂不支持该类型预览"));
 }
 
+// DuiLib resizes the panes itself, so no WM_SIZE reaches us when the preview splitter
+// (or a column-width change) moves. A light poll keeps the breadcrumb fit and the
+// preview picture in sync with the live layout.
+void CMainWnd::SyncLayoutDependents()
+{
+    if (m_pBreadcrumb) {
+        const int w = static_cast<int>(m_pBreadcrumb->GetWidth());
+        if (w > 8 && w != m_breadcrumbFitW) {
+            m_breadcrumbFitW = w;
+            RebuildBreadcrumb();
+        }
+    }
+    if (m_pPreviewPane && m_previewVisible && m_pPreviewPane->IsVisible()) {
+        const int w = static_cast<int>(m_pPreviewPane->GetWidth());
+        if (w > 8 && w != m_previewPaneW) {
+            m_previewPaneW = w;
+            ReloadPreviewForWidth();
+        }
+    }
+}
+
+void CMainWnd::ReloadPreviewForWidth()
+{
+    if (!m_previewFromSelection) {
+        UpdatePreviewForCurrentFolder();
+        return;
+    }
+    const std::wstring path = m_previewPath;
+    const bool isDir = m_previewPathIsDir;
+    m_previewPath.clear();   // defeat the "same path" early-out in UpdatePreviewPath
+    if (path.empty())
+        UpdatePreviewForCurrentFolder();
+    else
+        UpdatePreviewPath(path, isDir);
+}
+
 // Resample a PNG on disk to exactly cx x cy (GDI+ HighQualityBicubic, alpha kept).
 // Used so preview bitmaps reach DuiLib at their final pixel size and never go
 // through the unfiltered AlphaBlend stretch.
@@ -530,6 +574,25 @@ bool CMainWnd::ResamplePngToSize(const std::wstring& pngPath, int cx, int cy)
         return false;
     }
     return true;
+}
+
+// Pixel box the preview picture is fitted into. It follows the live pane width so
+// dragging the splitter grows/shrinks the picture instead of leaving the thumb at a
+// fixed design size (the box keeps the 408x255 design ratio, capped at PreviewImageH).
+void CMainWnd::PreviewImageBox(int& boxW, int& boxH) const
+{
+    int ctrlW = m_pPreviewImage ? static_cast<int>(m_pPreviewImage->GetWidth()) : 0;
+    if (ctrlW <= 8) ctrlW = DpiScale(UiTokens::PreviewThumbW);
+    const int minW = DpiScale(96);
+    if (ctrlW < minW) ctrlW = minW;
+    if (ctrlW > DpiScale(1400)) ctrlW = DpiScale(1400);
+
+    int h = static_cast<int>(ctrlW * 0.62);
+    const int maxH = DpiScale(UiTokens::PreviewImageH);
+    if (h > maxH) h = maxH;
+    if (h < DpiScale(96)) h = DpiScale(96);
+    boxW = ctrlW;
+    boxH = h;
 }
 
 void CMainWnd::ApplyPreviewImageBk(const std::wstring& pngPath, int imgPxW, int imgPxH, int frameDesignH)
@@ -592,48 +655,23 @@ bool CMainWnd::LoadPreviewImage(const std::wstring& path)
     }
     m_pPreviewImage->SetBkImage(_T(""));
 
-    const int thumbW = DpiScale(UiTokens::PreviewThumbW);
-    const int thumbH = DpiScale(UiTokens::PreviewThumbH);
+    // Render the thumb at the exact size the pane will show: no DuiLib stretch, and the
+    // picture follows the splitter when the pane is dragged wider or narrower.
+    int boxW = 0, boxH = 0;
+    PreviewImageBox(boxW, boxH);
 
     ++m_previewSerial;
     wchar_t leaf[64] = {};
     swprintf_s(leaf, L"preview_%u.png", m_previewSerial);
     m_previewBmp = m_iconCacheDir + leaf;
-    if (!SaveImageThumbnailPng(path, m_previewBmp, thumbW, thumbH)) {
+    if (!SaveImageThumbnailPng(path, m_previewBmp, boxW, boxH)) {
         m_previewBmp.clear();
         return false;
     }
     m_PaintManager.RemoveImage(m_previewBmp.c_str());
 
-    // Adaptive frame height from the letterboxed PNG (transparent letterbox is already
-    // centered). The GDI+ reader must be closed before ApplyPreviewImageBk, which may
-    // rewrite the PNG on disk when it needs a different pixel size.
-    int frameDesignH = UiTokens::PreviewImageH;
-    int bw = thumbW;
-    int bh = thumbH;
-    {
-        using namespace Gdiplus;
-        if (EnsureGdiplus()) {
-            Bitmap bmp(m_previewBmp.c_str());
-            if (bmp.GetLastStatus() == Ok && bmp.GetWidth() > 0 && bmp.GetHeight() > 0) {
-                bw = bmp.GetWidth();
-                bh = bmp.GetHeight();
-            }
-        }
-    }
-    // Content bbox approx: use full PNG size; height scales with AR vs pane width.
-    {
-        const int paneW = DpiScale(UiTokens::PreviewThumbW);
-        const double sc = (std::min)(1.0,
-            (std::min)(static_cast<double>(paneW) / bw,
-                       static_cast<double>(DpiScale(UiTokens::PreviewImageH)) / bh));
-        const int fittedH = (std::max)(DpiScale(48), static_cast<int>(bh * sc));
-        frameDesignH = ::MulDiv(fittedH, 96, (int)m_dpi);
-        if (frameDesignH < 48) frameDesignH = 48;
-        if (frameDesignH > UiTokens::PreviewImageH)
-            frameDesignH = UiTokens::PreviewImageH;
-    }
-    ApplyPreviewImageBk(m_previewBmp, bw, bh, frameDesignH);
+    const int frameDesignH = (std::max)(48, ::MulDiv(boxH, 96, (int)m_dpi));
+    ApplyPreviewImageBk(m_previewBmp, boxW, boxH, frameDesignH);
     return true;
 }
 
@@ -700,6 +738,16 @@ bool CMainWnd::LoadPreviewShellThumbnail(const std::wstring& path, int cx, int c
     int reqH = cy;
     if (reqW < 16) reqW = 16;
     if (reqH < 16) reqH = 16;
+    // Anything bigger than the compact icon box is the picture area: re-fit it to the
+    // live pane so the thumb tracks the splitter.
+    const bool iconSized = (reqW <= DpiScale(UiTokens::PreviewIconPx) + 8
+                            && reqH <= DpiScale(UiTokens::PreviewIconPx) + 8);
+    if (!iconSized) {
+        int bw = 0, bh = 0;
+        PreviewImageBox(bw, bh);
+        reqW = bw;
+        reqH = bh;
+    }
 
     ++m_previewSerial;
     wchar_t leaf[64] = {};
@@ -712,12 +760,10 @@ bool CMainWnd::LoadPreviewShellThumbnail(const std::wstring& path, int cx, int c
     m_PaintManager.RemoveImage(m_previewBmp.c_str());
 
     int imgW = reqW, imgH = reqH;
-    int frameDesignH = UiTokens::PreviewImageH;
     // Compact frame when request is icon-sized (folders / generic).
-    if (reqW <= DpiScale(UiTokens::PreviewIconPx) + 8
-        && reqH <= DpiScale(UiTokens::PreviewIconPx) + 8) {
-        frameDesignH = UiTokens::PreviewIconCompactH;
-    }
+    int frameDesignH = iconSized
+        ? UiTokens::PreviewIconCompactH
+        : (std::max)(48, ::MulDiv(reqH, 96, (int)m_dpi));
     {
         using namespace Gdiplus;
         if (EnsureGdiplus()) {

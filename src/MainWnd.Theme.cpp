@@ -56,7 +56,12 @@ bool CMainWnd::ShouldHideByAttributes(DWORD attrs) const
         return false;
     if (attrs == INVALID_FILE_ATTRIBUTES)
         return false;
-    return (attrs & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) != 0;
+    // Explorer hides HIDDEN items; a SYSTEM-only item stays visible. The "protected
+    // operating system files" option is about files that are hidden *and* system.
+    // Filtering on SYSTEM alone hid the redirected profile folders
+    // (D:\Users\<name>\Documents, Desktop, Downloads ... are ReadOnly|System),
+    // which then looked like an empty folder.
+    return (attrs & FILE_ATTRIBUTE_HIDDEN) != 0;
 }
 
 void CMainWnd::SetShowHidden(bool show)
