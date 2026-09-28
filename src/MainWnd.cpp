@@ -411,6 +411,12 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         SaveQuickAccess();
         SaveSession();
     }
+    if (uMsg == WM_DESTROY) {
+        // DuiLib's WindowImplBase::OnClose only clears bHandled and never posts WM_QUIT,
+        // so without this the process lives on with no window after a close (it also keeps
+        // FastFile.exe locked, which blocks rebuilds). Quit once the window is gone.
+        ::PostQuitMessage(0);
+    }
     if (uMsg == WM_TIMER) {
         if (wParam == kTimerVirtSync) { SyncVisibleIconWindow(false); return 0; }
         if (wParam == kTimerColWidth) { CaptureColumnWidths(); return 0; }
