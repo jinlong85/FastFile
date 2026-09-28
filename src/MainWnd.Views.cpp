@@ -886,9 +886,6 @@ void CMainWnd::FlattenListing(std::vector<DirEntry>& out) const
     BuildDisplayOrder(m_listingDirs, m_listingFiles, out);
 }
 
-// Strict comparison for the active sort column. Folders are deliberately NOT grouped on
-// top (Explorer behaves the same): sorting by 修改日期 must be able to put the newest
-// *files* first, which is the whole point of "find the file I just saved".
 bool CMainWnd::EntryComesBefore(const DirEntry& a, const DirEntry& b) const
 {
     if (IsThisPcPath(m_currentPath)) {
@@ -898,6 +895,11 @@ bool CMainWnd::EntryComesBefore(const DirEntry& a, const DirEntry& b) const
         if (db == L'C') return false;
         return da < db;
     }
+    // Icon / list / tile views keep Explorer's folder grouping (folders first, then files,
+    // each group ordered by the active column). Only the details view sorts strictly by
+    // the clicked column, so "按修改日期降序" can bring the newest files to the top.
+    if (m_viewMode != ViewMode::Details && a.isDir != b.isDir)
+        return a.isDir && !b.isDir;
     int r = 0;
     switch (m_sortColumn) {
     case SortColumn::Size:

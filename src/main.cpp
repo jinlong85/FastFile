@@ -51,7 +51,7 @@ LONG WINAPI FastFileCrashHandler(EXCEPTION_POINTERS* info)
             } else {
                 fwprintf(f, L"module=<unknown>\n");
             }
-            fwprintf(f, L"threads=%lu\n", ::GetCurrentThreadId());
+            fwprintf(f, L"tid=%lu\n", ::GetCurrentThreadId());
             fclose(f);
         }
     }
@@ -125,8 +125,12 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPWSTR /*lpCmdLi
     // MessageBox + ExitProcess(1).
     // Leave path empty so OnCreate builds: GetInstancePath() + GetSkinFolder().
 
-    CMainWnd mainWnd;
-    HWND hWnd = mainWnd.Create(nullptr, _T("FastFile"), UI_WNDSTYLE_FRAME, WS_EX_WINDOWEDGE);
+    // Heap-allocated on purpose and never freed: the thumbnail/copy workers keep a
+    // back-pointer to this object, and joining them on shutdown can take many seconds
+    // (Shell video thumbnails). Letting the object live until the process exits keeps
+    // those detached workers from touching freed memory and keeps the close instant.
+    CMainWnd* mainWnd = new CMainWnd();
+    HWND hWnd = mainWnd->Create(nullptr, _T("FastFile"), UI_WNDSTYLE_FRAME, WS_EX_WINDOWEDGE);
     if (hWnd == nullptr)
     {
         ::MessageBoxW(nullptr,
@@ -135,10 +139,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPWSTR /*lpCmdLi
         ::OleUninitialize();
         return 1;
     }
-    mainWnd.CenterWindow();
-    mainWnd.ShowWindow(true);
-    mainWnd.EnsureDpiLayout();
-    mainWnd.CenterWindow();
+    mainWnd->CenterWindow();
+    mainWnd->ShowWindow(true);
+    mainWnd->EnsureDpiLayout();
+    mainWnd->CenterWindow();
 
     CPaintManagerUI::MessageLoop();
     CPaintManagerUI::Term();

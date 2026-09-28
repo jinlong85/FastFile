@@ -1046,8 +1046,15 @@ void CMainWnd::StopThumbWorker()
 {
     m_thumbStop.store(true);
     m_thumbCv.notify_all();
-    if (m_thumbThread.joinable())
+    if (!m_thumbThread.joinable())
+        return;
+    // Extracting a video/thumbnail through the Shell can block for many seconds. Never
+    // stall the shutdown on it: wait briefly, then let the worker die with the process
+    // (the window object is process-lifetime, see wWinMain).
+    if (::WaitForSingleObject(m_thumbThread.native_handle(), 1200) == WAIT_OBJECT_0)
         m_thumbThread.join();
+    else
+        m_thumbThread.detach();
 }
 
 void CMainWnd::CancelThumbJobs()

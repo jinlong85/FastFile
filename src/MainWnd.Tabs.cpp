@@ -136,7 +136,10 @@ void CMainWnd::CloseTab(int index)
     if (index < 0 || index >= static_cast<int>(m_tabs.size()))
         return;
     if (m_tabs.size() <= 1) {
-        UpdateStatus(_T("至少保留一个标签"));
+        // Last tab: closing it closes the program (like Explorer's tabbed windows).
+        // WM_CLOSE runs the normal shutdown path, so the session is saved on the way out.
+        if (m_hWnd)
+            ::PostMessageW(m_hWnd, WM_CLOSE, 0, 0);
         return;
     }
     m_tabs.erase(m_tabs.begin() + index);

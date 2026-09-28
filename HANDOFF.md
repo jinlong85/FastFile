@@ -225,6 +225,42 @@ powershell -ExecutionPolicy Bypass -File installer\build_installer.ps1
 所以最终改成 csc 方案；`install.cmd/install.ps1/uninstall.ps1` 是那版残留，留着参考。
 
 
+## 2026-09-29 第五批：标签关闭 / 视图排序分组 / 关闭速度
+
+### 关掉最后一个标签 = 关闭程序
+`CloseTab()` 原来在只剩一个标签时只提示「至少保留一个标签」。现在改为
+`PostMessage(WM_CLOSE)`，走正常退出流程（会先保存会话）。
+
+### 文件夹分组只在“非详细信息”视图生效
+`EntryComesBefore()` 里加了条件：
+
+```cpp
+if (m_viewMode != ViewMode::Details && a.isDir != b.isDir)
+    return a.isDir && !b.isDir;      // 图标/列表/平铺：文件夹在前
+```
+
+详细信息视图保持“严格按点击的那一列排序”，所以按修改日期降序时最新的**文件**能排到
+最前面；图标、列表、平铺视图则始终是文件夹在前（跟资源管理器的默认观感一致）。
+
+### 关闭程序要等十几秒（已修）
+症状：点标签的 × 之后要 ~14 秒进程才消失（看起来像“关不掉”）。
+根因：`StopThumbWorker()` 里 `m_thumbThread.join()` 会一直等后台缩略图线程，
+而那个线程可能正卡在 Shell 的视频缩略图提取里（几秒到十几秒）。
+
+修法：
+1. `StopThumbWorker()` 改成最多等 1.2 秒，超时就 `detach()`（进程马上就退，
+   线程跟着进程一起结束）；
+2. `wWinMain` 里的主窗口对象改为 **故意不释放** 的堆对象（注释里写明了原因）——
+   这样被 detach 的缩略图/复制线程即使在退出瞬间还在跑，也不会碰到已析构的对象。
+
+实测：`WM_CLOSE` → 0.2 秒进程退出（之前 13.9 秒）。
+
+### 安装程序版本号
+版本号不再写在 `setup.cs` 里，而是 `build_installer.ps1 -Version x.y.z` 生成
+`installer\version.cs`（`BuildInfo.Version`），所以安装包文件名、注册表
+`DisplayVersion`、安装完成提示三处永远一致。
+
+
 ## 当前顶部结构（自上而下）
 
 1. 系统标题栏（客户端内已去掉「FastFile 文件管理」自定义标题行）

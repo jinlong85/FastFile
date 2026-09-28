@@ -62,9 +62,15 @@ Write-Host "[3/4] 编译安装程序"
 $target = Join-Path $dist ("FastFile-Setup-" + $Version + ".exe")
 if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force }
 
+$versionCs = Join-Path $stage 'version.cs'
+[System.IO.File]::WriteAllText($versionCs,
+    ("internal static class BuildInfo { public const string Version = `"" + $Version + "`"; }`r`n"),
+    (New-Object System.Text.UTF8Encoding($true)))
+
 $cscArgs = @('/nologo', '/target:winexe', '/platform:anycpu', '/optimize+',
              ('/out:"' + $target + '"'),
-             '/reference:System.Windows.Forms.dll') + $resArgs + @(('"' + (Join-Path $root 'installer\setup.cs') + '"'))
+             '/reference:System.Windows.Forms.dll') + $resArgs +
+           @(('"' + (Join-Path $root 'installer\setup.cs') + '"'), ('"' + $versionCs + '"'))
 
 & $csc @cscArgs
 if ($LASTEXITCODE -ne 0) { throw "csc 编译失败，退出码 $LASTEXITCODE" }
