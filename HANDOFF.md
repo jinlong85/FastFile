@@ -1,6 +1,6 @@
 ﻿# FastFile — 交接说明（给后续 AI / 开发者）
 
-更新日期：2026-09-28（Asia/Shanghai）
+更新日期：2026-09-29（Asia/Shanghai）
 
 > 2026-09-28：已纳入 Git 版本管理；原 8000 行单文件 `src\MainWnd.cpp` 已拆分为 14 个编译单元（见「源码结构」）。
 
@@ -54,7 +54,31 @@
 - 工具链：CMake + VS 2022 Build Tools，**Release x64**
 - 改 `main.xml` 后务必重建或确保 `build\Release\skin\` 与源 skin 同步，否则会「加载资源文件失败」或跑旧皮肤
 - 发布后建议：结束 `FastFile` 进程 → 清 `%TEMP%\FastFileIconCache` → 再启动 exe
-- 图标缓存版本：`_v6.png`（HICON → PNG 真透明）；改导出逻辑时升版本并清缓存
+- 图标缓存版本：`_v7.png`（HICON → PNG 真透明）；改导出逻辑时升版本并清缓存
+
+## 图标 / 缩略图渲染管线（2026-09-29 修锯齿）
+
+症状：任何视图的列表图标、以及右侧预览的缩略图，边缘都有锯齿 / 发糊。
+结论：**不是底层（Shell 图标本身清晰），是取图与缩放的渲染问题**。三处原因：
+
+1. **按写死的阈值挑系统图像列表**（旧代码 `cx<=16→SHIL_SMALL /<=32→SHIL_LARGE /
+   <=48→SHIL_EXTRALARGE / else SHIL_JUMBO`）。这些常量对应的 **实际像素**随 DPI 放大，
+   150% 下是 **24 / 48 / 72 / 384**。于是 24px 的槽位拿到 48px 图标、72px 的槽位拿到
+   384px 图标，全部要"硬缩"。现改为遍历四个列表用 `IImageList::GetIconSize()` 读真实
+   尺寸，选"最先能覆盖目标的最小列表"（见 `ExtractShellIconSized`）。
+2. **`DrawIconEx` 缩放不做高质量重采样**（驱动层近似 StretchBlt）。现在
+   `SaveIconToPng` 先按图标**原生尺寸** 1:1 栅格化（`RenderIconToArgbBuffer`），
+   尺寸不一致时交给 GDI+ `HighQualityBicubic`（`ResizeArgbBuffer`）。
+3. **预览窗格让 DuiLib 去缩放**：`bkimage` 由 `AlphaBlend` 绘制，缩放同样无滤波。
+   - 文件夹/通用文件预览原先把 72px 的 PNG 塞进 120px 的框 → **放大**糊掉。现在
+     `LoadPreviewShellIcon` 直接按框的尺寸取图（通常拿到 384px JUMBO，再高质量缩到 120）。
+   - `ApplyPreviewImageBk` 新增兜底：目标尺寸与 PNG 不一致时先 `ResamplePngToSize()`
+     把 PNG 重写成目标像素，再 1:1 贴图。
+
+改这块时的自检：清 `%TEMP%\FastFileIconCache` → 启动 → 看缓存里 PNG 的尺寸分布，
+应当出现 24×24（列表/详情）与 120×120（预览）等**恰好等于目标**的尺寸。
+另外 `PreviewIconCompactH`(80 设计) 与 `PreviewIconPx`(48 设计) 现在只作下限，
+预览小图标实际按 120 物理像素取图。
 
 ## 当前顶部结构（自上而下）
 
@@ -137,6 +161,11 @@
     `m_pFileList->RemoveAll()`（例如切到图标/平铺视图）都会析构它们；后台定时器若再用
     旧指针做虚函数调用就是一次"野调用"崩溃（`0xc0000005`，WER 常报"模块 unknown、
     偏移 0"）。`UpdateDetailsWindow` 里还有一道"指针是否仍属于列表"的校验兜底
+16. **别用 `DrawIconEx`/`AlphaBlend` 当缩放器**：两者都无高质量重采样，小尺寸下明显
+    发糊。取图要挑"真实尺寸"匹配的系统列表，缩放一律走 GDI+ `HighQualityBicubic`
+    （详见「图标 / 缩略图渲染管线」）
+17. **`session.ini` 是 UTF-16LE（带 BOM）**：用别的编码重写会让路径变乱码，程序回落到
+    默认目录。要改会话状态就让它自己写，或用 `[System.Text.Encoding]::Unicode`
 
 ## 崩溃排查流程
 
@@ -169,8 +198,9 @@ dumpbin /DISASM /NOBYTES build\Release\FastFile.exe > disasm.txt
 ## 建议下一轮方向（用户曾提过）
 
 - 继续对齐资源管理器 / 360 密度与图标风格（自有 Shell 图标）
-- 安装包、详情视图虚拟化（当前是分批填充 + 8000 项上限）
-- 预览/工具栏细节打磨
+- 预览窗格继续打磨（视频首帧质量取决于 Shell 缩略图缓存；可考虑自绘取帧）
+- 设置面板（用户明确推迟：等程序成熟后再做"取代资源管理器"）
+- 安装包 / 发布流程
 
 ## 给新 AI 的工作方式
 

@@ -246,6 +246,10 @@ private:
     std::wstring GetShellFileIconBmp(const std::wstring& path, bool isDir, int cx);
     static bool LetterboxHBitmapToPng(HBITMAP hbm, int cx, int cy, const std::wstring& pngPath);
     static bool SaveIconToPng(HICON hIcon, const std::wstring& pngPath, int cx, int cy);
+    // Icon rasterise + resample helpers (no DrawIconEx scaling: unfiltered -> jaggies)
+    static bool RenderIconToArgbBuffer(HICON hIcon, int w, int h, std::vector<BYTE>& out);
+    static bool ResizeArgbBuffer(const std::vector<BYTE>& src, int sw, int sh,
+        int dw, int dh, std::vector<BYTE>& dst);
     static bool SaveImageThumbnailPng(const std::wstring& srcPath, const std::wstring& pngPath, int cx, int cy);
     static bool IsImageExtension(const std::wstring& name);
     static bool IsTextExtension(const std::wstring& name);
@@ -326,6 +330,8 @@ private:
     bool LoadPreviewShellIcon(const std::wstring& path, bool isDir, int iconPx);
     // Adaptive frame + centered Fit bkimage (folders: compact icon area)
     void ApplyPreviewImageBk(const std::wstring& pngPath, int imgPxW, int imgPxH, int frameDesignH);
+    // Rewrite a PNG on disk at the exact draw size so DuiLib never stretches it
+    static bool ResamplePngToSize(const std::wstring& pngPath, int cx, int cy);
     static std::wstring FormatFileTimeLocal(const FILETIME& ft);
     static std::wstring QueryShellTypeName(const std::wstring& path, bool isDir);
     static std::wstring QueryImageDimensions(const std::wstring& path);

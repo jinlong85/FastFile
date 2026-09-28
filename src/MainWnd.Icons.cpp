@@ -94,17 +94,21 @@ void CMainWnd::WipeDirectoryFiles(const std::wstring& dirNoSlash)
     ::FindClose(h);
 }
 
-bool CMainWnd::SaveIconToPng(HICON hIcon, const std::wstring& pngPath, int cx, int cy)
+// Render an HICON 1:1 into a top-down 32bpp BGRA buffer.
+// DrawIconEx *scaling* is unfiltered (the driver does a plain StretchBlt), which is
+// where the jagged list / tile / preview icons came from. So we always rasterise at
+// the icon's own bitmap size and leave any resampling to GDI+ below.
+bool CMainWnd::RenderIconToArgbBuffer(HICON hIcon, int w, int h, std::vector<BYTE>& out)
 {
-    if (!hIcon || cx <= 0 || cy <= 0 || pngPath.empty()) return false;
-    if (!EnsureGdiplus()) return false;
+    out.clear();
+    if (!hIcon || w <= 0 || h <= 0 || w > 8192 || h > 8192) return false;
 
     HDC hdc = ::GetDC(nullptr);
     HDC mem = ::CreateCompatibleDC(hdc);
     BITMAPINFO bi = {};
     bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bi.bmiHeader.biWidth = cx;
-    bi.bmiHeader.biHeight = -cy; // top-down
+    bi.bmiHeader.biWidth = w;
+    bi.bmiHeader.biHeight = -h; // top-down
     bi.bmiHeader.biPlanes = 1;
     bi.bmiHeader.biBitCount = 32;
     bi.bmiHeader.biCompression = BI_RGB;
@@ -118,15 +122,15 @@ bool CMainWnd::SaveIconToPng(HICON hIcon, const std::wstring& pngPath, int cx, i
     }
     HGDIOBJ old = ::SelectObject(mem, dib);
     // Zero-fill; DrawIconEx writes real per-pixel alpha. Do NOT force A=255.
-    ::ZeroMemory(bits, static_cast<size_t>(cx) * static_cast<size_t>(cy) * 4u);
+    ::ZeroMemory(bits, static_cast<size_t>(w) * static_cast<size_t>(h) * 4u);
     ::SetBkMode(mem, TRANSPARENT);
-    ::DrawIconEx(mem, 0, 0, hIcon, cx, cy, 0, nullptr, DI_NORMAL);
+    ::DrawIconEx(mem, 0, 0, hIcon, w, h, 0, nullptr, DI_NORMAL);
 
     // Mask-style icons may leave A=0 on every pixel. Promote colored pixels to
     // opaque only; keep transparent holes (A=0). Never force A=255 on all pixels.
     {
         DWORD* px = static_cast<DWORD*>(bits);
-        const int n = cx * cy;
+        const int n = w * h;
         bool anyAlpha = false;
         for (int i = 0; i < n; ++i) {
             const BYTE a = static_cast<BYTE>((px[i] >> 24) & 0xFFu);
@@ -140,22 +144,104 @@ bool CMainWnd::SaveIconToPng(HICON hIcon, const std::wstring& pngPath, int cx, i
         }
     }
 
+    const size_t bytes = static_cast<size_t>(w) * static_cast<size_t>(h) * 4u;
+    out.assign(static_cast<const BYTE*>(bits), static_cast<const BYTE*>(bits) + bytes);
+
     ::SelectObject(mem, old);
-
-    using namespace Gdiplus;
-    // Bind scan0 so PNG encoder keeps true alpha (DuiLib needs A<255 somewhere for AlphaBlend).
-    Bitmap bmp(cx, cy, cx * 4, PixelFormat32bppARGB, static_cast<BYTE*>(bits));
-    bool ok = false;
-    if (bmp.GetLastStatus() == Ok) {
-        CLSID clsidPng = {};
-        if (GetPngEncoderClsid(&clsidPng))
-            ok = (bmp.Save(pngPath.c_str(), &clsidPng, nullptr) == Ok);
-    }
-
     ::DeleteObject(dib);
     ::DeleteDC(mem);
     ::ReleaseDC(nullptr, hdc);
-    return ok;
+    return true;
+}
+
+// GDI+ HighQualityBicubic resample of a packed top-down 32bpp ARGB buffer.
+bool CMainWnd::ResizeArgbBuffer(const std::vector<BYTE>& src, int sw, int sh,
+    int dw, int dh, std::vector<BYTE>& dst)
+{
+    using namespace Gdiplus;
+    dst.clear();
+    if (sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return false;
+    if (src.size() < static_cast<size_t>(sw) * static_cast<size_t>(sh) * 4u) return false;
+    if (!EnsureGdiplus()) return false;
+
+    Bitmap s(sw, sh, sw * 4, PixelFormat32bppARGB,
+        const_cast<BYTE*>(src.data()));
+    if (s.GetLastStatus() != Ok) return false;
+    Bitmap d(dw, dh, PixelFormat32bppARGB);
+    if (d.GetLastStatus() != Ok) return false;
+
+    {
+        Graphics g(&d);
+        if (g.GetLastStatus() != Ok) return false;
+        g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
+        g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
+        g.SetCompositingMode(CompositingModeSourceCopy);
+        g.SetCompositingQuality(CompositingQualityHighQuality);
+        g.Clear(Color(0, 0, 0, 0));
+        g.DrawImage(&s, Rect(0, 0, dw, dh), 0, 0, sw, sh, UnitPixel);
+    }
+
+    BitmapData bd = {};
+    Rect lockRc(0, 0, dw, dh);
+    if (d.LockBits(&lockRc, ImageLockModeRead, PixelFormat32bppARGB, &bd) != Ok)
+        return false;
+    const BYTE* p = static_cast<const BYTE*>(bd.Scan0);
+    dst.assign(static_cast<size_t>(dw) * static_cast<size_t>(dh) * 4u, 0);
+    for (int y = 0; y < dh; ++y) {
+        ::memcpy(dst.data() + static_cast<size_t>(y) * static_cast<size_t>(dw) * 4u,
+            p + static_cast<ptrdiff_t>(y) * bd.Stride,
+            static_cast<size_t>(dw) * 4u);
+    }
+    d.UnlockBits(&bd);
+    return true;
+}
+
+bool CMainWnd::SaveIconToPng(HICON hIcon, const std::wstring& pngPath, int cx, int cy)
+{
+    if (!hIcon || cx <= 0 || cy <= 0 || pngPath.empty()) return false;
+    using namespace Gdiplus;
+    if (!EnsureGdiplus()) return false;
+
+    // Native size of the icon bitmap. Rendering 1:1 and letting GDI+ resample keeps
+    // edges smooth when the Shell has no image list at exactly the requested size
+    // (e.g. 192px tiles come from the 384px JUMBO list).
+    int natW = cx, natH = cy;
+    {
+        ICONINFO ii = {};
+        if (::GetIconInfo(hIcon, &ii)) {
+            BITMAP bm = {};
+            if (ii.hbmColor && ::GetObject(ii.hbmColor, sizeof(bm), &bm) == sizeof(bm)
+                && bm.bmWidth > 0 && bm.bmHeight > 0) {
+                natW = bm.bmWidth;
+                natH = bm.bmHeight;
+            }
+            if (ii.hbmColor) ::DeleteObject(ii.hbmColor);
+            if (ii.hbmMask) ::DeleteObject(ii.hbmMask);
+        }
+    }
+    if (natW <= 0 || natH <= 0 || natW > 8192 || natH > 8192) {
+        natW = cx;
+        natH = cy;
+    }
+
+    std::vector<BYTE> px;
+    if (!RenderIconToArgbBuffer(hIcon, natW, natH, px)) return false;
+
+    if (natW != cx || natH != cy) {
+        std::vector<BYTE> scaled;
+        if (ResizeArgbBuffer(px, natW, natH, cx, cy, scaled) && !scaled.empty()) {
+            px.swap(scaled);
+        } else if (!RenderIconToArgbBuffer(hIcon, cx, cy, px)) {
+            return false; // fall back to plain DrawIconEx scaling
+        }
+    }
+
+    // Bind scan0 so PNG encoder keeps true alpha (DuiLib needs A<255 somewhere for AlphaBlend).
+    Bitmap bmp(cx, cy, cx * 4, PixelFormat32bppARGB, px.data());
+    if (bmp.GetLastStatus() != Ok) return false;
+    CLSID clsidPng = {};
+    if (!GetPngEncoderClsid(&clsidPng)) return false;
+    return bmp.Save(pngPath.c_str(), &clsidPng, nullptr) == Ok;
 }
 
 bool CMainWnd::SaveImageThumbnailPng(const std::wstring& srcPath, const std::wstring& pngPath, int cx, int cy)
@@ -205,7 +291,7 @@ std::wstring CMainWnd::PeekCachedIconBmp(const std::wstring& path, bool isDir, i
 
     size_t h = std::hash<std::wstring>{}(key);
     wchar_t name[80] = {};
-    swprintf_s(name, L"%08X_%s_%d_v6.png", static_cast<unsigned>(h & 0xFFFFFFFF), isDir ? L"d" : L"f", cx);
+    swprintf_s(name, L"%08X_%s_%d_v7.png", static_cast<unsigned>(h & 0xFFFFFFFF), isDir ? L"d" : L"f", cx);
     std::wstring bmpPath = m_iconCacheDir + name;
     if (::PathFileExistsW(bmpPath.c_str())) {
         std::lock_guard<std::mutex> lock(m_iconCacheMutex);
@@ -233,7 +319,7 @@ std::wstring CMainWnd::GetShellIconBmp(const std::wstring& path, bool isDir, int
 
     size_t h = std::hash<std::wstring>{}(key);
     wchar_t name[80] = {};
-    swprintf_s(name, L"%08X_%s_%d_v6.png", static_cast<unsigned>(h & 0xFFFFFFFF), isDir ? L"d" : L"f", cx);
+    swprintf_s(name, L"%08X_%s_%d_v7.png", static_cast<unsigned>(h & 0xFFFFFFFF), isDir ? L"d" : L"f", cx);
     std::wstring bmpPath = m_iconCacheDir + name;
 
     if (::PathFileExistsW(bmpPath.c_str())) {
@@ -287,7 +373,7 @@ std::wstring CMainWnd::GetShellFileIconBmp(const std::wstring& path, bool isDir,
 
     size_t h = std::hash<std::wstring>{}(key);
     wchar_t name[80] = {};
-    swprintf_s(name, L"%08X_%s_%d_ico_v6.png", static_cast<unsigned>(h & 0xFFFFFFFF), isDir ? L"d" : L"f", cx);
+    swprintf_s(name, L"%08X_%s_%d_ico_v7.png", static_cast<unsigned>(h & 0xFFFFFFFF), isDir ? L"d" : L"f", cx);
     std::wstring bmpPath = m_iconCacheDir + name;
 
     if (::PathFileExistsW(bmpPath.c_str())) {
@@ -371,11 +457,8 @@ bool CMainWnd::ExtractShellItemImage(const std::wstring& path, int cx, int cy, c
 
 bool CMainWnd::ExtractShellIconSized(const std::wstring& path, bool isDir, int cx, const std::wstring& bmpPath)
 {
-    int shil = SHIL_LARGE;
-    if (cx <= 16) shil = SHIL_SMALL;
-    else if (cx <= 32) shil = SHIL_LARGE;
-    else if (cx <= 48) shil = SHIL_EXTRALARGE;
-    else shil = SHIL_JUMBO;
+    if (cx < 8) cx = 8;
+    if (cx > 512) cx = 512;
 
     SHFILEINFOW sfi = {};
     // Prefer real path lookup so Known Folders (Desktop/Documents/Downloads)
@@ -392,12 +475,39 @@ bool CMainWnd::ExtractShellIconSized(const std::wstring& path, bool isDir, int c
         ok = ::SHGetFileInfoW(path.c_str(), attrs, &sfi, sizeof(sfi), flags);
     }
 
-    IImageList* piml = nullptr;
-    HRESULT hr = ::SHGetImageList(shil, IID_IImageList, reinterpret_cast<void**>(&piml));
-    if (SUCCEEDED(hr) && piml) {
+    // Pick the system image list by its *actual* icon size. The old fixed thresholds
+    // (16/32/48/256) grabbed SHIL_LARGE - 48px at 150% DPI - for a 24px slot, and SHIL_JUMBO
+    // (384px) for a 72px slot, so every icon was squashed by DrawIconEx without filtering.
+    // The real sizes scale with DPI (24 / 48 / 72 / 384 here), so an exact match usually
+    // exists and no resampling is needed at all.
+    static const int kLists[] = { SHIL_SMALL, SHIL_LARGE, SHIL_EXTRALARGE, SHIL_JUMBO };
+    IImageList* best = nullptr;
+    int bestSize = 0;
+    for (int shil : kLists) {
+        IImageList* piml = nullptr;
+        if (FAILED(::SHGetImageList(shil, IID_IImageList, reinterpret_cast<void**>(&piml))) || !piml)
+            continue;
+        int w = 0, h = 0;
+        if (FAILED(piml->GetIconSize(&w, &h)) || w <= 0) {
+            piml->Release();
+            continue;
+        }
+        const bool better = (best == nullptr)
+            || (bestSize < cx && w > bestSize)                 // grow towards the target size
+            || (w >= cx && (bestSize < cx || w < bestSize));   // then the smallest that covers it
+        if (better) {
+            if (best) best->Release();
+            best = piml;
+            bestSize = w;
+        } else {
+            piml->Release();
+        }
+    }
+
+    if (best) {
         HICON hIcon = nullptr;
-        hr = piml->GetIcon(sfi.iIcon, ILD_TRANSPARENT, &hIcon);
-        piml->Release();
+        HRESULT hr = best->GetIcon(sfi.iIcon, ILD_TRANSPARENT, &hIcon);
+        best->Release();
         if (SUCCEEDED(hr) && hIcon) {
             bool saved = SaveIconToPng(hIcon, bmpPath, cx, cx);
             ::DestroyIcon(hIcon);
@@ -616,7 +726,7 @@ std::wstring CMainWnd::GetStockIconBmp(int siid, int cx)
 
     size_t h = std::hash<std::wstring>{}(key);
     wchar_t name[80] = {};
-    swprintf_s(name, L"stk_%08X_%d_%d_v6.png", static_cast<unsigned>(h & 0xFFFFFFFFu), siid, cx);
+    swprintf_s(name, L"stk_%08X_%d_%d_v7.png", static_cast<unsigned>(h & 0xFFFFFFFFu), siid, cx);
     std::wstring bmpPath = m_iconCacheDir + name;
     if (::PathFileExistsW(bmpPath.c_str())) {
         std::lock_guard<std::mutex> lock(m_iconCacheMutex);
@@ -649,7 +759,7 @@ std::wstring CMainWnd::GetModuleIconBmp(const wchar_t* moduleFile, int index, in
 
     size_t h = std::hash<std::wstring>{}(key);
     wchar_t name[96] = {};
-    swprintf_s(name, L"mod_%08X_%d_%d_v6.png", static_cast<unsigned>(h & 0xFFFFFFFFu), index, cx);
+    swprintf_s(name, L"mod_%08X_%d_%d_v7.png", static_cast<unsigned>(h & 0xFFFFFFFFu), index, cx);
     std::wstring bmpPath = m_iconCacheDir + name;
     if (::PathFileExistsW(bmpPath.c_str())) {
         std::lock_guard<std::mutex> lock(m_iconCacheMutex);

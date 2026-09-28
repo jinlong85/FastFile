@@ -485,6 +485,53 @@ void CMainWnd::UpdatePreviewPath(const std::wstring& path, bool isDir)
     if (m_pPreviewText) m_pPreviewText->SetText(_T("暂不支持该类型预览"));
 }
 
+// Resample a PNG on disk to exactly cx x cy (GDI+ HighQualityBicubic, alpha kept).
+// Used so preview bitmaps reach DuiLib at their final pixel size and never go
+// through the unfiltered AlphaBlend stretch.
+bool CMainWnd::ResamplePngToSize(const std::wstring& pngPath, int cx, int cy)
+{
+    if (pngPath.empty() || cx <= 0 || cy <= 0 || cx > 4096 || cy > 4096) return false;
+    using namespace Gdiplus;
+    if (!EnsureGdiplus()) return false;
+
+    const std::wstring tmp = pngPath + L".rs.tmp";
+    bool written = false;
+    {
+        Bitmap src(pngPath.c_str());
+        if (src.GetLastStatus() != Ok) return false;
+        const int sw = src.GetWidth();
+        const int sh = src.GetHeight();
+        if (sw <= 0 || sh <= 0) return false;
+        if (sw == cx && sh == cy) return true;
+
+        Bitmap dst(cx, cy, PixelFormat32bppARGB);
+        if (dst.GetLastStatus() != Ok) return false;
+        {
+            Graphics g(&dst);
+            if (g.GetLastStatus() != Ok) return false;
+            g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
+            g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
+            g.SetCompositingQuality(CompositingQualityHighQuality);
+            g.Clear(Color(0, 0, 0, 0));
+            g.DrawImage(&src, Rect(0, 0, cx, cy), 0, 0, sw, sh, UnitPixel);
+        }
+        CLSID clsidPng = {};
+        if (!GetPngEncoderClsid(&clsidPng)) return false;
+        ::DeleteFileW(tmp.c_str());
+        written = (dst.Save(tmp.c_str(), &clsidPng, nullptr) == Ok);
+    }
+    if (!written) return false;
+
+    // Replace atomically-ish: the GDI+ reader above is closed by now, so the
+    // original can be swapped out without leaving a stray temp file behind.
+    ::DeleteFileW(pngPath.c_str());
+    if (!::MoveFileW(tmp.c_str(), pngPath.c_str())) {
+        ::DeleteFileW(tmp.c_str());
+        return false;
+    }
+    return true;
+}
+
 void CMainWnd::ApplyPreviewImageBk(const std::wstring& pngPath, int imgPxW, int imgPxH, int frameDesignH)
 {
     if (!m_pPreviewImage || pngPath.empty() || imgPxW <= 0 || imgPxH <= 0)
@@ -511,9 +558,21 @@ void CMainWnd::ApplyPreviewImageBk(const std::wstring& pngPath, int imgPxW, int 
     if (ox < 0) ox = 0;
     if (oy < 0) oy = 0;
 
+    // DuiLib blits bkimage with AlphaBlend, whose scaling is unfiltered, so any
+    // preview PNG that did not match its destination pixel-exactly came out soft or
+    // aliased. Resample once (GDI+ HighQualityBicubic) to the exact draw size and
+    // then blit 1:1.
+    int drawW = imgPxW;
+    int drawH = imgPxH;
+    if ((dw != imgPxW || dh != imgPxH) && ResamplePngToSize(pngPath, dw, dh)) {
+        drawW = dw;
+        drawH = dh;
+        m_PaintManager.RemoveImage(pngPath.c_str());
+    }
+
     CDuiString img;
     img.Format(_T("file='%s' dest='%d,%d,%d,%d' source='0,0,%d,%d'"),
-        pngPath.c_str(), ox, oy, ox + dw, oy + dh, imgPxW, imgPxH);
+        pngPath.c_str(), ox, oy, ox + dw, oy + dh, drawW, drawH);
     m_pPreviewImage->SetBkImage(img.GetData());
     m_pPreviewImage->Invalidate();
     if (m_pPreviewPane)
@@ -546,33 +605,35 @@ bool CMainWnd::LoadPreviewImage(const std::wstring& path)
     }
     m_PaintManager.RemoveImage(m_previewBmp.c_str());
 
-    // Adaptive frame height from letterboxed PNG (transparent letterbox already centered).
+    // Adaptive frame height from the letterboxed PNG (transparent letterbox is already
+    // centered). The GDI+ reader must be closed before ApplyPreviewImageBk, which may
+    // rewrite the PNG on disk when it needs a different pixel size.
     int frameDesignH = UiTokens::PreviewImageH;
+    int bw = thumbW;
+    int bh = thumbH;
     {
         using namespace Gdiplus;
         if (EnsureGdiplus()) {
             Bitmap bmp(m_previewBmp.c_str());
-            if (bmp.GetLastStatus() == Ok) {
-                const int bw = bmp.GetWidth();
-                const int bh = bmp.GetHeight();
-                // Content bbox approx: use full PNG size; height scales with AR vs pane width.
-                if (bw > 0 && bh > 0) {
-                    const int paneW = DpiScale(UiTokens::PreviewThumbW);
-                    const double sc = (std::min)(1.0,
-                        (std::min)(static_cast<double>(paneW) / bw,
-                                   static_cast<double>(DpiScale(UiTokens::PreviewImageH)) / bh));
-                    const int fittedH = (std::max)(DpiScale(48), static_cast<int>(bh * sc));
-                    frameDesignH = ::MulDiv(fittedH, 96, (int)m_dpi);
-                    if (frameDesignH < 48) frameDesignH = 48;
-                    if (frameDesignH > UiTokens::PreviewImageH)
-                        frameDesignH = UiTokens::PreviewImageH;
-                    ApplyPreviewImageBk(m_previewBmp, bw, bh, frameDesignH);
-                    return true;
-                }
+            if (bmp.GetLastStatus() == Ok && bmp.GetWidth() > 0 && bmp.GetHeight() > 0) {
+                bw = bmp.GetWidth();
+                bh = bmp.GetHeight();
             }
         }
     }
-    ApplyPreviewImageBk(m_previewBmp, thumbW, thumbH, frameDesignH);
+    // Content bbox approx: use full PNG size; height scales with AR vs pane width.
+    {
+        const int paneW = DpiScale(UiTokens::PreviewThumbW);
+        const double sc = (std::min)(1.0,
+            (std::min)(static_cast<double>(paneW) / bw,
+                       static_cast<double>(DpiScale(UiTokens::PreviewImageH)) / bh));
+        const int fittedH = (std::max)(DpiScale(48), static_cast<int>(bh * sc));
+        frameDesignH = ::MulDiv(fittedH, 96, (int)m_dpi);
+        if (frameDesignH < 48) frameDesignH = 48;
+        if (frameDesignH > UiTokens::PreviewImageH)
+            frameDesignH = UiTokens::PreviewImageH;
+    }
+    ApplyPreviewImageBk(m_previewBmp, bw, bh, frameDesignH);
     return true;
 }
 
@@ -586,9 +647,17 @@ bool CMainWnd::LoadPreviewShellIcon(const std::wstring& path, bool isDir, int ic
     }
     m_pPreviewImage->SetBkImage(_T(""));
 
-    int ip = iconPx;
+    // Request the icon at the exact size the compact frame will show it. Asking for a
+    // smaller PNG left DuiLib upscaling it with AlphaBlend (unfiltered) — that is why
+    // the folder preview looked mushy. Worst case the Shell hands back the 384px JUMBO
+    // icon and we downscale it once with GDI+ HighQualityBicubic.
+    const int boxH = DpiScale(UiTokens::PreviewIconCompactH);
+    int ctrlW = m_pPreviewImage->GetWidth();
+    if (ctrlW <= 8) ctrlW = DpiScale(UiTokens::PreviewThumbW);
+    int ip = (std::min)(ctrlW, boxH);
+    if (ip < iconPx) ip = iconPx;
     if (ip < 16) ip = 16;
-    if (ip > 256) ip = 256;
+    if (ip > 384) ip = 384;
 
     ++m_previewSerial;
     wchar_t leaf[64] = {};
