@@ -115,6 +115,9 @@ private:
     };
 
     void NavigateTo(const std::wstring& path, bool addToHistory = true);
+    // Real work for NavigateTo(); always runs from the deferred message, never inline
+    // inside a control's own click notification.
+    void NavigateToNow(const std::wstring& path, bool addToHistory);
     void RefreshListing();
     void GoUp();
     void GoBack();
@@ -698,6 +701,7 @@ private:
     static constexpr UINT kMsgThumbReady = WM_USER + 103;
     static constexpr UINT kMsgVirtSync = WM_USER + 104;
     static constexpr UINT kMsgDetailsFill = WM_USER + 105;
+    static constexpr UINT kMsgDeferredNav = WM_USER + 106;
     static constexpr int kDetailsVirtOverscan = 8;
     static constexpr UINT_PTR kTimerDetailsSync = 0x4603;
     static constexpr int kUiBatchSize = 40;

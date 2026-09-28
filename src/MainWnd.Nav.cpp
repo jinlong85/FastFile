@@ -13,7 +13,22 @@ ULONGLONG FileTimeToU64(const FILETIME& ft)
 
 } // namespace
 
+// Navigation rebuilds the controls that dispatch the click that requested it (tile, list
+// row, tab, breadcrumb segment, tree node). DuiLib keeps touching such a button *after* its
+// own click notification returns (clearing UISTATE_PUSHED calls Invalidate), so deleting the
+// control inline crashes on freed memory. Queue it and let the current message finish first.
 void CMainWnd::NavigateTo(const std::wstring& path, bool addToHistory)
+{
+    if (!m_hWnd || path.empty())
+        return;
+    auto* pending = new (std::nothrow) std::pair<std::wstring, bool>(path, addToHistory);
+    if (!pending)
+        return;
+    if (!::PostMessageW(m_hWnd, kMsgDeferredNav, 0, reinterpret_cast<LPARAM>(pending)))
+        delete pending;
+}
+
+void CMainWnd::NavigateToNow(const std::wstring& path, bool addToHistory)
 {
     std::wstring raw = path;
     while (!raw.empty() && (raw.front() == L' ' || raw.front() == L'"'))

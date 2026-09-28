@@ -287,6 +287,44 @@ if (m_viewMode != ViewMode::Details && a.isDir != b.isDir)
 不再回到上次的目录；状态栏提示也从「已恢复上次会话」改成「已就绪」。
 
 
+## 2026-09-29 第七批：进入目录时的崩溃（UAF）+ 换图标
+
+### 崩溃：`CControlUI::Invalidate` 访问违例（0xC0000005）
+用户报「进入 `C:\Users\JINLONG\图片\GIRLS\刘亦菲`（233 项）时崩溃」。崩溃日志
+（`%LOCALAPPDATA%\FastFile\last_crash.txt`）给出 `rva=0x5FDFB`，配合 `FastFile.map`
+定位到 DuiLib `CControlUI::Invalidate`；用 dumpbin 反汇编该函数，`+0x1B` 正好是
+**第一条虚函数调用**（`call qword ptr [rax+1B8h]`），说明 `this` 指向的内存已不是控件
+——典型的释放后使用（野指针）。
+
+根因：**导航会销毁正在派发点击事件的那个控件**。双击目录项/面包屑/树节点/标签 →
+事件处理器里直接 `NavigateTo()` → `RefreshListing()` → `RemoveAll()` 把当前控件
+（tile / 列表行 / 标签按钮 / 面包屑段 / 树节点）删掉；事件通知返回后 DuiLib 还要继续
+操作同一个按钮（清 `UISTATE_PUSHED` → `Invalidate()`）→ 崩溃。项目越大、重建越重，
+被释放的内存越容易被新控件复用，所以表现为「偶发」。
+
+修法：`NavigateTo()` 不再同步执行，而是投递 `kMsgDeferredNav`（payload 为
+`std::pair<std::wstring,bool>`），真正干活的 `NavigateToNow()` 在下一轮消息里跑。
+所有入口（双击、面包屑、树、标签、菜单、地址栏、前进后退）自动受益。
+
+### 崩溃日志增强
+除了异常码 / RVA / 模块 / 线程，现在还写：
+
+- `main_tid`：主线程 ID，用来区分 UI 线程崩溃还是后台缩略图线程；
+- `stack00..stack39`：`模块名+0x偏移` 的调用栈，配合 `FastFile.map` 可直接反查出
+  **调用者函数**（Release 下可能被优化掉几帧，但最近的调用者都在）。
+
+排查套路：`Select-String -Path build\Release\FastFile.map -Pattern '0000000140XXXXXXX'`
+（把 stack 里的 FastFile.exe+0x… 加上 0x140000000）。
+
+### 图标（第二次更换）
+换成 `Cornmanthe3rd-Plex-System-hdd-windows.ico`（9 档：16/24/32/48/64/72/96/128/256，
+全 32bpp）。CMake 里给 `res/FastFile.rc` 加了 `OBJECT_DEPENDS res/FastFile.ico`，
+否则换图标后 rc 不会重编、exe 里还是旧图标。
+**注意**：`Copy-Item`/`File.Copy` 会保留源文件的修改时间，若把图标换成本身时间戳更旧的
+文件，依赖检查仍会认为不需要重编 —— 换完图标 `touch` 一下 `res\FastFile.ico` 或删掉
+`build\Release\FastFile.rc.res` 再构建。
+
+
 ## 当前顶部结构（自上而下）
 
 1. 系统标题栏（客户端内已去掉「FastFile 文件管理」自定义标题行）

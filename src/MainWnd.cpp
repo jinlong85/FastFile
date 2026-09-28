@@ -899,6 +899,17 @@ LRESULT CMainWnd::HandleCustomMessage(UINT uMsg, WPARAM wParam, LPARAM lParam, B
         OnThumbReadyMessage(lParam);
         return 0;
     }
+    if (uMsg == kMsgDeferredNav) {
+        bHandled = TRUE;
+        auto* pending = reinterpret_cast<std::pair<std::wstring, bool>*>(lParam);
+        if (pending) {
+            const std::wstring path = pending->first;
+            const bool addToHistory = pending->second;
+            delete pending;                 // free before navigating: it can post more work
+            NavigateToNow(path, addToHistory);
+        }
+        return 0;
+    }
     return WindowImplBase::HandleCustomMessage(uMsg, wParam, lParam, bHandled);
 }
 

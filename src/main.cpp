@@ -6,6 +6,7 @@
 
 #include <ObjBase.h>
 #include <shlobj.h>   // SHGetFolderPathW / CSIDL_LOCAL_APPDATA for the crash report
+#include <shlwapi.h>  // PathFindFileNameW (crash-report stack frames)
 
 #ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
 #define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((DPI_AWARENESS_CONTEXT)-4)
@@ -18,6 +19,8 @@ namespace {
 // Must match CMainWnd::kMsgReactivate / GetWindowClassName()
 constexpr UINT kMsgReactivate = WM_USER + 100;
 constexpr wchar_t kMainWndClass[] = L"FastFile_MainWnd";
+// Filled in by wWinMain so a crash report can tell UI crashes from worker-thread ones.
+DWORD g_mainThreadId = 0;
 
 // Writes %LOCALAPPDATA%\FastFile\last_crash.txt with the exception code and the faulting
 // address *relative to its module*. FastFile.map (next to the exe, produced by the linker's
@@ -52,6 +55,25 @@ LONG WINAPI FastFileCrashHandler(EXCEPTION_POINTERS* info)
                 fwprintf(f, L"module=<unknown>\n");
             }
             fwprintf(f, L"tid=%lu\n", ::GetCurrentThreadId());
+            fwprintf(f, L"main_tid=%lu\n", g_mainThreadId);
+
+            // Walk the faulting thread's stack so FastFile.map can resolve the call chain
+            // (release builds may drop frames, but the immediate caller is what matters).
+            void* frames[40] = {};
+            const USHORT n = ::RtlCaptureStackBackTrace(0, 40, frames, nullptr);
+            for (USHORT i = 0; i < n; ++i) {
+                HMODULE frameMod = nullptr;
+                if (!::GetModuleHandleExW(
+                        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                        reinterpret_cast<LPCWSTR>(frames[i]), &frameMod) || !frameMod)
+                    continue;
+                wchar_t framePath[MAX_PATH] = {};
+                ::GetModuleFileNameW(frameMod, framePath, MAX_PATH);
+                const unsigned long long frameRva =
+                    reinterpret_cast<ULONGLONG>(frames[i]) - reinterpret_cast<ULONGLONG>(frameMod);
+                fwprintf(f, L"stack%02u=%s+0x%llX\n", static_cast<unsigned>(i),
+                    ::PathFindFileNameW(framePath), frameRva);
+            }
             fclose(f);
         }
     }
@@ -106,6 +128,7 @@ void EnablePerMonitorDpiAwareness()
 
 int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPWSTR /*lpCmdLine*/, int /*nShow*/)
 {
+    g_mainThreadId = ::GetCurrentThreadId();
     EnablePerMonitorDpiAwareness();
     ::SetUnhandledExceptionFilter(FastFileCrashHandler);
 

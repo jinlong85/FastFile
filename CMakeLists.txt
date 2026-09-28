@@ -69,6 +69,10 @@ add_executable(FastFile WIN32
 # App icon (res\FastFile.rc embeds res\FastFile.ico as resource id 1)
 if(WIN32)
   target_sources(FastFile PRIVATE res/FastFile.rc)
+  # rc.exe resolves the .ico at compile time, but MSBuild only watches the .rc file —
+  # without this, swapping the icon would silently keep the old one in the exe.
+  set_property(SOURCE res/FastFile.rc APPEND PROPERTY
+               OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/res/FastFile.ico")
 endif()
 target_link_libraries(FastFile PRIVATE duilib shell32 shlwapi propsys)
 if(MSVC)
