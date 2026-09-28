@@ -133,6 +133,34 @@
     （入口索引）里，项索引只在可视窗口内有效。改这块要同步检查：`CollectSelectedItems`、
     `HasFileSelection`、`ClearFileSelection`、`SelectAllItems`、`ITEMCLICK/ITEMSELECT`
     与方向键处理（`DetailsMoveCursor`）
+15. **清空列表前必须 `ResetDetailsVirtualState()`**：详情视图缓存了占位行指针，任何
+    `m_pFileList->RemoveAll()`（例如切到图标/平铺视图）都会析构它们；后台定时器若再用
+    旧指针做虚函数调用就是一次"野调用"崩溃（`0xc0000005`，WER 常报"模块 unknown、
+    偏移 0"）。`UpdateDetailsWindow` 里还有一道"指针是否仍属于列表"的校验兜底
+
+## 崩溃排查流程
+
+已内置自诊断，定位一次崩溃只需一分钟：
+
+1. 程序崩了以后看 `%LOCALAPPDATA%\FastFile\last_crash.txt`，里面有异常码、出错地址
+   以及它相对哪个模块的 **RVA**；
+2. 用构建时生成的 `build\Release\FastFile.map` 反查该 RVA：
+
+```powershell
+Select-String -Path build\Release\FastFile.map -Pattern '0001:000<RVA>' |
+  Select-Object -First 1
+```
+
+   映射行格式：`0001:00034120 ?RebuildDetailsVirtual@CMainWnd@@AEAAXXZ 0000000140035120 f
+   MainWnd.Views.obj`，最后一项直接给出源文件。
+
+   若 `last_crash.txt` 显示 `<unknown>`，说明是跳转到了无效地址（典型是已释放对象被
+   再次调用），此时看 WER 里最近一次 `Application Error` 事件的偏移，或用 dumpbin
+   反汇编该 RVA 附近，看它是"对谁的虚函数调用"：
+
+```powershell
+dumpbin /DISASM /NOBYTES build\Release\FastFile.exe > disasm.txt
+```
 
 ## 会话/配置文件（通常在 `%APPDATA%\FastFile\`）
 

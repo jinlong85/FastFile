@@ -350,6 +350,9 @@ private:
     // items: item indices shift as the window moves, entry indices do not.
     void RebuildDetailsVirtual();
     void UpdateDetailsWindow(bool force);
+    // Drops every cached pointer into the row pool. MUST run before anything clears the list
+    // (RemoveAll) - the spacers are owned by the list and would otherwise dangle.
+    void ResetDetailsVirtualState();
     void BindDetailsRow(CListContainerElementUI* row, int entryIdx);
     int DetailsEntryFromItem(CControlUI* item) const;
     void ApplyDetailsSelectionVisuals();

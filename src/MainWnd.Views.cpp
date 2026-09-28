@@ -796,6 +796,20 @@ void CMainWnd::StopDetailsFill()
     m_detailsFillNext = 0;
 }
 
+void CMainWnd::ResetDetailsVirtualState()
+{
+    if (m_hWnd)
+        ::KillTimer(m_hWnd, kTimerDetailsSync);
+    m_detailsSpacerTop = nullptr;
+    m_detailsSpacerBottom = nullptr;
+    m_detailsPoolRows = 0;
+    m_detailsFirst = 0;
+    m_detailsCur = -1;
+    m_detailsAnchor = -1;
+    m_detailsEntries.clear();
+    m_detailsSel.clear();
+}
+
 // ---- Virtual details view -------------------------------------------------------------
 // The list keeps [top spacer][row pool][bottom spacer]. Spacers carry the height of the rows
 // that are not materialised, so the scrollbar stays honest while only the visible window
@@ -805,8 +819,7 @@ void CMainWnd::RebuildDetailsVirtual()
 {
     if (!m_pFileList) return;
     StopDetailsFill();
-    if (m_hWnd)
-        ::KillTimer(m_hWnd, kTimerDetailsSync);
+    ResetDetailsVirtualState();
 
     m_detailsEntries.clear();
     m_detailsEntries.reserve(m_listingDirs.size() + m_listingFiles.size());
@@ -889,6 +902,16 @@ void CMainWnd::UpdateDetailsWindow(bool force)
 {
     if (!m_pFileList || m_detailsPoolRows <= 0 || m_detailsEntries.empty())
         return;
+    // The cached spacer pointers are only valid while the list still owns them. Compare them
+    // (never dereference) first: if another path rebuilt the list, the pool is gone and using
+    // those pointers would call into freed controls.
+    const int itemCount = m_pFileList->GetCount();
+    if (itemCount != m_detailsPoolRows + 2
+        || m_pFileList->GetItemAt(0) != m_detailsSpacerTop
+        || m_pFileList->GetItemAt(itemCount - 1) != m_detailsSpacerBottom) {
+        ResetDetailsVirtualState();
+        return;
+    }
     const int rowH = (std::max)(1, DpiScale(UiTokens::DetailsRowH));
     const int total = static_cast<int>(m_detailsEntries.size());
 
@@ -1027,6 +1050,9 @@ void CMainWnd::StartDetailsProgressiveFill(const std::vector<DirEntry>& dirs,
     // views still create one control per item, so the queue is bounded by kMaxListItems and
     // filled in batches to keep the window responsive.
     StopDetailsFill();
+    // The list is about to lose its items: drop the cached spacers/entries first, otherwise
+    // the details timer or a scroll notify would call into freed controls.
+    ResetDetailsVirtualState();
     if (!m_pFileList || !m_pIconTiles) return;
     m_pFileList->RemoveAll();
     m_pFileList->SetVisible(false);

@@ -5,6 +5,7 @@
 #include "MainWnd.h"
 
 #include <ObjBase.h>
+#include <shlobj.h>   // SHGetFolderPathW / CSIDL_LOCAL_APPDATA for the crash report
 
 #ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
 #define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((DPI_AWARENESS_CONTEXT)-4)
@@ -17,6 +18,45 @@ namespace {
 // Must match CMainWnd::kMsgReactivate / GetWindowClassName()
 constexpr UINT kMsgReactivate = WM_USER + 100;
 constexpr wchar_t kMainWndClass[] = L"FastFile_MainWnd";
+
+// Writes %LOCALAPPDATA%\FastFile\last_crash.txt with the exception code and the faulting
+// address *relative to its module*. FastFile.map (next to the exe, produced by the linker's
+// /MAP) then resolves that RVA to a function without needing a debugger on this machine.
+LONG WINAPI FastFileCrashHandler(EXCEPTION_POINTERS* info)
+{
+    if (!info || !info->ExceptionRecord)
+        return EXCEPTION_EXECUTE_HANDLER;
+    const EXCEPTION_RECORD* rec = info->ExceptionRecord;
+
+    wchar_t dir[MAX_PATH] = {};
+    if (::SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, dir) == S_OK
+        && dir[0] != L'\0') {
+        std::wstring path = std::wstring(dir) + L"\\FastFile";
+        ::CreateDirectoryW(path.c_str(), nullptr);
+        path += L"\\last_crash.txt";
+        FILE* f = nullptr;
+        if (_wfopen_s(&f, path.c_str(), L"w") == 0 && f) {
+            fwprintf(f, L"exception=0x%08X\n", static_cast<unsigned>(rec->ExceptionCode));
+            fwprintf(f, L"address=0x%016llX\n",
+                static_cast<unsigned long long>(reinterpret_cast<ULONGLONG>(rec->ExceptionAddress)));
+            HMODULE mod = nullptr;
+            if (::GetModuleHandleExW(
+                    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                    reinterpret_cast<LPCWSTR>(rec->ExceptionAddress), &mod) && mod) {
+                wchar_t modPath[MAX_PATH] = {};
+                ::GetModuleFileNameW(mod, modPath, MAX_PATH);
+                const unsigned long long rva =
+                    reinterpret_cast<ULONGLONG>(rec->ExceptionAddress) - reinterpret_cast<ULONGLONG>(mod);
+                fwprintf(f, L"module=%s\nrva=0x%llX\n", modPath, rva);
+            } else {
+                fwprintf(f, L"module=<unknown>\n");
+            }
+            fwprintf(f, L"threads=%lu\n", ::GetCurrentThreadId());
+            fclose(f);
+        }
+    }
+    return EXCEPTION_EXECUTE_HANDLER;
+}
 
 bool ActivateExistingInstance()
 {
@@ -67,6 +107,7 @@ void EnablePerMonitorDpiAwareness()
 int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPWSTR /*lpCmdLine*/, int /*nShow*/)
 {
     EnablePerMonitorDpiAwareness();
+    ::SetUnhandledExceptionFilter(FastFileCrashHandler);
 
     // Single-instance: tray / second launch should restore the existing main HWND
     if (ActivateExistingInstance())

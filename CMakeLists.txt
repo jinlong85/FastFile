@@ -68,6 +68,8 @@ add_executable(FastFile WIN32
 target_link_libraries(FastFile PRIVATE duilib shell32 shlwapi propsys)
 if(MSVC)
   target_compile_options(FastFile PRIVATE /W3 /utf-8)
+  # Emit FastFile.map: a crash report gives an RVA, the map turns it into a function name.
+  target_link_options(FastFile PRIVATE /MAP)
   set_target_properties(FastFile PROPERTIES
     VS_DPI_AWARE "PerMonitor"
     VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:FastFile>"

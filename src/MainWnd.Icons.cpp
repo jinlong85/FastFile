@@ -33,33 +33,46 @@ bool CMainWnd::IsVideoExtension(const std::wstring& name)
 bool CMainWnd::EnsureGdiplus()
 {
     using namespace Gdiplus;
+    // Called from the UI thread *and* the thumbnail worker, so the one-time startup has to be
+    // thread-safe: two racing GdiplusStartup calls leave GDI+ with a clobbered token and a
+    // half-initialised state, which showed up as rare access violations inside GDI+.
+    static std::once_flag once;
     static bool ready = false;
-    static ULONG_PTR token = 0;
-    if (ready) return true;
-    GdiplusStartupInput input;
-    if (GdiplusStartup(&token, &input, nullptr) != Ok)
-        return false;
-    ready = true;
-    return true;
+    std::call_once(once, [] {
+        GdiplusStartupInput input;
+        ULONG_PTR token = 0;
+        ready = (GdiplusStartup(&token, &input, nullptr) == Ok);
+    });
+    return ready;
 }
 
 bool CMainWnd::GetPngEncoderClsid(CLSID* pClsid)
 {
     if (!pClsid) return false;
     using namespace Gdiplus;
-    UINT num = 0, size = 0;
-    GetImageEncodersSize(&num, &size);
-    if (size == 0) return false;
-    std::vector<BYTE> buf(size);
-    auto* info = reinterpret_cast<ImageCodecInfo*>(buf.data());
-    GetImageEncoders(num, size, info);
-    for (UINT i = 0; i < num; ++i) {
-        if (wcscmp(info[i].MimeType, L"image/png") == 0) {
-            *pClsid = info[i].Clsid;
-            return true;
+    // Both the UI thread and the thumbnail worker save PNGs, so resolve the encoder once
+    // instead of enumerating GDI+ encoders (which is not cheap and is shared state) per save.
+    static std::once_flag once;
+    static CLSID png = {};
+    static bool found = false;
+    std::call_once(once, [] {
+        UINT num = 0, size = 0;
+        GetImageEncodersSize(&num, &size);
+        if (size == 0) return;
+        std::vector<BYTE> buf(size);
+        auto* info = reinterpret_cast<ImageCodecInfo*>(buf.data());
+        GetImageEncoders(num, size, info);
+        for (UINT i = 0; i < num; ++i) {
+            if (wcscmp(info[i].MimeType, L"image/png") == 0) {
+                png = info[i].Clsid;
+                found = true;
+                return;
+            }
         }
-    }
-    return false;
+    });
+    if (!found) return false;
+    *pClsid = png;
+    return true;
 }
 
 void CMainWnd::WipeDirectoryFiles(const std::wstring& dirNoSlash)
@@ -915,6 +928,15 @@ void CMainWnd::ThumbWorkerMain(CMainWnd* self)
         if (job.generation != self->m_thumbGeneration.load())
             continue;
 
+        // Shell handed us an STA thread; without draining its message queue an out-of-proc
+        // thumbnail handler can deadlock or call back into a queue nobody services.
+        {
+            MSG msg = {};
+            while (::PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                ::TranslateMessage(&msg);
+                ::DispatchMessageW(&msg);
+            }
+        }
         std::wstring bmp = self->GetShellIconBmp(job.path, job.isDir, job.iconPx);
         if (bmp.empty())
             continue;
