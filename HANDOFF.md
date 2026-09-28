@@ -366,6 +366,34 @@ SHGetDesktopFolder → IShellFolder::BindToObject
 那个隐藏的 Shell 视图而不是 FastFile 自己）。
 
 
+## 2026-09-29 第九批：驱动器右键走原生菜单 + 分隔线合并
+
+### 磁盘根目录右键没有走 Shell
+症状：在「此电脑」里右键某个盘（如 Ventoy (I:)），弹出的是 FastFile 自己的兜底菜单
+（打开/复制/删除到回收站/重命名/刷新/显示隐藏的项目），而不是 Windows 原生菜单。
+
+根因：`ShowShellContextMenu()` 只会「绑定父文件夹 + 用叶子名解析子 PIDL」这一种方式；
+磁盘根目录没有可用的父路径（`ParentPath(L"I:\\")` 为空，退化成用 "I:\\" 当父目录），
+叶子名解析必然失败 → `ok=false` → 调用方回退到 `ShowFallbackContextMenu()`。
+
+修法：加第二套绑定方式 —— **绑定桌面（`SHGetDesktopFolder`）+ 用完整路径解析 PIDL**：
+
+```cpp
+    bool ok = !parent.empty() ? bindParentFolder(parent) : false;
+    if (!ok) ok = bindDesktopFolder();      // 磁盘根、"shell:" 等
+    if (!ok || pidlChildren.empty()) return false;   // 只有两条都失败才用兜底菜单
+```
+
+Explorer 把驱动器交给「此电脑」文件夹处理，桌面的 `ParseDisplayName(L"I:\\")` 解析出的是
+同一个对象，所以现在拿到的是 Drive 的真实动词（固定到快速访问/管理/包含到库中/复制/
+创建快捷方式/属性 …），另外 Shell 扩展（例如本机的 360）也会正常出现。
+
+### 删项后多出一条分隔线
+`PruneShellMenu()` 里虽然做了分隔线合并，但那次调用发生在**插入 查看/排序方式/刷新**
+之前，插入本身又会和 Shell 原有的分隔线撞在一起。修法：把合并逻辑抽成
+`TidyMenuSeparators(HMENU)`，`PruneShellMenu()` 末尾调用一次，**插入完自己的项之后再调用一次**。
+
+
 ## 当前顶部结构（自上而下）
 
 1. 系统标题栏（客户端内已去掉「FastFile 文件管理」自定义标题行）

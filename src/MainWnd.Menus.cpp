@@ -252,7 +252,15 @@ void CMainWnd::PruneShellMenu(IContextMenu* pMenu, HMENU hMenu, UINT idCmdFirst,
     if (pcm2)
         pcm2->Release();
 
-    // Collapse separators left behind by the removals (and drop leading/trailing ones).
+    TidyMenuSeparators(hMenu);
+}
+
+// Collapse separators left behind by removals / insertions (no leading, trailing or
+// doubled separators) — must run *after* FastFile's own view items are inserted.
+void CMainWnd::TidyMenuSeparators(HMENU hMenu)
+{
+    if (!hMenu)
+        return;
     bool prevSep = true;
     for (int pos = 0; pos < ::GetMenuItemCount(hMenu); ) {
         const UINT id = ::GetMenuItemID(hMenu, pos);
@@ -499,6 +507,8 @@ bool CMainWnd::ShowShellBackgroundContextMenu(const std::wstring& folderPath, PO
     }
 
     // Full Shell menu (IContextMenu2/3) plus the FastFile view entries added above.
+    // (Tidy again: inserting 查看/排序方式/刷新/粘贴 above can double up the separators.)
+    TidyMenuSeparators(hMenu);
     TrackPopupShellMenu(pMenu, hMenu, ptScreen, idCmdFirst, idShellMax, false);
 
     ::DestroyMenu(hMenu);
@@ -538,44 +548,90 @@ bool CMainWnd::ShowShellContextMenu(const std::vector<std::wstring>& paths, POIN
         // drive root file?
         if (paths[0].size() >= 3 && paths[0][1] == L':')
             parent = paths[0].substr(0, 3);
-        else
-            return false;
+        // Otherwise leave it empty — the desktop fallback below resolves the full path.
     }
 
-    PIDLIST_ABSOLUTE pidlFolder = nullptr;
-    SFGAOF sfgao = 0;
-    HRESULT hr = ::SHParseDisplayName(parent.c_str(), nullptr, &pidlFolder, 0, &sfgao);
-    if (FAILED(hr) || !pidlFolder) return false;
-
+    // Two ways to reach the Shell's item menu:
+    //   1) bind the *parent* folder and parse the leaf names (ordinary files/folders);
+    //   2) bind the desktop and parse the *full* path (drive roots in 此电脑, "shell:" items,
+    //      anything whose parent folder cannot host it).
+    // Explorer hands drives to the Computer folder; the desktop resolves the very same
+    // objects, so a drive gets its real verbs (固定到快速访问 / 格式化 / 弹出 / 属性 …)
+    // instead of FastFile's fallback menu.
     IShellFolder* pFolder = nullptr;
-    hr = ::SHBindToObject(nullptr, pidlFolder, nullptr, IID_IShellFolder, reinterpret_cast<void**>(&pFolder));
-    ::CoTaskMemFree(pidlFolder);
-    if (FAILED(hr) || !pFolder) return false;
-
     std::vector<PIDLIST_RELATIVE> pidlChildren;
-    pidlChildren.reserve(paths.size());
-    bool ok = true;
-    for (const auto& path : paths) {
-        std::wstring leaf = GetLeafName(path);
-        PIDLIST_RELATIVE pidlChild = nullptr;
-        DWORD attrs = 0;
-        hr = pFolder->ParseDisplayName(m_hWnd, nullptr, const_cast<LPWSTR>(leaf.c_str()),
-            nullptr, &pidlChild, &attrs);
-        if (FAILED(hr) || !pidlChild) {
-            ok = false;
-            break;
+
+    auto bindParentFolder = [&](const std::wstring& parentPath) -> bool {
+        PIDLIST_ABSOLUTE pidlFolder = nullptr;
+        SFGAOF sfgao = 0;
+        if (FAILED(::SHParseDisplayName(parentPath.c_str(), nullptr, &pidlFolder, 0, &sfgao))
+            || !pidlFolder)
+            return false;
+        IShellFolder* folder = nullptr;
+        const HRESULT hrBind = ::SHBindToObject(nullptr, pidlFolder, nullptr, IID_IShellFolder,
+            reinterpret_cast<void**>(&folder));
+        ::CoTaskMemFree(pidlFolder);
+        if (FAILED(hrBind) || !folder)
+            return false;
+
+        std::vector<PIDLIST_RELATIVE> kids;
+        for (const auto& path : paths) {
+            const std::wstring leaf = GetLeafName(path);
+            PIDLIST_RELATIVE kid = nullptr;
+            DWORD attrs = 0;
+            if (leaf.empty()
+                || FAILED(folder->ParseDisplayName(m_hWnd, nullptr,
+                       const_cast<LPWSTR>(leaf.c_str()), nullptr, &kid, &attrs))
+                || !kid) {
+                for (auto* k : kids) ::CoTaskMemFree(k);
+                folder->Release();
+                return false;
+            }
+            kids.push_back(kid);
         }
-        pidlChildren.push_back(pidlChild);
-    }
+        pFolder = folder;
+        pidlChildren.swap(kids);
+        return true;
+    };
+
+    auto bindDesktopFolder = [&]() -> bool {
+        IShellFolder* desktop = nullptr;
+        if (FAILED(::SHGetDesktopFolder(&desktop)) || !desktop)
+            return false;
+        std::vector<PIDLIST_RELATIVE> kids;
+        for (const auto& path : paths) {
+            PIDLIST_RELATIVE kid = nullptr;
+            DWORD attrs = 0;
+            if (FAILED(desktop->ParseDisplayName(m_hWnd, nullptr,
+                    const_cast<LPWSTR>(path.c_str()), nullptr, &kid, &attrs))
+                || !kid) {
+                for (auto* k : kids) ::CoTaskMemFree(k);
+                desktop->Release();
+                return false;
+            }
+            kids.push_back(kid);
+        }
+        pFolder = desktop;
+        pidlChildren.swap(kids);
+        return true;
+    };
+
+    bool ok = false;
+    if (!parent.empty())
+        ok = bindParentFolder(parent);
+    if (!ok)
+        ok = bindDesktopFolder();
+    if (!ok || pidlChildren.empty())
+        return false;
 
     IContextMenu* pMenu = nullptr;
     if (ok && !pidlChildren.empty()) {
         std::vector<LPCITEMIDLIST> pidlArgs(pidlChildren.begin(), pidlChildren.end());
-        hr = pFolder->GetUIObjectOf(m_hWnd,
+        const HRESULT hrMenu = pFolder->GetUIObjectOf(m_hWnd,
             static_cast<UINT>(pidlArgs.size()),
             pidlArgs.data(),
             IID_IContextMenu, nullptr, reinterpret_cast<void**>(&pMenu));
-        if (FAILED(hr)) pMenu = nullptr;
+        if (FAILED(hrMenu)) pMenu = nullptr;
     }
 
     for (auto* p : pidlChildren)
@@ -592,7 +648,7 @@ bool CMainWnd::ShowShellContextMenu(const std::vector<std::wstring>& paths, POIN
 
     const UINT idCmdFirst = 1;
     const UINT idCmdLast = 0x7FFF;
-    hr = pMenu->QueryContextMenu(hMenu, 0, idCmdFirst, idCmdLast,
+    HRESULT hr = pMenu->QueryContextMenu(hMenu, 0, idCmdFirst, idCmdLast,
         CMF_NORMAL | CMF_EXPLORE);
     if (FAILED(hr)) {
         ::DestroyMenu(hMenu);
