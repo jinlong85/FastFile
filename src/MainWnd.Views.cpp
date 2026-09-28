@@ -58,7 +58,13 @@ public:
         if (barH > S(14)) barH = S(14);
         const int gap = S(5);
         const int capH = S(18);
-        const int blockH = nameH + gap + (m_totalBytes ? barH : 0) + (m_totalBytes ? gap : 0) + capH;
+        // Small tiles (list/medium modes) drop the caption/bar instead of overlapping.
+        const int avail = (rc.bottom - rc.top) - S(4);
+        bool showBar = (m_totalBytes != 0);
+        bool showCap = showBar;
+        int blockH = nameH + (showBar ? gap + barH : 0) + (showCap ? gap + capH : 0);
+        if (blockH > avail && showCap) { showCap = false; blockH -= gap + capH; }
+        if (blockH > avail && showBar) { showBar = false; blockH -= gap + barH; }
         int top = rc.top + ((rc.bottom - rc.top) - blockH) / 2;
         if (top < rc.top + S(2)) top = rc.top + S(2);
 
@@ -85,17 +91,19 @@ public:
             DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
 
         int y = top + nameH + gap;
-        if (m_totalBytes) {
+        if (showBar) {
             RECT rcBar = { textL, y, textR, y + barH };
             DrawRoundedBar(hDC, rcBar, m_freeBytes, m_totalBytes);
             y = rcBar.bottom + gap;
         }
 
-        RECT rcCap = { textL, y, textR, y + capH };
-        if (smallFont) ::SelectObject(hDC, smallFont);
-        ::SetTextColor(hDC, RGB(0x70, 0x70, 0x70));   // softer than the name
-        ::DrawTextW(hDC, m_caption.c_str(), -1, &rcCap,
-            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+        if (showCap) {
+            RECT rcCap = { textL, y, textR, y + capH };
+            if (smallFont) ::SelectObject(hDC, smallFont);
+            ::SetTextColor(hDC, RGB(0x70, 0x70, 0x70));   // softer than the name
+            ::DrawTextW(hDC, m_caption.c_str(), -1, &rcCap,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+        }
 
         if (oldFont) ::SelectObject(hDC, oldFont);
         if (smallFont) ::DeleteObject(smallFont);
