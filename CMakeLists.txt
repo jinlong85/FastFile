@@ -47,7 +47,21 @@ endif()
 add_executable(FastFile WIN32
   src/main.cpp
   src/MainWnd.cpp
+  src/MainWnd.Dpi.cpp
+  src/MainWnd.Theme.cpp
+  src/MainWnd.Util.cpp
+  src/MainWnd.Nav.cpp
+  src/MainWnd.Tree.cpp
+  src/MainWnd.Tabs.cpp
+  src/MainWnd.Favorites.cpp
+  src/MainWnd.FileOps.cpp
+  src/MainWnd.Menus.cpp
+  src/MainWnd.Views.cpp
+  src/MainWnd.Icons.cpp
+  src/MainWnd.Preview.cpp
+  src/MainWnd.DragDrop.cpp
   src/MainWnd.h
+  src/MainWndInternal.h
   src/UiTokens.h
   cmake/FastFile.manifest
 )

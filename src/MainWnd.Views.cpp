@@ -1,0 +1,990 @@
+// FastFile - view modes, details list, icon/tile views, virtualization, sorting
+// Implements CMainWnd members moved out of the original monolithic MainWnd.cpp.
+// Behaviour is unchanged; declarations live in MainWnd.h.
+
+#include "MainWndInternal.h"
+
+namespace {
+
+CLabelUI* MakeCell(LPCTSTR text, int fixedWidth, int padL)
+{
+    auto* p = new CLabelUI;
+    p->SetText(text ? text : _T(""));
+    p->SetAttribute(_T("textcolor"), UiTokens::ColorTextPrimary);
+    p->SetAttribute(_T("align"), _T("left"));
+    p->SetAttribute(_T("valign"), _T("vcenter"));
+    p->SetAttribute(_T("endellipsis"), _T("true"));
+    if (padL > 0) {
+        CDuiString pad;
+        pad.Format(_T("%d,0,0,0"), padL);
+        p->SetAttribute(_T("padding"), pad);
+    }
+    if (fixedWidth > 0)
+        p->SetFixedWidth(fixedWidth);
+    return p;
+}
+
+class DriveTileButtonUI final : public CButtonUI {
+public:
+    void SetDriveSpace(ULONGLONG freeBytes, ULONGLONG totalBytes) {
+        m_freeBytes = freeBytes;
+        m_totalBytes = totalBytes;
+    }
+    void PaintStatusImage(HDC hDC) override {
+        CButtonUI::PaintStatusImage(hDC);
+        if (!hDC || m_totalBytes == 0) return;
+        RECT rc = GetPos();
+        rc.left += 56;
+        rc.right -= 8;
+        rc.top = rc.bottom - 10;
+        rc.bottom = rc.top + 4;
+        if (rc.right <= rc.left) return;
+        HBRUSH track = ::CreateSolidBrush(RGB(224, 224, 224));
+        ::FillRect(hDC, &rc, track);
+        ::DeleteObject(track);
+        const ULONGLONG used = m_totalBytes > m_freeBytes ? m_totalBytes - m_freeBytes : 0;
+        RECT fill = rc;
+        fill.right = fill.left + static_cast<LONG>((used * static_cast<ULONGLONG>(rc.right - rc.left)) / m_totalBytes);
+        HBRUSH usedBrush = ::CreateSolidBrush(RGB(0, 120, 212));
+        ::FillRect(hDC, &fill, usedBrush);
+        ::DeleteObject(usedBrush);
+    }
+private:
+    ULONGLONG m_freeBytes = 0;
+    ULONGLONG m_totalBytes = 0;
+};
+
+} // namespace
+
+// ---- A: visible vertical scrollbars --------------------------------------
+
+void CMainWnd::StyleVerticalScrollBar(CContainerUI* host)
+{
+    if (!host) return;
+    CScrollBarUI* sb = host->GetVerticalScrollBar();
+    if (!sb) {
+        host->EnableScrollBar(true, host->GetHorizontalScrollBar() != nullptr);
+        sb = host->GetVerticalScrollBar();
+    }
+    if (!sb) return;
+
+    const int w = (std::max)(DpiScale(UiTokens::ScrollBarW), 8);
+    sb->SetFixedWidth(w);
+    sb->SetShowButton1(false);
+    sb->SetShowButton2(false);
+    sb->SetAttribute(_T("bkcolor"), UiTokens::ColorScrollTrack);
+    sb->SetThumbColor(0xFFC4C4C4); // ColorScrollThumb #FFC4C4C4
+    sb->SetAttribute(_T("button1color"), UiTokens::ColorScrollTrack);
+    sb->SetAttribute(_T("button2color"), UiTokens::ColorScrollTrack);
+}
+
+void CMainWnd::ApplyFileViewScrollBars()
+{
+    if (m_pFileList)
+        StyleVerticalScrollBar(m_pFileList);
+    if (m_pIconTiles)
+        StyleVerticalScrollBar(m_pIconTiles);
+    if (m_pIconScroll)
+        m_pIconScroll->EnableScrollBar(false, false);
+}
+
+// ---- View modes ----------------------------------------------------------
+
+bool CMainWnd::IsTileViewMode() const
+{
+    return m_viewMode != ViewMode::Details;
+}
+
+void CMainWnd::GetViewMetrics(int& tileW, int& tileH, int& iconPx, int& childPad, int& maxLabel) const
+{
+    // Design metrics @ 96 DPI; scale for Per-Monitor awareness.
+    switch (m_viewMode) {
+    case ViewMode::ExtraLargeIcons:
+        tileW = 200; tileH = 220; iconPx = 128; childPad = UiTokens::TileChildPadXLarge; maxLabel = 22; break;
+    case ViewMode::LargeIcons:
+        tileW = 128; tileH = 148; iconPx = 96; childPad = UiTokens::TileChildPadLarge; maxLabel = 18; break;
+    case ViewMode::MediumIcons:
+        tileW = 100; tileH = 108; iconPx = 48; childPad = UiTokens::TileChildPadMedium; maxLabel = 16; break;
+    case ViewMode::List:
+        tileW = 180; tileH = UiTokens::DetailsRowH; iconPx = UiTokens::DetailsIconPx; childPad = UiTokens::TileChildPadList; maxLabel = 28; break;
+    case ViewMode::Tiles:
+        // Fits three columns in the normal content area at 150% scaling while
+        // retaining an Explorer-like icon and a single readable label line.
+        tileW = 190; tileH = 52; iconPx = 40; childPad = UiTokens::TileChildPadMedium; maxLabel = 24; break;
+    case ViewMode::Details:
+    default:
+        tileW = 100; tileH = 108; iconPx = 48; childPad = UiTokens::TileChildPadMedium; maxLabel = 16; break;
+    }
+    if (IsThisPcPath(m_currentPath) && m_viewMode == ViewMode::Tiles) {
+        tileW = 280; tileH = 72; iconPx = 40; maxLabel = 48;
+    }
+    tileW = DpiScale(tileW);
+    tileH = DpiScale(tileH);
+    iconPx = DpiScale(iconPx);
+    childPad = DpiScale(childPad);
+    // maxLabel stays character count (not pixels)
+}
+
+void CMainWnd::ApplyTileLayoutMetrics()
+{
+    if (!m_pIconTiles) return;
+    int tileW = 100, tileH = 108, iconPx = 48, childPad = 6, maxLabel = 16;
+    GetViewMetrics(tileW, tileH, iconPx, childPad, maxLabel);
+    m_iconPx = iconPx;
+    SIZE sz = { tileW, tileH };
+    m_pIconTiles->SetItemSize(sz);
+    {
+        CDuiString pad;
+        pad.Format(_T("%d"), childPad);
+        m_pIconTiles->SetAttribute(_T("childpadding"), pad.GetData());
+        m_pIconTiles->SetAttribute(_T("childvpadding"), pad.GetData());
+    }
+    if (m_pIconScroll) {
+        {
+            const int p = (m_viewMode == ViewMode::List)
+                ? DpiScale(UiTokens::TilePadCompact)
+                : DpiScale(UiTokens::TilePadNormal);
+            CDuiString pad;
+            pad.Format(_T("%d,%d,%d,%d"), p, p, p, p);
+            m_pIconScroll->SetAttribute(_T("padding"), pad);
+        }
+    }
+    if (m_pIconTiles)
+        m_pIconTiles->EnableScrollBar(true, false);
+    ApplyFileViewScrollBars();
+}
+
+void CMainWnd::SetViewMode(ViewMode mode)
+{
+    if (m_viewMode == mode) {
+        UpdateViewModeButtons();
+        return;
+    }
+    m_viewMode = mode;
+    m_iconAnchor = -1;
+    m_lastIconClickTile = nullptr;
+    m_lastIconClickTick = 0;
+    if (!m_currentPath.empty())
+        SaveFolderViewForPath(m_currentPath, mode);
+    UpdateViewModeButtons();
+
+    // 步骤2：切视图复用已枚举的 listing，避免重新扫盘
+    if (m_hasListingCache
+        && PathEquals(m_listingPath, m_currentPath)
+        && m_listingFilter == m_searchFilter
+        && m_listingRecursive == IsRecursiveSearch()) {
+        RebuildCurrentViewFromCache();
+        return;
+    }
+    RefreshListing();
+}
+
+void CMainWnd::UpdateViewModeButtons()
+{
+    struct Pair { LPCTSTR name; ViewMode mode; };
+    const Pair buttons[] = {
+        { _T("btn_view_xlarge"),  ViewMode::ExtraLargeIcons },
+        { _T("btn_view_large"),   ViewMode::LargeIcons },
+        { _T("btn_view_medium"),  ViewMode::MediumIcons },
+        { _T("btn_view_list"),    ViewMode::List },
+        { _T("btn_view_details"), ViewMode::Details },
+        { _T("btn_view_tiles"),   ViewMode::Tiles },
+    };
+    auto styleActive = [](CButtonUI* b) {
+        if (!b) return;
+        b->SetAttribute(_T("bkcolor"), _T("#FFE8E8E8"));
+        b->SetAttribute(_T("textcolor"), _T("#FF1A1A1A"));
+        b->SetAttribute(_T("bordercolor"), _T("#FFC8C8C8"));
+        b->Invalidate();
+    };
+    auto styleIdle = [](CButtonUI* b) {
+        if (!b) return;
+        b->SetAttribute(_T("bkcolor"), _T("#00FFFFFF"));
+        b->SetAttribute(_T("textcolor"), _T("#FF3B3B3B"));
+        b->SetAttribute(_T("bordercolor"), _T("#00FFFFFF"));
+        b->Invalidate();
+    };
+    for (const auto& b : buttons) {
+        auto* btn = static_cast<CButtonUI*>(m_PaintManager.FindControl(b.name));
+        if (m_viewMode == b.mode) styleActive(btn);
+        else styleIdle(btn);
+    }
+
+    const bool tiles = IsTileViewMode();
+    if (m_pFileList) m_pFileList->SetVisible(!tiles);
+    if (m_pIconScroll) m_pIconScroll->SetVisible(tiles);
+}
+
+void CMainWnd::ClearIconView()
+{
+    CancelThumbJobs();
+    if (m_pIconTiles)
+        m_pIconTiles->RemoveAll();
+    m_iconAnchor = -1;
+    m_lastIconClickTile = nullptr;
+    m_lastIconClickTick = 0;
+    m_virtPoolCount = 0;
+    m_virtFirstIndex = 0;
+    m_pVirtSpacerBefore = nullptr;
+    m_pVirtSpacerAfter = nullptr;
+}
+
+void CMainWnd::ClearIconSelection()
+{
+    if (!m_pIconTiles) return;
+    const int n = m_pIconTiles->GetCount();
+    for (int i = 0; i < n; ++i) {
+        CControlUI* p = m_pIconTiles->GetItemAt(i);
+        if (p) SetIconSelected(p, false);
+    }
+}
+
+void CMainWnd::SetIconSelected(CControlUI* tile, bool selected)
+{
+    if (!tile) return;
+    UINT_PTR tag = tile->GetTag();
+    if (selected) tag |= 0x100;
+    else tag &= ~static_cast<UINT_PTR>(0x100);
+    tile->SetTag(tag);
+    ApplyIconSelectionVisual(tile);
+
+    UpdateListingStatusTip();
+}
+
+void CMainWnd::ApplyIconSelectionVisual(CControlUI* tile)
+{
+    if (!tile) return;
+    const bool selected = (tile->GetTag() & 0x100) != 0;
+    if (selected) {
+        tile->SetAttribute(_T("bkcolor"), UiTokens::ColorListSelected);
+        tile->SetAttribute(_T("bordercolor"), UiTokens::ColorBorder);
+        tile->SetAttribute(_T("bordersize"), _T("1"));
+        tile->SetAttribute(_T("hotbkcolor"), UiTokens::ColorListHover);
+        tile->SetAttribute(_T("pushedbkcolor"), UiTokens::ColorListSelected);
+    } else {
+        tile->SetAttribute(_T("bkcolor"), UiTokens::ColorContent);
+        tile->SetAttribute(_T("bordercolor"), UiTokens::ColorTransparent);
+        tile->SetAttribute(_T("bordersize"), _T("0"));
+        tile->SetAttribute(_T("hotbkcolor"), UiTokens::ColorListHover);
+        tile->SetAttribute(_T("pushedbkcolor"), UiTokens::ColorListSelected);
+    }
+    tile->Invalidate();
+}
+
+int CMainWnd::FindIconIndex(CControlUI* tile) const
+{
+    if (!m_pIconTiles || !tile) return -1;
+    const int n = m_pIconTiles->GetCount();
+    for (int i = 0; i < n; ++i) {
+        if (m_pIconTiles->GetItemAt(i) == tile)
+            return m_iconVirtMode ? (m_virtFirstIndex + i) : i;
+    }
+    return -1;
+}
+
+void CMainWnd::SelectIconRange(int from, int to)
+{
+    if (!m_pIconTiles) return;
+    if (from > to) std::swap(from, to);
+    const int nTiles = m_pIconTiles->GetCount();
+    if (m_iconVirtMode) {
+        const int total = (int)m_flatListing.size();
+        from = (std::max)(0, from);
+        to = (std::min)(total - 1, to);
+        for (int i = 0; i < nTiles; ++i) {
+            const int flat = m_virtFirstIndex + i;
+            SetIconSelected(m_pIconTiles->GetItemAt(i), flat >= from && flat <= to);
+        }
+        return;
+    }
+    from = (std::max)(0, from);
+    to = (std::min)(nTiles - 1, to);
+    for (int i = 0; i < nTiles; ++i)
+        SetIconSelected(m_pIconTiles->GetItemAt(i), i >= from && i <= to);
+}
+
+void CMainWnd::ActivateIconTile(CControlUI* tile)
+{
+    if (!tile) return;
+    CDuiString ud = tile->GetUserData();
+    if (ud.IsEmpty()) return;
+    const bool isDir = (tile->GetTag() & 1) != 0;
+    if (isDir)
+        NavigateTo(ud.GetData(), true);
+    else {
+        ::ShellExecuteW(m_hWnd, L"open", ud.GetData(), nullptr, nullptr, SW_SHOWNORMAL);
+        CDuiString tip;
+        tip.Format(_T("已打开: %s"), ud.GetData());
+        UpdateStatus(tip.GetData());
+    }
+}
+
+void CMainWnd::OnIconTileClick(CControlUI* tile)
+{
+    if (!tile || !m_pIconTiles) return;
+
+    const DWORD now = ::GetTickCount();
+    const DWORD dbl = ::GetDoubleClickTime();
+    if (tile == m_lastIconClickTile && (now - m_lastIconClickTick) <= dbl) {
+        m_lastIconClickTick = 0;
+        m_lastIconClickTile = nullptr;
+        if ((tile->GetTag() & 0x100) == 0) {
+            ClearIconSelection();
+            SetIconSelected(tile, true);
+        }
+        ActivateIconTile(tile);
+        return;
+    }
+    m_lastIconClickTick = now;
+    m_lastIconClickTile = tile;
+
+    const bool ctrl = (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool shift = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    const int idx = FindIconIndex(tile);
+
+    if (shift && m_iconAnchor >= 0 && idx >= 0) {
+        SelectIconRange(m_iconAnchor, idx);
+    } else if (ctrl) {
+        const bool on = (tile->GetTag() & 0x100) == 0;
+        SetIconSelected(tile, on);
+        if (idx >= 0) m_iconAnchor = idx;
+    } else {
+        ClearIconSelection();
+        SetIconSelected(tile, true);
+        if (idx >= 0) m_iconAnchor = idx;
+    }
+
+    m_PaintManager.SetFocus(tile);
+
+    std::vector<ClipboardItem> sel;
+    CollectSelectedItems(sel);
+    CDuiString tip;
+    if (sel.size() <= 1)
+        tip.Format(_T("已选 1 项（Ctrl/Shift 多选，双击打开）"));
+    else
+        tip.Format(_T("已选 %d 项"), static_cast<int>(sel.size()));
+    UpdateStatus(tip.GetData());
+}
+
+void CMainWnd::ApplyTileIconImage(CControlUI* tile, const std::wstring& bmp,
+    int tileW, int tileH, int iconPx, bool listMode, bool tilesMode)
+{
+    if (!tile || bmp.empty()) return;
+    CDuiString imgAttr;
+    if (listMode) {
+        const int y = (tileH - iconPx) / 2;
+        imgAttr.Format(_T("file='%s' dest='4,%d,%d,%d'"),
+            bmp.c_str(), y, 4 + iconPx, y + iconPx);
+    } else if (tilesMode) {
+        const int y = (tileH - iconPx) / 2;
+        imgAttr.Format(_T("file='%s' dest='8,%d,%d,%d'"),
+            bmp.c_str(), y, 8 + iconPx, y + iconPx);
+    } else {
+        const int x0 = (tileW - iconPx) / 2;
+        const int y0 = DpiScale(UiTokens::SpaceSm);
+        imgAttr.Format(_T("file='%s' dest='%d,%d,%d,%d'"),
+            bmp.c_str(), x0, y0, x0 + iconPx, y0 + iconPx);
+    }
+    tile->SetAttribute(_T("foreimage"), imgAttr.GetData());
+    tile->SetAttribute(_T("hotforeimage"), imgAttr.GetData());
+}
+
+void CMainWnd::RebuildDetailsView(const std::vector<DirEntry>& dirs,
+    const std::vector<DirEntry>& files, bool /*truncated*/)
+{
+    if (!m_pFileList) return;
+    UpdateViewModeButtons();
+    StopDetailsFill();
+    m_pFileList->SetVisible(false);
+    StartDetailsProgressiveFill(dirs, files);
+}
+
+bool CMainWnd::TryReuseIconsView(const std::vector<DirEntry>& dirs,
+    const std::vector<DirEntry>& files)
+{
+    if (!m_pIconTiles) return false;
+    std::vector<DirEntry> all;
+    all.reserve(dirs.size() + files.size());
+    all.insert(all.end(), dirs.begin(), dirs.end());
+    all.insert(all.end(), files.begin(), files.end());
+
+    const int n = m_pIconTiles->GetCount();
+    if (n != static_cast<int>(all.size()) || n <= 0)
+        return false;
+
+    // 路径不一致则不能复用控件
+    for (int i = 0; i < n; ++i) {
+        CControlUI* p = m_pIconTiles->GetItemAt(i);
+        if (!p) return false;
+        CDuiString ud = p->GetUserData();
+        if (ud.IsEmpty() || ::_wcsicmp(ud.GetData(), all[i].fullPath.c_str()) != 0)
+            return false;
+    }
+
+    CancelThumbJobs();
+    ApplyTileLayoutMetrics();
+
+    int tileW = 100, tileH = 108, iconPx = 48, childPad = 6, maxLabel = 16;
+    GetViewMetrics(tileW, tileH, iconPx, childPad, maxLabel);
+    m_iconPx = iconPx;
+    const bool listMode = (m_viewMode == ViewMode::List);
+    const bool tilesMode = (m_viewMode == ViewMode::Tiles);
+    const UINT gen = m_thumbGeneration.load();
+
+    for (int i = 0; i < n; ++i) {
+        auto* tile = static_cast<CButtonUI*>(m_pIconTiles->GetItemAt(i));
+        if (!tile) continue;
+        const DirEntry& e = all[i];
+
+        tile->SetFixedWidth(tileW);
+        tile->SetFixedHeight(tileH);
+
+        if (listMode) {
+            tile->SetAttribute(_T("align"), _T("left"));
+            tile->SetAttribute(_T("valign"), _T("vcenter"));
+            {
+            CDuiString tp; tp.Format(_T("%d,%d,%d,%d"), DpiScale(24), DpiScale(0), DpiScale(4), DpiScale(0));
+            tile->SetAttribute(_T("textpadding"), tp);
+        }
+        } else if (tilesMode) {
+            tile->SetAttribute(_T("align"), _T("left"));
+            tile->SetAttribute(_T("valign"), _T("vcenter"));
+            {
+            CDuiString tp; tp.Format(_T("%d,%d,%d,%d"), DpiScale(56), DpiScale(4), DpiScale(8), DpiScale(14));
+            tile->SetAttribute(_T("textpadding"), tp);
+        }
+        } else {
+            tile->SetAttribute(_T("align"), _T("center"));
+            tile->SetAttribute(_T("valign"), _T("bottom"));
+            {
+            CDuiString tp; tp.Format(_T("%d,%d,%d,%d"), DpiScale(4), DpiScale(4), DpiScale(4), DpiScale(6));
+            tile->SetAttribute(_T("textpadding"), tp);
+        }
+        }
+        tile->SetAttribute(_T("endellipsis"), _T("true"));
+
+                std::wstring label = e.name;
+        // Tiles/icon: folder label = name only (never append 文件夹).
+        if (tilesMode && !e.isDir) {
+            std::wstring typeText = L"文件";
+            std::wstring sizeText = FormatFileSize(e.size);
+            std::wstring line2 = sizeText.empty() ? typeText : (typeText + L"  " + sizeText);
+            if (label.size() > static_cast<size_t>(maxLabel))
+                label = label.substr(0, maxLabel - 1) + L"…";
+            label = label + L"\n" + line2;
+        } else {
+            if (label.size() > static_cast<size_t>(maxLabel))
+                label = label.substr(0, maxLabel - 1) + L"…";
+        }
+        tile->SetText(label.c_str());
+
+        if (i < kMaxIconThumbs) {
+            std::wstring cached = PeekCachedIconBmp(e.fullPath, e.isDir, iconPx);
+            if (!cached.empty()) {
+                ApplyTileIconImage(tile, cached, tileW, tileH, iconPx, listMode, tilesMode);
+            } else {
+                // 尺寸变了：先清旧图，后台填新缩略图
+                tile->SetAttribute(_T("foreimage"), _T(""));
+                tile->SetAttribute(_T("hotforeimage"), _T(""));
+                ThumbJob job;
+                job.generation = gen;
+                job.index = i;
+                job.path = e.fullPath;
+                job.isDir = e.isDir;
+                job.iconPx = iconPx;
+                job.tileW = tileW;
+                job.tileH = tileH;
+                job.listMode = listMode;
+                job.tilesMode = tilesMode;
+                EnqueueThumbJob(job);
+            }
+        }
+
+        if (((i + 1) % kUiBatchSize) == 0)
+            PumpUiMessages();
+    }
+
+    m_pIconTiles->NeedUpdate();
+    if (m_pFileList) m_pFileList->SetVisible(false);
+    if (m_pIconScroll) m_pIconScroll->SetVisible(true);
+    UpdateViewModeButtons();
+    return true;
+}
+
+void CMainWnd::RebuildIconsView(const std::vector<DirEntry>& dirs,
+    const std::vector<DirEntry>& files, bool /*truncated*/)
+{
+    if (!m_pIconTiles) {
+        RebuildDetailsView(dirs, files, false);
+        return;
+    }
+    std::vector<DirEntry> all;
+    all.reserve(dirs.size() + files.size());
+    all.insert(all.end(), dirs.begin(), dirs.end());
+    all.insert(all.end(), files.begin(), files.end());
+    if ((int)all.size() >= kVirtThreshold) {
+        if (m_hWnd) ::KillTimer(m_hWnd, kTimerVirtSync);
+        RebuildIconsViewVirtual(all);
+        UpdateViewModeButtons();
+        return;
+    }
+    if (m_hWnd) ::KillTimer(m_hWnd, kTimerVirtSync);
+    m_iconVirtMode = false;
+    if (TryReuseIconsView(dirs, files))
+        return;
+    RebuildIconsViewFull(all);
+    UpdateViewModeButtons();
+}
+
+void CMainWnd::FlattenListing(std::vector<DirEntry>& out) const
+{
+    out.clear();
+    out.reserve(m_listingDirs.size() + m_listingFiles.size());
+    out.insert(out.end(), m_listingDirs.begin(), m_listingDirs.end());
+    out.insert(out.end(), m_listingFiles.begin(), m_listingFiles.end());
+}
+
+void CMainWnd::SortListingCache()
+{
+    auto cmp = [this](const DirEntry& a, const DirEntry& b) {
+        if (IsThisPcPath(m_currentPath)) {
+            const wchar_t da = a.fullPath.empty() ? L'Z' : static_cast<wchar_t>(::towupper(a.fullPath[0]));
+            const wchar_t db = b.fullPath.empty() ? L'Z' : static_cast<wchar_t>(::towupper(b.fullPath[0]));
+            if (da == L'C') return db != L'C';
+            if (db == L'C') return false;
+            return da < db;
+        }
+        int r = 0;
+        switch (m_sortColumn) {
+        case SortColumn::Size:
+            if (a.isDir != b.isDir) return a.isDir && !b.isDir;
+            if (a.size < b.size) r = -1;
+            else if (a.size > b.size) r = 1;
+            else r = ::_wcsicmp(a.name.c_str(), b.name.c_str());
+            break;
+        case SortColumn::Modified:
+            if (a.isDir != b.isDir) return a.isDir && !b.isDir;
+            if (a.mtime < b.mtime) r = -1;
+            else if (a.mtime > b.mtime) r = 1;
+            else r = ::_wcsicmp(a.name.c_str(), b.name.c_str());
+            break;
+        case SortColumn::Type: {
+            if (a.isDir != b.isDir) return a.isDir && !b.isDir;
+            const wchar_t* ea = PathFindExtensionW(a.name.c_str());
+            const wchar_t* eb = PathFindExtensionW(b.name.c_str());
+            r = ::_wcsicmp(ea ? ea : L"", eb ? eb : L"");
+            if (r == 0) r = ::_wcsicmp(a.name.c_str(), b.name.c_str());
+            break;
+        }
+        case SortColumn::Name:
+        default:
+            if (a.isDir != b.isDir) return a.isDir && !b.isDir;
+            r = ::_wcsicmp(a.name.c_str(), b.name.c_str());
+            break;
+        }
+        return m_sortAscending ? (r < 0) : (r > 0);
+    };
+    // Keep dirs/files grouping for Name default; for Size/Type still dirs first via cmp
+    std::sort(m_listingDirs.begin(), m_listingDirs.end(), cmp);
+    std::sort(m_listingFiles.begin(), m_listingFiles.end(), cmp);
+}
+
+void CMainWnd::UpdateHeaderSortIndicators()
+{
+    if (!m_pFileList) return;
+    CListHeaderUI* hdr = m_pFileList->GetHeader();
+    if (!hdr) return;
+    const wchar_t* arrowsAsc = L" ▲";
+    const wchar_t* arrowsDesc = L" ▼";
+    const wchar_t* bases[4] = { L"名称", L"修改日期", L"类型", L"大小" };
+    for (int i = 0; i < hdr->GetCount() && i < 4; ++i) {
+        CControlUI* c = hdr->GetItemAt(i);
+        if (!c) continue;
+        std::wstring t = bases[i];
+        if (static_cast<int>(m_sortColumn) == i)
+            t += m_sortAscending ? arrowsAsc : arrowsDesc;
+        c->SetText(t.c_str());
+    }
+}
+
+void CMainWnd::OnHeaderColumnClick(CControlUI* pHeaderItem)
+{
+    if (!pHeaderItem || !m_pFileList) return;
+    CListHeaderUI* hdr = m_pFileList->GetHeader();
+    if (!hdr) return;
+    int idx = -1;
+    for (int i = 0; i < hdr->GetCount(); ++i) {
+        if (hdr->GetItemAt(i) == pHeaderItem) { idx = i; break; }
+    }
+    if (idx < 0 || idx > 3) return;
+    auto col = static_cast<SortColumn>(idx);
+    if (m_sortColumn == col) m_sortAscending = !m_sortAscending;
+    else { m_sortColumn = col; m_sortAscending = true; }
+    if (!m_hasListingCache) return;
+    SortListingCache();
+    UpdateHeaderSortIndicators();
+    RebuildCurrentViewFromCache();
+}
+
+void CMainWnd::ApplyColumnWidths()
+{
+    if (!m_pFileList) return;
+    CListHeaderUI* hdr = m_pFileList->GetHeader();
+    if (!hdr || hdr->GetCount() < 4) return;
+    // Order: 名称, 修改日期, 类型, 大小
+    if (auto* c = hdr->GetItemAt(0)) c->SetFixedWidth(m_colWidthName);
+    if (auto* c = hdr->GetItemAt(1)) c->SetFixedWidth(m_colWidthMTime);
+    if (auto* c = hdr->GetItemAt(2)) c->SetFixedWidth(m_colWidthType);
+    if (auto* c = hdr->GetItemAt(3)) c->SetFixedWidth(m_colWidthSize);
+}
+
+void CMainWnd::CaptureColumnWidths()
+{
+    if (!m_pFileList) return;
+    CListHeaderUI* hdr = m_pFileList->GetHeader();
+    if (!hdr || hdr->GetCount() < 4) return;
+    if (auto* c = hdr->GetItemAt(0)) {
+        int w = c->GetFixedWidth();
+        if (w > 40) m_colWidthName = w;
+    }
+    if (auto* c = hdr->GetItemAt(1)) {
+        int w = c->GetFixedWidth();
+        if (w > 40) m_colWidthMTime = w;
+    }
+    if (auto* c = hdr->GetItemAt(2)) {
+        int w = c->GetFixedWidth();
+        if (w > 40) m_colWidthType = w;
+    }
+    if (auto* c = hdr->GetItemAt(3)) {
+        int w = c->GetFixedWidth();
+        if (w > 40) m_colWidthSize = w;
+    }
+}
+
+CListContainerElementUI* CMainWnd::CreateDetailsRow(const DirEntry& e)
+{
+    // ListHBoxElement: children map 1:1 to ListHeader columns (Name/MTime/Type/Size).
+    auto* pItem = new CListHBoxElementUI;
+    pItem->SetFixedHeight(DpiScale(UiTokens::DetailsRowH));
+    pItem->SetUserData(e.fullPath.c_str());
+    pItem->SetTag(e.isDir ? 1 : 0);
+
+    const int cellPad = DpiScale(UiTokens::DetailsCellPadL);
+    const int iconPx = DpiScale(UiTokens::DetailsIconPx); // SHIL_SMALL ~16
+    const int iconPadL = DpiScale(UiTokens::DetailsIconPadL);
+    const int iconGap = DpiScale(UiTokens::DetailsIconTextGap);
+    const int rowH = DpiScale(UiTokens::DetailsRowH);
+
+    // Name column: Shell small icon + gap + name
+    // IMPORTANT: use bkimage — CControlUI ignores foreimage (Button/Option only).
+    auto* nameCol = new CHorizontalLayoutUI;
+    nameCol->SetMouseEnabled(true);
+    auto* iconCtrl = new CControlUI;
+    iconCtrl->SetFixedWidth(iconPadL + iconPx + iconGap);
+    iconCtrl->SetFixedHeight(rowH);
+    iconCtrl->SetMouseEnabled(false);
+    std::wstring iconBmp = PeekCachedIconBmp(e.fullPath, e.isDir, iconPx);
+    if (iconBmp.empty())
+        iconBmp = GetShellFileIconBmp(e.fullPath, e.isDir, iconPx);
+    if (!iconBmp.empty()) {
+        const int oy = (std::max)(0, (rowH - iconPx) / 2);
+        CDuiString imgAttr;
+        imgAttr.Format(_T("file='%s' dest='%d,%d,%d,%d'"),
+            iconBmp.c_str(), iconPadL, oy, iconPadL + iconPx, oy + iconPx);
+        iconCtrl->SetAttribute(_T("bkimage"), imgAttr.GetData());
+    }
+    nameCol->Add(iconCtrl);
+    nameCol->Add(MakeCell(e.name.c_str(), 0, 0));
+    pItem->Add(nameCol);
+
+    std::wstring mtimeText = FormatModifiedTime(e.mtime);
+    pItem->Add(MakeCell(mtimeText.c_str(), 0, cellPad));
+    LPCTSTR typeText = e.isDir
+        ? (IsThisPcPath(m_currentPath) ? _T("驱动器") : _T("文件夹"))
+        : _T("文件");
+    pItem->Add(MakeCell(typeText, 0, cellPad));
+    std::wstring sizeText = e.isDir ? L"" : FormatFileSize(e.size);
+    if (IsThisPcPath(m_currentPath) && e.capacity > 0)
+        sizeText = FormatFileSize(e.size) + L" 可用 / " + FormatFileSize(e.capacity);
+    pItem->Add(MakeCell(sizeText.c_str(), 0, cellPad));
+    return pItem;
+}
+
+void CMainWnd::StopDetailsFill()
+{
+    m_detailsFilling = false;
+    m_detailsFillQueue.clear();
+    m_detailsFillNext = 0;
+}
+
+void CMainWnd::StartDetailsProgressiveFill(const std::vector<DirEntry>& dirs,
+    const std::vector<DirEntry>& files)
+{
+    StopDetailsFill();
+    if (!m_pFileList) return;
+    m_pFileList->RemoveAll();
+    ApplyColumnWidths();
+    UpdateHeaderSortIndicators();
+
+    m_detailsFillQueue.clear();
+    m_detailsFillQueue.reserve(dirs.size() + files.size());
+    m_detailsFillQueue.insert(m_detailsFillQueue.end(), dirs.begin(), dirs.end());
+    m_detailsFillQueue.insert(m_detailsFillQueue.end(), files.begin(), files.end());
+    m_detailsFillNext = 0;
+    m_detailsFilling = true;
+
+    const int first = (std::min)(kDetailsFirstBatch, (int)m_detailsFillQueue.size());
+    for (int i = 0; i < first; ++i)
+        m_pFileList->Add(CreateDetailsRow(m_detailsFillQueue[i]));
+    m_detailsFillNext = first;
+
+    m_pFileList->SetVisible(!IsTileViewMode());
+    m_pFileList->EnableScrollBar(true, false);
+    m_pFileList->NeedUpdate();
+    if (m_pIconScroll)
+        m_pIconScroll->SetVisible(IsTileViewMode());
+    if (IsTileViewMode() && m_pIconTiles)
+        m_pIconTiles->EnableScrollBar(true, false);
+    ApplyFileViewScrollBars();
+
+    if (m_detailsFillNext < (int)m_detailsFillQueue.size() && m_hWnd)
+        ::PostMessageW(m_hWnd, kMsgDetailsFill, 0, 0);
+    else
+        m_detailsFilling = false;
+}
+
+void CMainWnd::OnDetailsFillTick()
+{
+    if (!m_detailsFilling) return;
+    const int n = (int)m_detailsFillQueue.size();
+    if (n <= 0) { m_detailsFilling = false; return; }
+
+    // Icon progressive path
+    if (IsTileViewMode() && m_pIconTiles) {
+        int tileW = 100, tileH = 108, iconPx = 48, childPad = 6, maxLabel = 16;
+        GetViewMetrics(tileW, tileH, iconPx, childPad, maxLabel);
+        const bool listMode = (m_viewMode == ViewMode::List);
+        const bool tilesMode = (m_viewMode == ViewMode::Tiles);
+        const UINT gen = m_thumbGeneration.load();
+        int added = 0;
+        while (m_detailsFillNext < n && added < kDetailsFillBatch) {
+            auto* tile = IsThisPcPath(m_currentPath)
+                ? static_cast<CButtonUI*>(new DriveTileButtonUI) : new CButtonUI;
+            BindIconTile(tile, m_detailsFillNext, m_detailsFillQueue[m_detailsFillNext],
+                gen, tileW, tileH, iconPx, maxLabel, listMode, tilesMode);
+            m_pIconTiles->Add(tile);
+            ++m_detailsFillNext;
+            ++added;
+        }
+        m_pIconTiles->EnableScrollBar(true, false);
+        m_pIconTiles->NeedUpdate();
+        if (m_detailsFillNext < n) {
+            PumpUiMessages();
+            ::PostMessageW(m_hWnd, kMsgDetailsFill, 1, 0);
+        } else {
+            m_detailsFilling = false;
+            m_detailsFillQueue.clear();
+        }
+        return;
+    }
+
+    if (!m_pFileList) return;
+    int added = 0;
+    while (m_detailsFillNext < n && added < kDetailsFillBatch) {
+        m_pFileList->Add(CreateDetailsRow(m_detailsFillQueue[m_detailsFillNext]));
+        ++m_detailsFillNext;
+        ++added;
+    }
+    m_pFileList->NeedUpdate();
+    if (m_detailsFillNext < n) {
+        PumpUiMessages();
+        ::PostMessageW(m_hWnd, kMsgDetailsFill, 0, 0);
+    } else {
+        m_detailsFilling = false;
+        m_detailsFillQueue.clear();
+    }
+}
+
+void CMainWnd::BindIconTile(CButtonUI* tile, int index, const DirEntry& e, UINT gen,
+    int tileW, int tileH, int iconPx, int maxLabel, bool listMode, bool tilesMode)
+{
+    if (!tile) return;
+    CDuiString name;
+    name.Format(_T("icon_%d"), index);
+    tile->SetName(name);
+    tile->SetFixedWidth(tileW);
+    tile->SetFixedHeight(tileH);
+    tile->SetUserData(e.fullPath.c_str());
+    // keep selection bit if same path? reset selection for virt remap
+    UINT_PTR tag = e.isDir ? 1 : 0;
+    tile->SetTag(tag);
+    ApplyIconSelectionVisual(tile);
+
+    if (listMode) {
+        tile->SetAttribute(_T("align"), _T("left"));
+        tile->SetAttribute(_T("valign"), _T("vcenter"));
+        {
+            CDuiString tp; tp.Format(_T("%d,%d,%d,%d"), DpiScale(24), DpiScale(0), DpiScale(4), DpiScale(0));
+            tile->SetAttribute(_T("textpadding"), tp);
+        }
+    } else if (tilesMode) {
+        tile->SetAttribute(_T("align"), _T("left"));
+        tile->SetAttribute(_T("valign"), _T("vcenter"));
+        {
+            CDuiString tp; tp.Format(_T("%d,%d,%d,%d"), DpiScale(56), DpiScale(4), DpiScale(8), DpiScale(4));
+            tile->SetAttribute(_T("textpadding"), tp);
+        }
+    } else {
+        tile->SetAttribute(_T("align"), _T("center"));
+        tile->SetAttribute(_T("valign"), _T("bottom"));
+        {
+            CDuiString tp; tp.Format(_T("%d,%d,%d,%d"), DpiScale(4), DpiScale(4), DpiScale(4), DpiScale(6));
+            tile->SetAttribute(_T("textpadding"), tp);
+        }
+    }
+    tile->SetAttribute(_T("endellipsis"), _T("true"));
+    if (auto* drive = dynamic_cast<DriveTileButtonUI*>(tile))
+        drive->SetDriveSpace(e.size, e.capacity);
+
+    std::wstring label = e.name;
+    if (IsThisPcPath(m_currentPath) && e.capacity > 0) {
+        label += L"\n" + FormatFileSize(e.size) + L" 可用，共 " + FormatFileSize(e.capacity);
+    }
+    // Tiles/icon: folder label = name only (never append 文件夹).
+    if (tilesMode && !e.isDir) {
+        std::wstring typeText = L"文件";
+        std::wstring sizeText = FormatFileSize(e.size);
+        std::wstring line2 = sizeText.empty() ? typeText : (typeText + L"  " + sizeText);
+        if (label.size() > static_cast<size_t>(maxLabel))
+            label = label.substr(0, maxLabel - 1) + L"…";
+        label = label + L"\n" + line2;
+    } else if (!IsThisPcPath(m_currentPath)) {
+        if (label.size() > static_cast<size_t>(maxLabel))
+            label = label.substr(0, maxLabel - 1) + L"…";
+    }
+    tile->SetText(label.c_str());
+
+    tile->SetAttribute(_T("foreimage"), _T(""));
+    tile->SetAttribute(_T("hotforeimage"), _T(""));
+    if (index < kMaxIconThumbs || m_iconVirtMode) {
+        std::wstring cached = PeekCachedIconBmp(e.fullPath, e.isDir, iconPx);
+        if (!cached.empty()) {
+            ApplyTileIconImage(tile, cached, tileW, tileH, iconPx, listMode, tilesMode);
+        } else {
+            ThumbJob job;
+            job.generation = gen;
+            job.index = index;
+            job.path = e.fullPath;
+            job.isDir = e.isDir;
+            job.iconPx = iconPx;
+            job.tileW = tileW;
+            job.tileH = tileH;
+            job.listMode = listMode;
+            job.tilesMode = tilesMode;
+            EnqueueThumbJob(job);
+        }
+    }
+}
+
+void CMainWnd::RebuildIconsViewFull(const std::vector<DirEntry>& all)
+{
+    if (!m_pIconTiles) return;
+    m_iconVirtMode = false;
+    ClearIconView();
+    ApplyTileLayoutMetrics();
+
+    int tileW = 100, tileH = 108, iconPx = 48, childPad = 6, maxLabel = 16;
+    GetViewMetrics(tileW, tileH, iconPx, childPad, maxLabel);
+    m_iconPx = iconPx;
+    const bool listMode = (m_viewMode == ViewMode::List);
+    const bool tilesMode = (m_viewMode == ViewMode::Tiles);
+    const UINT gen = m_thumbGeneration.load();
+
+    int added = 0;
+    for (const auto& e : all) {
+        auto* tile = IsThisPcPath(m_currentPath)
+            ? static_cast<CButtonUI*>(new DriveTileButtonUI) : new CButtonUI;
+        BindIconTile(tile, added, e, gen, tileW, tileH, iconPx, maxLabel, listMode, tilesMode);
+        m_pIconTiles->Add(tile);
+        ++added;
+        if ((added % kUiBatchSize) == 0)
+            PumpUiMessages();
+    }
+    m_pIconTiles->NeedUpdate();
+    if (m_pFileList) m_pFileList->SetVisible(false);
+    if (m_pIconScroll) m_pIconScroll->SetVisible(true);
+    if (m_pIconTiles) {
+        m_pIconTiles->EnableScrollBar(true, false);
+        SIZE sp = { 0, 0 };
+        m_pIconTiles->SetScrollPos(sp);
+    }
+    if (m_pIconScroll) m_pIconScroll->NeedUpdate();
+}
+
+void CMainWnd::EnsureIconTilePool(int /*poolCount*/, int /*tileW*/, int /*tileH*/)
+{
+    // retained for header ABI; progressive fill does not use a fixed pool
+}
+
+int CMainWnd::ComputeIconVirtPoolSize(int tileW, int tileH) const
+{
+    RECT rc = { 0, 0, 800, 600 };
+    if (m_pIconScroll) rc = m_pIconScroll->GetPos();
+    int vw = (std::max)(200, static_cast<int>(rc.right - rc.left));
+    int vh = (std::max)(200, static_cast<int>(rc.bottom - rc.top));
+    int cols = (std::max)(1, vw / (std::max)(1, tileW + 6));
+    int rows = (std::max)(1, vh / (std::max)(1, tileH + 6));
+    return cols * (rows + kVirtOverscanRows * 2);
+}
+
+void CMainWnd::SyncVisibleIconWindow(bool /*force*/)
+{
+    // Visible-window remapping is limited by DuiLib TileLayout scroll model.
+    // Large folders use progressive creation instead (see RebuildIconsViewVirtual).
+}
+
+void CMainWnd::RebuildIconsViewVirtual(const std::vector<DirEntry>& all)
+{
+    // Strong batching for large folders: first screen immediately, rest async.
+    if (!m_pIconTiles) return;
+    m_iconVirtMode = false;
+    m_flatListing = all;
+    CancelThumbJobs();
+    ClearIconView();
+    ApplyTileLayoutMetrics();
+
+    int tileW = 100, tileH = 108, iconPx = 48, childPad = 6, maxLabel = 16;
+    GetViewMetrics(tileW, tileH, iconPx, childPad, maxLabel);
+    m_iconPx = iconPx;
+    const bool listMode = (m_viewMode == ViewMode::List);
+    const bool tilesMode = (m_viewMode == ViewMode::Tiles);
+    const UINT gen = m_thumbGeneration.load();
+
+    // Reuse details fill queue machinery for icon progressive create
+    StopDetailsFill();
+    m_detailsFillQueue = all;
+    m_detailsFillNext = 0;
+    m_detailsFilling = true;
+
+    const int first = (std::min)(ComputeIconVirtPoolSize(tileW, tileH), (int)all.size());
+    for (int i = 0; i < first; ++i) {
+        auto* tile = IsThisPcPath(m_currentPath)
+            ? static_cast<CButtonUI*>(new DriveTileButtonUI) : new CButtonUI;
+        BindIconTile(tile, i, all[i], gen, tileW, tileH, iconPx, maxLabel, listMode, tilesMode);
+        m_pIconTiles->Add(tile);
+    }
+    m_detailsFillNext = first;
+    m_pIconTiles->NeedUpdate();
+    if (m_pFileList) m_pFileList->SetVisible(false);
+    if (m_pIconScroll) m_pIconScroll->SetVisible(true);
+    if (m_pIconTiles) {
+        m_pIconTiles->EnableScrollBar(true, false);
+        SIZE sp = { 0, 0 };
+        m_pIconTiles->SetScrollPos(sp);
+    }
+
+    if (m_detailsFillNext < (int)m_detailsFillQueue.size() && m_hWnd)
+        ::PostMessageW(m_hWnd, kMsgDetailsFill, 1, 0); // wParam=1 => icon mode
+    else
+        m_detailsFilling = false;
+}

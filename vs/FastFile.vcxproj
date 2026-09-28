@@ -68,7 +68,21 @@
   <ItemGroup>
     <ClCompile Include="..\src\main.cpp" />
     <ClCompile Include="..\src\MainWnd.cpp" />
+    <ClCompile Include="..\src\MainWnd.Dpi.cpp" />
+    <ClCompile Include="..\src\MainWnd.Theme.cpp" />
+    <ClCompile Include="..\src\MainWnd.Util.cpp" />
+    <ClCompile Include="..\src\MainWnd.Nav.cpp" />
+    <ClCompile Include="..\src\MainWnd.Tree.cpp" />
+    <ClCompile Include="..\src\MainWnd.Tabs.cpp" />
+    <ClCompile Include="..\src\MainWnd.Favorites.cpp" />
+    <ClCompile Include="..\src\MainWnd.FileOps.cpp" />
+    <ClCompile Include="..\src\MainWnd.Menus.cpp" />
+    <ClCompile Include="..\src\MainWnd.Views.cpp" />
+    <ClCompile Include="..\src\MainWnd.Icons.cpp" />
+    <ClCompile Include="..\src\MainWnd.Preview.cpp" />
+    <ClCompile Include="..\src\MainWnd.DragDrop.cpp" />
     <ClInclude Include="..\src\MainWnd.h" />
+    <ClInclude Include="..\src\MainWndInternal.h" />
   </ItemGroup>
   <ItemGroup>
     <Xml Include="..\skin\main.xml">
