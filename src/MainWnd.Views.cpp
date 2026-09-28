@@ -24,99 +24,64 @@ CLabelUI* MakeCell(LPCTSTR text, int fixedWidth, int padL)
     return p;
 }
 
-class DriveTileButtonUI final : public CButtonUI {
+// Tile button with hand-painted captions.
+// DuiLib labels hold a single colour, but Explorer's tiles show "名称" plus a grey
+// "类型  大小" line, and the drive tiles show a usage bar / caption — so the text is
+// painted here instead of relying on the control's label.
+class TileButtonUI final : public CButtonUI {
 public:
+    enum class Layout {
+        Label,       // plain control label (list view, and icon views for files)
+        TilesName,   // tiles: name only (folder)
+        TilesFile,   // tiles: name + grey "type  size"
+        TilesDrive,  // tiles (This PC): name / usage bar / grey "X 可用，共 Y"
+        IconDrive    // xlarge/large/medium on This PC: centred name + grey caption
+    };
+
+    void SetLayoutMode(Layout l) { m_layout = l; }
+    void SetUiDpi(UINT dpi) { m_dpi = dpi ? dpi : 96; }
     void SetDriveSpace(ULONGLONG freeBytes, ULONGLONG totalBytes) {
         m_freeBytes = freeBytes;
         m_totalBytes = totalBytes;
     }
-    // Name + "X 可用，共 Y" are painted by hand (see PaintStatusImage) so the bar can sit
-    // between the two lines, the bar height can follow the tile, and the caption can use
-    // a lighter colour than the name.
-    void SetDriveText(const std::wstring& name, const std::wstring& caption) {
+    void SetTexts(const std::wstring& name, const std::wstring& meta) {
         m_name = name;
-        m_caption = caption;
+        m_meta = meta;
     }
-    void SetUiDpi(UINT dpi) { m_dpi = dpi ? dpi : 96; }
+    // Physical rect of the icon slot (filled by ApplyTileIconImage) — IconDrive puts the
+    // caption right under the icon.
+    void SetIconSlot(int x, int y, int px) { m_iconX = x; m_iconY = y; m_iconPx = px; }
 
     void PaintStatusImage(HDC hDC) override {
-        CButtonUI::PaintStatusImage(hDC);
-        if (!hDC) return;
+        CButtonUI::PaintStatusImage(hDC);   // background + foreimage (the icon)
+        if (!hDC || m_layout == Layout::Label) return;
         const RECT rc = GetPos();
         if (rc.right - rc.left <= 0 || rc.bottom - rc.top <= 0) return;
-
-        const int dpi = static_cast<int>(m_dpi);
-        auto S = [&](int design) { return ::MulDiv(design, dpi, 96); };
+        if (m_name.empty() && m_meta.empty()) return;
 
         HFONT font = m_pManager ? m_pManager->GetFont(m_iFont) : nullptr;
-        // Bar height follows the text height of the UI font.
-        int fsTextHeight = S(15);
-        if (font) {
-            HGDIOBJ of = ::SelectObject(hDC, font);
-            TEXTMETRICW tm = {};
-            if (::GetTextMetricsW(hDC, &tm)) {
-                fsTextHeight = tm.tmHeight - tm.tmExternalLeading;
-                if (fsTextHeight < tm.tmHeight * 3 / 4) fsTextHeight = tm.tmHeight;
-            }
-            ::SelectObject(hDC, of);
-        }
-
-        const int textL = rc.left + S(56) + S(8);
-        const int textR = rc.right - S(12);
-        if (textR <= textL) return;
-
-        const int nameH = S(20);
-        // Bar height tracks the text height (the user asked for a bar as tall as the
-        // font), still clamped so tiny tiles stay sane.
-        int barH = fsTextHeight;                  // measured from the UI font
-        if (barH < S(10)) barH = S(10);
-        if (barH > (rc.bottom - rc.top) / 3) barH = (rc.bottom - rc.top) / 3;
-        const int gap = S(5);
-        const int capH = S(18);
-        // Small tiles (list/medium modes) drop the caption/bar instead of overlapping.
-        const int avail = (rc.bottom - rc.top) - S(4);
-        bool showBar = (m_totalBytes != 0);
-        bool showCap = showBar;
-        int blockH = nameH + (showBar ? gap + barH : 0) + (showCap ? gap + capH : 0);
-        if (blockH > avail && showCap) { showCap = false; blockH -= gap + capH; }
-        if (blockH > avail && showBar) { showBar = false; blockH -= gap + barH; }
-        int top = rc.top + ((rc.bottom - rc.top) - blockH) / 2;
-        if (top < rc.top + S(2)) top = rc.top + S(2);
-
         HFONT smallFont = nullptr;
-        {
-            LOGFONTW lf = {};
-            if (font && ::GetObjectW(font, sizeof(lf), &lf) == sizeof(lf)) {
-                lf.lfHeight = ::MulDiv(lf.lfHeight * 16, 18, 1);   // ~11pt vs ~12pt
-                if (lf.lfHeight < -18) lf.lfHeight = -18;
-                smallFont = ::CreateFontIndirectW(&lf);
-            }
+        LOGFONTW lf = {};
+        if (font && ::GetObjectW(font, sizeof(lf), &lf) == sizeof(lf)) {
+            lf.lfHeight = ::MulDiv(lf.lfHeight * 16, 18, 1);   // ~11pt vs ~12pt
+            if (lf.lfHeight < -18) lf.lfHeight = -18;
+            smallFont = ::CreateFontIndirectW(&lf);
         }
 
         const int oldBk = ::SetBkMode(hDC, TRANSPARENT);
-        COLORREF oldColor = ::GetTextColor(hDC);
-        HGDIOBJ oldFont = nullptr;
-
-        RECT rcName = { textL, top, textR, top + nameH };
-        oldFont = font ? ::SelectObject(hDC, font) : nullptr;
+        const COLORREF oldColor = ::GetTextColor(hDC);
+        HGDIOBJ oldFont = font ? ::SelectObject(hDC, font) : nullptr;
         // DuiLib stores #AARRGGBB; GDI wants 0x00BBGGRR.
-        ::SetTextColor(hDC, RGB(GetBValue(m_dwTextColor), GetGValue(m_dwTextColor), GetRValue(m_dwTextColor)));
-        ::DrawTextW(hDC, m_name.c_str(), -1, &rcName,
-            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+        const COLORREF nameColor = RGB(GetBValue(m_dwTextColor), GetGValue(m_dwTextColor), GetRValue(m_dwTextColor));
+        const COLORREF metaColor = RGB(0x70, 0x70, 0x70);   // lighter than the name
+        ::SetTextColor(hDC, nameColor);
 
-        int y = top + nameH + gap;
-        if (showBar) {
-            RECT rcBar = { textL, y, textR, y + barH };
-            DrawRoundedBar(hDC, rcBar, m_freeBytes, m_totalBytes);
-            y = rcBar.bottom + gap;
-        }
-
-        if (showCap) {
-            RECT rcCap = { textL, y, textR, y + capH };
-            if (smallFont) ::SelectObject(hDC, smallFont);
-            ::SetTextColor(hDC, RGB(0x70, 0x70, 0x70));   // softer than the name
-            ::DrawTextW(hDC, m_caption.c_str(), -1, &rcCap,
-                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+        switch (m_layout) {
+        case Layout::TilesDrive: PaintTilesDrive(hDC, rc, font, smallFont, metaColor); break;
+        case Layout::IconDrive:  PaintIconDrive(hDC, rc, font, smallFont, metaColor); break;
+        case Layout::TilesFile:  PaintTilesEntries(hDC, rc, font, smallFont, metaColor, true); break;
+        case Layout::TilesName:  PaintTilesEntries(hDC, rc, font, smallFont, metaColor, false); break;
+        default: break;
         }
 
         if (oldFont) ::SelectObject(hDC, oldFont);
@@ -126,8 +91,167 @@ public:
     }
 
 private:
+    int S(int design) const { return ::MulDiv(design, static_cast<int>(m_dpi), 96); }
+
+    int MeasureRun(HDC dc, const std::wstring& text) const
+    {
+        if (text.empty()) return 0;
+        SIZE sz = { 0, 0 };
+        ::GetTextExtentPoint32W(dc, text.c_str(), static_cast<int>(text.size()), &sz);
+        return sz.cx;
+    }
+
+    std::wstring Ellipsize(HDC dc, const std::wstring& text, int maxW) const
+    {
+        if (MeasureRun(dc, text) <= maxW) return text;
+        const std::wstring dots = L"…";
+        std::wstring out = text;
+        while (!out.empty() && MeasureRun(dc, out + dots) > maxW)
+            out.pop_back();
+        return out + dots;
+    }
+
+    // Greedy wrap into at most maxLines lines; the overflow is folded into the last line
+    // with an ellipsis, so a long name never leaves a lone "…" line behind.
+    std::vector<std::wstring> WrapLines(HDC dc, const std::wstring& text, int maxW, size_t maxLines) const
+    {
+        std::vector<std::wstring> out;
+        if (text.empty() || maxW <= 0 || maxLines == 0) return out;
+        std::wstring cur;
+        for (size_t i = 0; i < text.size(); ++i) {
+            std::wstring next = cur;
+            next.push_back(text[i]);
+            if (MeasureRun(dc, next) <= maxW) {
+                cur.swap(next);
+                continue;
+            }
+            if (cur.empty()) {                 // single glyph wider than the box
+                out.push_back(next);
+                if (out.size() >= maxLines) {
+                    out.back() = Ellipsize(dc, out.back() + text.substr(i + 1), maxW);
+                    return out;
+                }
+                cur.clear();
+                continue;
+            }
+            out.push_back(cur);
+            cur.clear();
+            if (out.size() >= maxLines) {
+                out.back() = Ellipsize(dc, out.back() + text.substr(i), maxW);
+                return out;
+            }
+            --i;                                // retry this glyph on the new line
+        }
+        if (!cur.empty()) out.push_back(cur);
+        return out;
+    }
+
+    void PaintTilesEntries(HDC dc, const RECT& rc, HFONT font, HFONT smallFont,
+        COLORREF metaColor, bool withMeta)
+    {
+        const int textL = rc.left + S(56);
+        const int textR = rc.right - S(8);
+        if (textR <= textL) return;
+        const int lineH = S(17);
+        const int metaH = S(16);
+        const std::vector<std::wstring> lines = WrapLines(dc, m_name, textR - textL, 2);
+        const bool meta = withMeta && !m_meta.empty();
+        int blockH = static_cast<int>(lines.size()) * lineH + (meta ? metaH : 0);
+        int y = rc.top + ((rc.bottom - rc.top) - blockH) / 2;
+        if (y < rc.top + S(2)) y = rc.top + S(2);
+        for (const auto& ln : lines) {
+            RECT r = { textL, y, textR, y + lineH };
+            ::DrawTextW(dc, ln.c_str(), -1, &r,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+            y += lineH;
+        }
+        if (meta) {
+            if (smallFont) ::SelectObject(dc, smallFont);
+            ::SetTextColor(dc, metaColor);
+            RECT r = { textL, y, textR, y + metaH };
+            ::DrawTextW(dc, m_meta.c_str(), -1, &r,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+            if (font) ::SelectObject(dc, font);
+        }
+    }
+
+    // This PC in the tile view: name / usage bar / "X 可用，共 Y".
+    void PaintTilesDrive(HDC dc, const RECT& rc, HFONT font, HFONT smallFont, COLORREF metaColor)
+    {
+        const int textL = rc.left + S(56);
+        const int textR = rc.right - S(10);
+        if (textR <= textL) return;
+        int fsTextHeight = S(15);
+        {
+            HGDIOBJ of = font ? ::SelectObject(dc, font) : nullptr;
+            TEXTMETRICW tm = {};
+            if (::GetTextMetricsW(dc, &tm)) {
+                fsTextHeight = tm.tmHeight - tm.tmExternalLeading;
+                if (fsTextHeight < tm.tmHeight * 3 / 4) fsTextHeight = tm.tmHeight;
+            }
+            if (of) ::SelectObject(dc, of);
+        }
+        const int nameH = S(20);
+        int barH = fsTextHeight;
+        if (barH < S(10)) barH = S(10);
+        if (barH > (rc.bottom - rc.top) / 3) barH = (rc.bottom - rc.top) / 3;
+        const int gap = S(5);
+        const int capH = S(17);
+        const bool hasBar = (m_totalBytes != 0);
+        const bool hasCap = hasBar && !m_meta.empty();
+        int blockH = nameH + (hasBar ? gap + barH : 0) + (hasCap ? gap + capH : 0);
+        int top = rc.top + ((rc.bottom - rc.top) - blockH) / 2;
+        if (top < rc.top + S(2)) top = rc.top + S(2);
+
+        RECT rcName = { textL, top, textR, top + nameH };
+        ::DrawTextW(dc, m_name.c_str(), -1, &rcName,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+        int y = top + nameH + gap;
+        if (hasBar) {
+            RECT rcBar = { textL, y, textR, y + barH };
+            DrawUsageBar(dc, rcBar, m_freeBytes, m_totalBytes);
+            y = rcBar.bottom + gap;
+        }
+        if (hasCap) {
+            if (smallFont) ::SelectObject(dc, smallFont);
+            ::SetTextColor(dc, metaColor);
+            RECT rcCap = { textL, y, textR, y + capH };
+            ::DrawTextW(dc, m_meta.c_str(), -1, &rcCap,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+            if (font) ::SelectObject(dc, font);
+        }
+    }
+
+    // This PC in the icon views: no usage bar (too cramped next to the big drive icon),
+    // just the drive name and a grey "X 可用，共 Y" under it.
+    void PaintIconDrive(HDC dc, const RECT& rc, HFONT font, HFONT smallFont, COLORREF metaColor)
+    {
+        const int l = rc.left + S(4);
+        const int r = rc.right - S(4);
+        if (r <= l) return;
+        const int lineH = S(18);
+        const int metaH = S(17);
+        const bool meta = !m_meta.empty();
+        int y = rc.bottom - S(6) - (meta ? (lineH + metaH) : lineH);
+        if (m_iconPx > 0 && y < m_iconY + m_iconPx + S(2))
+            y = m_iconY + m_iconPx + S(2);
+        if (y < rc.top + S(2)) y = rc.top + S(2);
+        RECT rn = { l, y, r, y + lineH };
+        ::DrawTextW(dc, m_name.c_str(), -1, &rn,
+            DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+        if (meta) {
+            if (smallFont) ::SelectObject(dc, smallFont);
+            ::SetTextColor(dc, metaColor);
+            RECT rm = { l, y + lineH, r, y + lineH + metaH };
+            ::DrawTextW(dc, m_meta.c_str(), -1, &rm,
+                DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+            if (font) ::SelectObject(dc, font);
+        }
+    }
+
     // Plain rectangular usage bar (user preference: 矩形, no rounded corners).
-    static void DrawRoundedBar(HDC hDC, const RECT& rc, ULONGLONG freeBytes, ULONGLONG totalBytes)
+    static void DrawUsageBar(HDC hDC, const RECT& rc, ULONGLONG freeBytes, ULONGLONG totalBytes)
     {
         if (rc.right <= rc.left || rc.bottom <= rc.top) return;
         HBRUSH track = ::CreateSolidBrush(RGB(0xE6, 0xE6, 0xE6));
@@ -150,8 +274,12 @@ private:
     ULONGLONG m_freeBytes = 0;
     ULONGLONG m_totalBytes = 0;
     std::wstring m_name;
-    std::wstring m_caption;
+    std::wstring m_meta;
     UINT m_dpi = 96;
+    Layout m_layout = Layout::Label;
+    int m_iconX = 0;
+    int m_iconY = 0;
+    int m_iconPx = 0;
 };
 
 } // namespace
@@ -602,6 +730,9 @@ void CMainWnd::ApplyTileIconImage(CControlUI* tile, const std::wstring& bmp,
     const int x0 = slotX + (iconPx - dw) / 2;
     const int y0 = slotY + (iconPx - dh) / 2;
 
+    if (auto* ft = dynamic_cast<TileButtonUI*>(tile))
+        ft->SetIconSlot(slotX, slotY, iconPx);   // IconDrive puts the caption under the icon
+
     CDuiString imgAttr;
     imgAttr.Format(_T("file='%s' dest='%d,%d,%d,%d'"),
         bmp.c_str(), x0, y0, x0 + dw, y0 + dh);
@@ -677,20 +808,10 @@ bool CMainWnd::TryReuseIconsView(const std::vector<DirEntry>& dirs,
         }
         } else if (tilesMode) {
             tile->SetAttribute(_T("align"), _T("left"));
-            tile->SetAttribute(_T("multiline"), _T("true"));
-            int nameLines = 1;
-            {
-                const int textW = tileW - DpiScale(56) - DpiScale(8);
-                if (textW > 0 && MeasureTextWidthPx(e.name) > textW)
-                    nameLines = 2;
-            }
-            const bool hasSize = (!e.isDir && !FormatFileSize(e.size).empty());
-            const int lineH = DpiScale(16);
-            int padTop = (tileH - (nameLines + (hasSize ? 1 : 0)) * lineH) / 2;
-            if (padTop < DpiScale(2)) padTop = DpiScale(2);
+            tile->SetAttribute(_T("valign"), _T("vcenter"));
             {
                 CDuiString tp;
-                tp.Format(_T("%d,%d,%d,%d"), DpiScale(56), padTop, DpiScale(8), DpiScale(4));
+                tp.Format(_T("%d,%d,%d,%d"), DpiScale(56), DpiScale(4), DpiScale(8), DpiScale(4));
                 tile->SetAttribute(_T("textpadding"), tp);
             }
         } else {
@@ -702,21 +823,7 @@ bool CMainWnd::TryReuseIconsView(const std::vector<DirEntry>& dirs,
         }
         }
         tile->SetAttribute(_T("endellipsis"), _T("true"));
-
-        std::wstring label = e.name;
-        // Tiles: name on line 1, size on line 2. Explorer shows no type word here
-        // ("0001.jpg文件 699 KB" looked wrong), and folders stay name-only.
-        if (tilesMode && !e.isDir) {
-            const std::wstring sizeText = FormatFileSize(e.size);
-            if (label.size() > static_cast<size_t>(maxLabel))
-                label = label.substr(0, maxLabel - 1) + L"…";
-            if (!sizeText.empty())
-                label = label + L"\n" + sizeText;
-        } else {
-            if (label.size() > static_cast<size_t>(maxLabel))
-                label = label.substr(0, maxLabel - 1) + L"…";
-        }
-        tile->SetText(label.c_str());
+        ApplyTileText(tile, e, maxLabel, listMode, tilesMode);
 
         if (i < kMaxIconThumbs) {
             std::wstring cached = PeekCachedIconBmp(e.fullPath, e.isDir, iconPx);
@@ -926,7 +1033,7 @@ CListContainerElementUI* CMainWnd::CreateDetailsRowShell()
     const int iconGap = DpiScale(UiTokens::DetailsIconTextGap);
     const int rowH = DpiScale(UiTokens::DetailsRowH);
 
-    // Name column: Shell small icon + gap + name
+    // Name column: Shell smallFont icon + gap + name
     // IMPORTANT: use bkimage — CControlUI ignores foreimage (Button/Option only).
     auto* nameCol = new CHorizontalLayoutUI;
     nameCol->SetMouseEnabled(true);
@@ -988,10 +1095,8 @@ void CMainWnd::BindDetailsRow(CListContainerElementUI* row, int entryIdx)
         c->Invalidate();
     }
     if (CControlUI* c = row->GetItemAt(2)) {
-        LPCTSTR typeText = e.isDir
-            ? (IsThisPcPath(m_currentPath) ? _T("驱动器") : _T("文件夹"))
-            : _T("文件");
-        c->SetText(typeText);
+        // Real Shell type name ("光盘映像文件", "JPG 文件", ...) instead of a generic "文件".
+        c->SetText(QueryShellTypeNameCached(e.fullPath, e.isDir).c_str());
         c->Invalidate();
     }
     if (CControlUI* c = row->GetItemAt(3)) {
@@ -1311,8 +1416,7 @@ void CMainWnd::OnDetailsFillTick()
         const UINT gen = m_thumbGeneration.load();
         int added = 0;
         while (m_detailsFillNext < n && added < kDetailsFillBatch) {
-            auto* tile = IsThisPcPath(m_currentPath)
-                ? static_cast<CButtonUI*>(new DriveTileButtonUI) : new CButtonUI;
+            auto* tile = new TileButtonUI;
             BindIconTile(tile, m_detailsFillNext, m_detailsFillQueue[m_detailsFillNext],
                 gen, tileW, tileH, iconPx, maxLabel, listMode, tilesMode);
             m_pIconTiles->Add(tile);
@@ -1336,6 +1440,60 @@ void CMainWnd::OnDetailsFillTick()
     m_detailsFillQueue.clear();
     UpdateListingStatusTip();
     UpdateEmptyStateHint();
+}
+
+// Tile caption for one entry. Shared by BindIconTile (fresh tiles) and
+// TryReuseIconsView (re-bound tiles) — keeping them in one place is what stopped the
+// "switch from large icons to tiles → text painted twice / overlapping" bug.
+void CMainWnd::ApplyTileText(CButtonUI* tile, const DirEntry& e, int maxLabel,
+    bool listMode, bool tilesMode)
+{
+    if (!tile) return;
+    const bool driveTile = IsThisPcPath(m_currentPath);
+    std::wstring label = e.name;
+    bool painted = false;
+
+    if (auto* ft = dynamic_cast<TileButtonUI*>(tile)) {
+        ft->SetUiDpi(m_dpi);
+        ft->SetDriveSpace(e.size, e.capacity);
+        if (listMode) {
+            ft->SetLayoutMode(TileButtonUI::Layout::Label);
+            ft->SetTexts(L"", L"");
+        } else if (driveTile) {
+            // Tiles keep the usage bar; the icon views only show name + free/total.
+            ft->SetLayoutMode(tilesMode ? TileButtonUI::Layout::TilesDrive
+                                        : TileButtonUI::Layout::IconDrive);
+            ft->SetTexts(e.name, e.capacity > 0
+                ? (FormatFileSize(e.size) + L" 可用，共 " + FormatFileSize(e.capacity))
+                : std::wstring());
+            painted = true;
+        } else if (tilesMode) {
+            if (e.isDir) {
+                ft->SetLayoutMode(TileButtonUI::Layout::TilesName);
+                ft->SetTexts(e.name, std::wstring());
+            } else {
+                // Explorer tiles: name, then the grey "type  size" line. The type comes
+                // from the Shell ("光盘映像文件", "JPG 文件", ...), not a generic "文件".
+                ft->SetLayoutMode(TileButtonUI::Layout::TilesFile);
+                std::wstring meta = QueryShellTypeNameCached(e.fullPath, false);
+                const std::wstring sizeText = FormatFileSize(e.size);
+                if (!sizeText.empty())
+                    meta += (meta.empty() ? L"" : L"  ") + sizeText;
+                ft->SetTexts(e.name, meta);
+            }
+            painted = true;
+        } else {
+            ft->SetLayoutMode(TileButtonUI::Layout::Label);
+            ft->SetTexts(L"", L"");
+        }
+    }
+
+    if (painted) {
+        label.clear();          // the caption is painted by the control
+    } else if (label.size() > static_cast<size_t>(maxLabel)) {
+        label = label.substr(0, maxLabel - 1) + L"…";
+    }
+    tile->SetText(label.c_str());
 }
 
 void CMainWnd::BindIconTile(CButtonUI* tile, int index, const DirEntry& e, UINT gen,
@@ -1363,25 +1521,10 @@ void CMainWnd::BindIconTile(CButtonUI* tile, int index, const DirEntry& e, UINT 
         }
     } else if (tilesMode) {
         tile->SetAttribute(_T("align"), _T("left"));
-        // Name on line 1, size on line 2 (Explorer tiles).
-        tile->SetAttribute(_T("multiline"), _T("true"));
-        // DuiLib always paints multi-line text from the top of the text rect, so
-        // valign is ignored; pad the top by hand to centre the block (1-2 name lines
-        // plus the size line) inside the tile.
-        int nameLines = 1;
-        {
-            const int textW = tileW - DpiScale(56) - DpiScale(8);
-            if (textW > 0 && MeasureTextWidthPx(e.name) > textW)
-                nameLines = 2;
-        }
-        const bool hasSize = (!e.isDir && !FormatFileSize(e.size).empty());
-        const int lineH = DpiScale(16);   // font 12 design line height
-        const int blockLines = nameLines + (hasSize ? 1 : 0);
-        int padTop = (tileH - blockLines * lineH) / 2;
-        if (padTop < DpiScale(2)) padTop = DpiScale(2);
+        tile->SetAttribute(_T("valign"), _T("vcenter"));
         {
             CDuiString tp;
-            tp.Format(_T("%d,%d,%d,%d"), DpiScale(56), padTop, DpiScale(8), DpiScale(4));
+            tp.Format(_T("%d,%d,%d,%d"), DpiScale(56), DpiScale(4), DpiScale(8), DpiScale(4));
             tile->SetAttribute(_T("textpadding"), tp);
         }
     } else {
@@ -1394,30 +1537,7 @@ void CMainWnd::BindIconTile(CButtonUI* tile, int index, const DirEntry& e, UINT 
         }
     }
     tile->SetAttribute(_T("endellipsis"), _T("true"));
-    const bool driveTile = IsThisPcPath(m_currentPath);
-    if (auto* drive = dynamic_cast<DriveTileButtonUI*>(tile)) {
-        drive->SetDriveSpace(e.size, e.capacity);
-        drive->SetUiDpi(m_dpi);
-        drive->SetDriveText(e.name, e.capacity > 0
-            ? (FormatFileSize(e.size) + L" 可用，共 " + FormatFileSize(e.capacity))
-            : std::wstring());
-    }
-
-    std::wstring label = e.name;
-    if (driveTile) {
-        // Drive tiles paint name/bar/caption themselves — keep the control's own text empty.
-        label.clear();
-    } else if (tilesMode && !e.isDir) {
-        const std::wstring sizeText = FormatFileSize(e.size);
-        if (label.size() > static_cast<size_t>(maxLabel))
-            label = label.substr(0, maxLabel - 1) + L"…";
-        if (!sizeText.empty())
-            label = label + L"\n" + sizeText;
-    } else {
-        if (label.size() > static_cast<size_t>(maxLabel))
-            label = label.substr(0, maxLabel - 1) + L"…";
-    }
-    tile->SetText(label.c_str());
+    ApplyTileText(tile, e, maxLabel, listMode, tilesMode);
 
     tile->SetAttribute(_T("foreimage"), _T(""));
     tile->SetAttribute(_T("hotforeimage"), _T(""));
@@ -1462,8 +1582,7 @@ void CMainWnd::RebuildIconsViewFull(const std::vector<DirEntry>& all)
 
     int added = 0;
     for (const auto& e : all) {
-        auto* tile = IsThisPcPath(m_currentPath)
-            ? static_cast<CButtonUI*>(new DriveTileButtonUI) : new CButtonUI;
+        auto* tile = new TileButtonUI;
         BindIconTile(tile, added, e, gen, tileW, tileH, iconPx, maxLabel, listMode, tilesMode);
         m_pIconTiles->Add(tile);
         ++added;
@@ -1534,8 +1653,7 @@ void CMainWnd::RebuildIconsViewVirtual(const std::vector<DirEntry>& all)
 
     const int first = (std::min)(ComputeIconVirtPoolSize(tileW, tileH), (int)all.size());
     for (int i = 0; i < first; ++i) {
-        auto* tile = IsThisPcPath(m_currentPath)
-            ? static_cast<CButtonUI*>(new DriveTileButtonUI) : new CButtonUI;
+        auto* tile = new TileButtonUI;
         BindIconTile(tile, i, all[i], gen, tileW, tileH, iconPx, maxLabel, listMode, tilesMode);
         m_pIconTiles->Add(tile);
     }

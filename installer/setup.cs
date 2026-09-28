@@ -1,0 +1,279 @@
+// FastFile setup / uninstall (single-file, self-contained installer).
+// The payload (FastFile.exe + skin\) is embedded as resources by build_installer.ps1,
+// so this program needs nothing but the .NET Framework that ships with Windows.
+//
+//   FastFile-Setup-x.y.z.exe                     -> install (per user, no admin)
+//   FastFile-Setup-x.y.z.exe --quiet             -> install without dialogs
+//   uninstall.exe --uninstall [--quiet]          -> remove program / shortcut / entry
+//
+// Written for the C# 5 compiler that ships in %WINDIR%\Microsoft.NET (no ?. / $"" ...).
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Windows.Forms;
+using Microsoft.Win32;
+
+internal static class Setup
+{
+    private const string AppName = "FastFile";
+    private const string AppVersion = "1.0.0";
+    private const string Publisher = "JINLONG";
+    private const string ExeName = "FastFile.exe";
+    private const string ManifestResource = "ff_manifest";
+
+    [STAThread]
+    private static int Main(string[] args)
+    {
+        bool uninstall = false;
+        bool cleanup = false;
+        bool quiet = false;
+        string dir = null;
+        for (int i = 0; i < args.Length; i++)
+        {
+            string a = args[i].ToLowerInvariant();
+            if (a == "--uninstall") uninstall = true;
+            else if (a == "--cleanup") cleanup = true;
+            else if (a == "--quiet") quiet = true;
+            else if (a == "--dir" && i + 1 < args.Length) dir = args[++i];
+        }
+        if (string.IsNullOrEmpty(dir))
+        {
+            // When run as the installed uninstall.exe, the program folder is the one we
+            // live in — that keeps custom install locations working.
+            string selfDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+            if (!string.IsNullOrEmpty(selfDir) && File.Exists(Path.Combine(selfDir, ExeName)))
+                dir = selfDir;
+            else
+                dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                                   @"Programs\" + AppName);
+        }
+        try
+        {
+            if (cleanup) return DoCleanup(dir);
+            return uninstall ? DoUninstall(dir, quiet) : DoInstall(dir, quiet);
+        }
+        catch (Exception ex)
+        {
+            if (!quiet)
+                MessageBox.Show("操作失败：\r\n\r\n" + ex.Message, AppName,
+                                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return 1;
+        }
+    }
+
+    // ---------------------------------------------------------------- install
+    private static int DoInstall(string dir, bool quiet)
+    {
+        Assembly asm = Assembly.GetExecutingAssembly();
+        KillRunning(asm);
+
+        Directory.CreateDirectory(dir);
+        string manifest;
+        using (Stream ms = asm.GetManifestResourceStream(ManifestResource))
+        {
+            if (ms == null) throw new Exception("安装包不完整：缺少文件清单。");
+            using (StreamReader sr = new StreamReader(ms, Encoding.UTF8))
+                manifest = sr.ReadToEnd();
+        }
+
+        string[] lines = manifest.Replace("\r\n", "\n").Split('\n');
+        foreach (string raw in lines)
+        {
+            string line = raw.Trim();
+            if (line.Length == 0) continue;
+            int bar = line.IndexOf('|');
+            if (bar <= 0) continue;
+            string res = line.Substring(0, bar);
+            string rel = line.Substring(bar + 1).Replace('/', Path.DirectorySeparatorChar);
+            string dst = Path.Combine(dir, rel);
+            string parent = Path.GetDirectoryName(dst);
+            if (!string.IsNullOrEmpty(parent)) Directory.CreateDirectory(parent);
+            using (Stream src = asm.GetManifestResourceStream(res))
+            {
+                if (src == null) throw new Exception("安装包不完整：" + rel);
+                using (FileStream fs = new FileStream(dst, FileMode.Create, FileAccess.Write))
+                    src.CopyTo(fs);
+            }
+        }
+
+        string exe = Path.Combine(dir, ExeName);
+        if (!File.Exists(exe)) throw new Exception("解压后找不到 " + ExeName);
+
+        // Keep a copy of ourselves so the uninstall entry always has something to call.
+        string uninst = Path.Combine(dir, "uninstall.exe");
+        try
+        {
+            string self = asm.Location;
+            if (!string.Equals(self, uninst, StringComparison.OrdinalIgnoreCase))
+                File.Copy(self, uninst, true);
+        }
+        catch { }
+
+        CreateShortcut(dir, exe);
+        WriteUninstallEntry(dir, exe, uninst);
+
+        if (!quiet)
+        {
+            string msg = AppName + " " + AppVersion + " 已安装完成。\r\n\r\n"
+                       + "安装位置：" + dir + "\r\n"
+                       + "开始菜单：" + AppName + "\r\n\r\n"
+                       + "是否立即启动？";
+            if (MessageBox.Show(msg, AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+                Process.Start(new ProcessStartInfo(exe) { WorkingDirectory = dir });
+        }
+        return 0;
+    }
+
+    private static void CreateShortcut(string dir, string exe)
+    {
+        string lnk = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs),
+                                  AppName + ".lnk");
+        object shell = null;
+        object shortcut = null;
+        try
+        {
+            Type t = Type.GetTypeFromProgID("WScript.Shell");
+            if (t == null) return;
+            shell = Activator.CreateInstance(t);
+            shortcut = t.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell,
+                                      new object[] { lnk });
+            Type st = shortcut.GetType();
+            st.InvokeMember("TargetPath", BindingFlags.SetProperty, null, shortcut, new object[] { exe });
+            st.InvokeMember("WorkingDirectory", BindingFlags.SetProperty, null, shortcut, new object[] { dir });
+            st.InvokeMember("IconLocation", BindingFlags.SetProperty, null, shortcut, new object[] { exe + ",0" });
+            st.InvokeMember("Description", BindingFlags.SetProperty, null, shortcut,
+                            new object[] { "FastFile 文件管理器" });
+            st.InvokeMember("Save", BindingFlags.InvokeMethod, null, shortcut, null);
+        }
+        finally
+        {
+            if (shortcut != null) Marshal.ReleaseComObject(shortcut);
+            if (shell != null) Marshal.ReleaseComObject(shell);
+        }
+    }
+
+    private static void WriteUninstallEntry(string dir, string exe, string uninst)
+    {
+        long size = 0;
+        try
+        {
+            foreach (string f in Directory.GetFiles(dir, "*", SearchOption.AllDirectories))
+                size += new FileInfo(f).Length;
+        }
+        catch { }
+        using (RegistryKey k = Registry.CurrentUser.CreateSubKey(
+                   @"Software\Microsoft\Windows\CurrentVersion\Uninstall\" + AppName))
+        {
+            k.SetValue("DisplayName", AppName);
+            k.SetValue("DisplayVersion", AppVersion);
+            k.SetValue("Publisher", Publisher);
+            k.SetValue("DisplayIcon", exe + ",0");
+            k.SetValue("InstallLocation", dir);
+            k.SetValue("UninstallString", "\"" + uninst + "\" --uninstall");
+            k.SetValue("QuietUninstallString", "\"" + uninst + "\" --uninstall --quiet");
+            k.SetValue("NoModify", 1, RegistryValueKind.DWord);
+            k.SetValue("NoRepair", 1, RegistryValueKind.DWord);
+            k.SetValue("EstimatedSize", (int)(size / 1024), RegistryValueKind.DWord);
+        }
+    }
+
+    // -------------------------------------------------------------- uninstall
+    private static int DoUninstall(string dir, bool quiet)
+    {
+        if (!quiet)
+        {
+            string ask = "确定要卸载 " + AppName + " 吗？\r\n\r\n" + dir
+                       + "\r\n\r\n（不会删除 %APPDATA%\\FastFile 中的个人设置）";
+            if (MessageBox.Show(ask, AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+                return 0;
+        }
+
+        KillRunning(Assembly.GetExecutingAssembly());
+
+        try
+        {
+            string lnk = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs),
+                                      AppName + ".lnk");
+            if (File.Exists(lnk)) File.Delete(lnk);
+        }
+        catch { }
+        try
+        {
+            Registry.CurrentUser.DeleteSubKeyTree(
+                @"Software\Microsoft\Windows\CurrentVersion\Uninstall\" + AppName, false);
+        }
+        catch { }
+
+        // We are running from inside the folder that has to disappear, so re-launch a
+        // copy from %TEMP% which deletes the folder once this process is gone.
+        try
+        {
+            string self = Assembly.GetExecutingAssembly().Location;
+            string tmp = Path.Combine(Path.GetTempPath(),
+                "ff-uninst-" + Guid.NewGuid().ToString("N") + ".exe");
+            File.Copy(self, tmp, true);
+            ProcessStartInfo psi = new ProcessStartInfo(tmp,
+                "--uninstall --cleanup --quiet --dir \"" + dir + "\"");
+            psi.UseShellExecute = false;
+            psi.CreateNoWindow = true;
+            psi.WindowStyle = ProcessWindowStyle.Hidden;
+            psi.WorkingDirectory = Path.GetTempPath();
+            Process.Start(psi);
+        }
+        catch { }
+
+        if (!quiet)
+            MessageBox.Show(AppName + " 已卸载。", AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
+        return 0;
+    }
+
+    // Runs from the %TEMP% copy: waits for the original process to exit, then removes the
+    // program folder (with retries) and finally deletes this copy.
+    private static int DoCleanup(string dir)
+    {
+        System.Threading.Thread.Sleep(800);
+        for (int i = 0; i < 20; i++)
+        {
+            try
+            {
+                if (!Directory.Exists(dir)) break;
+                Directory.Delete(dir, true);
+                break;
+            }
+            catch
+            {
+                System.Threading.Thread.Sleep(400);
+            }
+        }
+        try
+        {
+            string self = Assembly.GetExecutingAssembly().Location;
+            ProcessStartInfo psi = new ProcessStartInfo("cmd.exe",
+                "/c ping -n 2 127.0.0.1 > nul & del /f /q \"" + self + "\"");
+            psi.UseShellExecute = false;
+            psi.CreateNoWindow = true;
+            psi.WindowStyle = ProcessWindowStyle.Hidden;
+            psi.WorkingDirectory = Path.GetTempPath();
+            Process.Start(psi);
+        }
+        catch { }
+        return 0;
+    }
+
+    private static void KillRunning(Assembly asm)
+    {
+        try
+        {
+            Process[] procs = Process.GetProcessesByName(AppName);
+            foreach (Process p in procs)
+            {
+                try { p.Kill(); } catch { }
+            }
+            if (procs.Length > 0) System.Threading.Thread.Sleep(600);
+        }
+        catch { }
+    }
+}

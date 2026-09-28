@@ -240,6 +240,8 @@ private:
     void ClearIconView();
     void ApplyTileIconImage(CControlUI* tile, const std::wstring& bmp,
         int tileW, int tileH, int iconPx, bool listMode, bool tilesMode);
+    void ApplyTileText(CButtonUI* tile, const DirEntry& e, int maxLabel,
+        bool listMode, bool tilesMode);
     std::wstring PeekCachedIconBmp(const std::wstring& path, bool isDir, int cx);
     std::wstring GetShellIconBmp(const std::wstring& path, bool isDir, int cx);
     // Small shell icons only (no IShellItemImageFactory thumbnails) — details/list.
@@ -340,6 +342,8 @@ private:
     static bool ResamplePngToSize(const std::wstring& pngPath, int cx, int cy);
     static std::wstring FormatFileTimeLocal(const FILETIME& ft);
     static std::wstring QueryShellTypeName(const std::wstring& path, bool isDir);
+    // Cached per-extension variant (tile / details 类型 column)
+    std::wstring QueryShellTypeNameCached(const std::wstring& path, bool isDir);
     static std::wstring QueryImageDimensions(const std::wstring& path);
     void FillVideoPreviewMeta(const std::wstring& path);
 

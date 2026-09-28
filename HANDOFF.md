@@ -183,6 +183,48 @@ DuiLib 的 `CTileLayoutUI` 增加 `columnfirst` 属性（本项目对 third_part
 高度改成 UI 字体的行高（`GetTextMetrics` 实测，约等于文字高度），形状改成矩形
 （`FillRect`，不再 RoundRect）。
 
+## 2026-09-29 第四批：三个视图 bug + 安装程序
+
+### 超大/大/中图标下的“此电脑”
+驱动器磁贴改成自绘文字后，图标视图里也套用了“平铺”的版式（文字在图标右侧 + 进度条 +
+说明），看上去又乱又重叠。现在按视图分版式（`TileButtonUI::Layout`）：
+
+| 视图 | 版式 | 内容 |
+|---|---|---|
+| 平铺 | `TilesDrive` | 盘名 / 进度条 / 灰色「X 可用，共 Y」 |
+| 超大 / 大 / 中 | `IconDrive` | **不画进度条**，图标下方居中显示盘名 + 灰色说明 |
+| 列表 | `Label` | 交给控件自身画（只有盘名） |
+
+### 从“超大图标”切到“平铺”文字重叠
+根因是**两条绑定路径不一致**：新建磁贴走 `BindIconTile`（会清空控件文字并设置自绘版式），
+而视图切换时复用的磁贴走 `TryReuseIconsView`——它没做这两件事，于是控件自身的文字
+和自绘文字同时画出来。现在两条路径都调用同一个 `ApplyTileText()`，从结构上消除分歧。
+
+### 平铺视图显示真实文件类型
+- 新增 `QueryShellTypeNameCached()`：按扩展名缓存 Shell 的类型名，用
+  `SHGFI_TYPENAME | SHGFI_USEFILEATTRIBUTES`（只看扩展名，不碰文件），
+  所以 `.iso` 显示「光盘映像文件」、`.jpg` 显示「JPG 文件」，而不是笼统的「文件」；
+- 详情视图的「类型」列也换用它；
+- 平铺磁贴的文件名按像素宽度折行（最多两行，超出部分把省略号补在**最后一行末尾**），
+  不会再出现只剩一个「…」的第三行，也不会和右边文件夹挤在一起。
+
+### 安装程序（installer\）
+只依赖 Windows 自带工具（.NET Framework 的 `csc.exe`），无需 Inno/NSIS/WiX：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File installer\build_installer.ps1
+```
+
+`installer\setup.cs` 编译成 `dist\FastFile-Setup-<版本>.exe`，把 `FastFile.exe` 与
+`skin\` 作为资源内嵌；安装到 `%LOCALAPPDATA%\Programs\FastFile`（当前用户、免管理员），
+建立开始菜单快捷方式与「设置 → 应用」卸载项，并支持 `--quiet/--dir/--uninstall/--cleanup`。
+卸载由 `%TEMP%` 中的副本完成（程序自身在安装目录里，不能自己删自己）。
+文件版本号在 `installer\setup.cs` 与 `build_installer.ps1 -Version` 两处。
+
+**踩过的坑**：IExpress 在新系统上命令行打包直接退出码 1（连最小 SED 也失败），
+所以最终改成 csc 方案；`install.cmd/install.ps1/uninstall.ps1` 是那版残留，留着参考。
+
+
 ## 当前顶部结构（自上而下）
 
 1. 系统标题栏（客户端内已去掉「FastFile 文件管理」自定义标题行）

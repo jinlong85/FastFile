@@ -213,6 +213,49 @@ std::wstring CMainWnd::FormatFileTimeLocal(const FILETIME& ft)
     return buf;
 }
 
+// Type name for a folder/file as Explorer would show it ("文件夹" / "光盘映像文件" /
+// "JPG 文件" ...). Cached per extension: the tile view asks once per item and
+// SHGetFileInfo would otherwise hit the shell's type registry every time.
+// SHGFI_USEFILEATTRIBUTES means we only need the extension — no file access at all.
+std::wstring CMainWnd::QueryShellTypeNameCached(const std::wstring& path, bool isDir)
+{
+    if (isDir)
+        return IsThisPcPath(m_currentPath) ? L"驱动器" : L"文件夹";
+
+    const wchar_t* extPtr = ::PathFindExtensionW(path.c_str());
+    std::wstring key;
+    if (extPtr && *extPtr) {
+        key = extPtr;
+        for (auto& ch : key) ch = static_cast<wchar_t>(::towlower(ch));
+    }
+
+    static std::mutex cacheMutex;
+    static std::map<std::wstring, std::wstring> cache;
+    {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        auto it = cache.find(key);
+        if (it != cache.end())
+            return it->second;
+    }
+
+    std::wstring name;
+    if (!key.empty()) {
+        const std::wstring probe = L"file" + key;
+        SHFILEINFOW sfi = {};
+        if (::SHGetFileInfoW(probe.c_str(), FILE_ATTRIBUTE_NORMAL, &sfi, sizeof(sfi),
+                SHGFI_TYPENAME | SHGFI_USEFILEATTRIBUTES) && sfi.szTypeName[0])
+            name = sfi.szTypeName;
+    }
+    if (name.empty())
+        name = L"文件";
+
+    {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        cache[key] = name;
+    }
+    return name;
+}
+
 std::wstring CMainWnd::QueryShellTypeName(const std::wstring& path, bool isDir)
 {
     SHFILEINFOW sfi = {};
