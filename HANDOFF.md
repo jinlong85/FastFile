@@ -1,0 +1,81 @@
+﻿# FastFile — 交接说明（给后续 AI / 开发者）
+
+更新日期：2026-09-28（Asia/Shanghai）
+
+## 目标
+
+轻量 Windows 文件管理器：接近 **360 文件** 的速度与布局密度，观感贴近 **Windows 11 资源管理器**。  
+技术栈：**DuiLib + 原生 C++**（不要改成 WinUI/Electron）。  
+**禁止**：反编译 360 安装包；复制 360 图标、商标、皮肤资源。布局/密度可参考，资源必须用 Windows Shell / 自绘。
+
+## 路径
+
+| 项 | 路径 |
+|----|------|
+| 工程根 | `C:\Users\JINLONG\文档\Grok\FastFile`（可能 junction 到 Documents） |
+| 源码 | `src\MainWnd.cpp` / `MainWnd.h` / `UiTokens.h` / `main.cpp` |
+| 皮肤 | `skin\main.xml`（POST_BUILD 拷到 exe 旁） |
+| 可执行文件 | `build\Release\FastFile.exe` |
+| DuiLib | `third_party\duilib\` |
+| 备份 | 工程根下 `bak_*` 目录 |
+
+## 构建与运行
+
+- 工具链：CMake + VS 2022 Build Tools，**Release x64**
+- 改 `main.xml` 后务必重建或确保 `build\Release\skin\` 与源 skin 同步，否则会「加载资源文件失败」或跑旧皮肤
+- 发布后建议：结束 `FastFile` 进程 → 清 `%TEMP%\FastFileIconCache` → 再启动 exe
+- 图标缓存版本：`_v6.png`（HICON → PNG 真透明）；改导出逻辑时升版本并清缓存
+
+## 当前顶部结构（自上而下）
+
+1. 系统标题栏（客户端内已去掉「FastFile 文件管理」自定义标题行）
+2. **选项卡**
+3. **收藏**（★ 收藏 + 可拖入固定）
+4. **工具栏**（新建/剪切复制…/排序/查看/预览开关）
+5. **地址栏**（与面包屑合并：默认面包屑；点击进入编辑；Enter 导航；Esc/失焦回面包屑）+ **搜索**（框内占位「搜索」；「含子目录」复选框；无外侧放大镜/清除按钮）
+
+## 已实现能力（摘要）
+
+- 浏览、后台复制、前台恢复、多选、删除/重命名/新建文件夹
+- Shell 右键（IContextMenu2/3）、卷标、隐藏项开关
+- 左树 + 快速访问、多标签与路径记忆、前进后退
+- 六种视图、异步缩略图、拖放、递归搜索
+- 右侧预览（元数据 + 图/视频帧）；空选时尽量空白
+- DPI PerMonitorV2；`UiTokens.h` 设计令牌
+- 详细信息：名称列 Shell 小图标（`bkimage`，勿用 `CControlUI`+`foreimage`）
+- 图标：PNG alpha；文件夹/盘符/工具栏用 HICON，勿对文件夹用 `SIIGBF_ICONONLY`（会黑框）
+
+## 已知坑
+
+1. **DuiLib `CControlUI` 只认 `bkimage`，不认 `foreimage`**（按钮才有 foreimage）
+2. **不透明 BMP + 强制 A=255** → 灰底白框 / 白底黑框；必须 PNG + 真 alpha
+3. **`main.xml` 标签不匹配** → MessageBox「加载资源文件失败」后 ExitProcess
+4. 预览图宽度须 ≤ `PreviewPaneW - 2*PreviewPad`
+5. 每文件夹视图记在 `folder_views.ini`，可能覆盖会话默认视图
+
+## 会话/配置文件（通常在 `%APPDATA%\FastFile\`）
+
+- `session.ini`、`folder_views.ini`、`favorites.txt`、`left_nav.ini` 等
+
+## 建议下一轮方向（用户曾提过）
+
+- 继续对齐资源管理器 / 360 密度与图标风格（自有 Shell 图标）
+- 安装包、移动进度、列表虚拟化
+- 预览/工具栏细节打磨
+
+## 给新 AI 的工作方式
+
+1. 先读 `UiTokens.h`、`skin/main.xml`、再搜 `MainWnd.cpp` 相关符号再改
+2. 大改 UI 前备份到 `bak_YYYYMMDD_HHMMSS_*`
+3. 改完：校验 XML 良构 → Release 构建 → 杀进程 → 清图标缓存 → 启动验收
+4. 用户界面中文；回复用户可用中文
+
+## 最近相关备份示例
+
+- `bak_20260928_204807_topchrome`（顶部顺序）
+- `bak_20260928_204108_ui6`（收藏/面包屑/搜索/预览）
+- `bak_20260928_202103_ui5`（预览/地址合并/搜索）
+- `bak_20260928_200548_icon_v6`（PNG 透明图标）
+
+---
+本文档由 FastFile 开发助手生成，便于换 AI 继续开发时粘贴或直接打开。

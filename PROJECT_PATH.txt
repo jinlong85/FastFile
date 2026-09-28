@@ -1,0 +1,5 @@
+﻿FastFile project root:
+C:\Users\JINLONG\文档\Grok\FastFile
+
+USERPROFILE: C:\Users\JINLONG
+Documents (shell:Personal): C:\Users\JINLONG\文档

@@ -1,0 +1,4 @@
+﻿Vendored from https://github.com/duilib/duilib (master branch ZIP).
+Only the DuiLib/ library sources and licenses are included.
+Demos (including 360SafeDemo and others) are intentionally NOT vendored.
+Fetched for FastFile P0 scaffold — offline-friendly embedding.

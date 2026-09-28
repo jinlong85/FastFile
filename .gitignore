@@ -1,0 +1,36 @@
+/build/
+/out/
+/cmake-build-*/
+/.vs/
+*.user
+*.suo
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
+/bin/
+/lib/
+*.aps
+*.ncb
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.log
+
+# ---- Dev scratch / verification artifacts (never commit) ----
+# Ad-hoc patch & verify scripts written by tooling sessions
+/_*.py
+/_inspect/
+# Timestamped pre-change snapshots (bak_YYYYMMDD_* dirs, *.bak_* files)
+/bak_*/
+*.bak
+*.bak_*
+
+# ---- Build / IDE output ----
+*.exe
+*.dll
+*.lib
+x64/
+Debug/
+Release/
