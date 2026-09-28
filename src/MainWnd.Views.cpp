@@ -48,14 +48,29 @@ public:
         const int dpi = static_cast<int>(m_dpi);
         auto S = [&](int design) { return ::MulDiv(design, dpi, 96); };
 
+        HFONT font = m_pManager ? m_pManager->GetFont(m_iFont) : nullptr;
+        // Bar height follows the text height of the UI font.
+        int fsTextHeight = S(15);
+        if (font) {
+            HGDIOBJ of = ::SelectObject(hDC, font);
+            TEXTMETRICW tm = {};
+            if (::GetTextMetricsW(hDC, &tm)) {
+                fsTextHeight = tm.tmHeight - tm.tmExternalLeading;
+                if (fsTextHeight < tm.tmHeight * 3 / 4) fsTextHeight = tm.tmHeight;
+            }
+            ::SelectObject(hDC, of);
+        }
+
         const int textL = rc.left + S(56) + S(8);
         const int textR = rc.right - S(12);
         if (textR <= textL) return;
 
         const int nameH = S(20);
-        int barH = (rc.bottom - rc.top) / 9;      // follows the tile height
-        if (barH < S(7)) barH = S(7);
-        if (barH > S(14)) barH = S(14);
+        // Bar height tracks the text height (the user asked for a bar as tall as the
+        // font), still clamped so tiny tiles stay sane.
+        int barH = fsTextHeight;                  // measured from the UI font
+        if (barH < S(10)) barH = S(10);
+        if (barH > (rc.bottom - rc.top) / 3) barH = (rc.bottom - rc.top) / 3;
         const int gap = S(5);
         const int capH = S(18);
         // Small tiles (list/medium modes) drop the caption/bar instead of overlapping.
@@ -68,7 +83,6 @@ public:
         int top = rc.top + ((rc.bottom - rc.top) - blockH) / 2;
         if (top < rc.top + S(2)) top = rc.top + S(2);
 
-        HFONT font = m_pManager ? m_pManager->GetFont(m_iFont) : nullptr;
         HFONT smallFont = nullptr;
         {
             LOGFONTW lf = {};
@@ -112,20 +126,12 @@ public:
     }
 
 private:
-    // Pill-shaped usage bar: rounded track + rounded fill (GDI RoundRect with a matching
-    // pen so no outline shows).
+    // Plain rectangular usage bar (user preference: 矩形, no rounded corners).
     static void DrawRoundedBar(HDC hDC, const RECT& rc, ULONGLONG freeBytes, ULONGLONG totalBytes)
     {
         if (rc.right <= rc.left || rc.bottom <= rc.top) return;
-        const int radius = (rc.bottom - rc.top);
         HBRUSH track = ::CreateSolidBrush(RGB(0xE6, 0xE6, 0xE6));
-        HPEN trackPen = ::CreatePen(PS_SOLID, 1, RGB(0xE6, 0xE6, 0xE6));
-        HGDIOBJ ob = ::SelectObject(hDC, track);
-        HGDIOBJ op = ::SelectObject(hDC, trackPen);
-        ::RoundRect(hDC, rc.left, rc.top, rc.right, rc.bottom, radius, radius);
-        ::SelectObject(hDC, op);
-        ::SelectObject(hDC, ob);
-        ::DeleteObject(trackPen);
+        ::FillRect(hDC, &rc, track);
         ::DeleteObject(track);
 
         if (totalBytes == 0) return;
@@ -137,13 +143,7 @@ private:
         RECT rf = rc;
         rf.right = rf.left + fillW;
         HBRUSH fill = ::CreateSolidBrush(RGB(0x00, 0x78, 0xD4));
-        HPEN fillPen = ::CreatePen(PS_SOLID, 1, RGB(0x00, 0x78, 0xD4));
-        ob = ::SelectObject(hDC, fill);
-        op = ::SelectObject(hDC, fillPen);
-        ::RoundRect(hDC, rf.left, rf.top, rf.right, rf.bottom, radius, radius);
-        ::SelectObject(hDC, op);
-        ::SelectObject(hDC, ob);
-        ::DeleteObject(fillPen);
+        ::FillRect(hDC, &rf, fill);
         ::DeleteObject(fill);
     }
 
@@ -226,9 +226,9 @@ void CMainWnd::GetViewMetrics(int& tileW, int& tileH, int& iconPx, int& childPad
         // only guards against absurd names now that the column can grow.
         tileW = 180; tileH = UiTokens::DetailsRowH; iconPx = UiTokens::DetailsIconPx; childPad = UiTokens::TileChildPadList; maxLabel = 260; break;
     case ViewMode::Tiles:
-        // Fits three columns in the normal content area at 150% scaling while
-        // retaining an Explorer-like icon and a single readable label line.
-        tileW = 190; tileH = 52; iconPx = 40; childPad = UiTokens::TileChildPadMedium; maxLabel = 24; break;
+        // Tall enough for a wrapped name + the size line, so nothing is clipped
+        // (Explorer's tiles reserve two text lines under/next to the icon).
+        tileW = 230; tileH = 72; iconPx = 44; childPad = UiTokens::TileChildPadMedium; maxLabel = 30; break;
     case ViewMode::Details:
     default:
         tileW = 100; tileH = 108; iconPx = 48; childPad = UiTokens::TileChildPadMedium; maxLabel = 16; break;
@@ -632,9 +632,7 @@ bool CMainWnd::TryReuseIconsView(const std::vector<DirEntry>& dirs,
 {
     if (!m_pIconTiles) return false;
     std::vector<DirEntry> all;
-    all.reserve(dirs.size() + files.size());
-    all.insert(all.end(), dirs.begin(), dirs.end());
-    all.insert(all.end(), files.begin(), files.end());
+    BuildDisplayOrder(dirs, files, all);
 
     const int n = m_pIconTiles->GetCount();
     if (n != static_cast<int>(all.size()) || n <= 0)
@@ -679,11 +677,22 @@ bool CMainWnd::TryReuseIconsView(const std::vector<DirEntry>& dirs,
         }
         } else if (tilesMode) {
             tile->SetAttribute(_T("align"), _T("left"));
-            tile->SetAttribute(_T("valign"), _T("vcenter"));
+            tile->SetAttribute(_T("multiline"), _T("true"));
+            int nameLines = 1;
             {
-            CDuiString tp; tp.Format(_T("%d,%d,%d,%d"), DpiScale(56), DpiScale(4), DpiScale(8), DpiScale(14));
-            tile->SetAttribute(_T("textpadding"), tp);
-        }
+                const int textW = tileW - DpiScale(56) - DpiScale(8);
+                if (textW > 0 && MeasureTextWidthPx(e.name) > textW)
+                    nameLines = 2;
+            }
+            const bool hasSize = (!e.isDir && !FormatFileSize(e.size).empty());
+            const int lineH = DpiScale(16);
+            int padTop = (tileH - (nameLines + (hasSize ? 1 : 0)) * lineH) / 2;
+            if (padTop < DpiScale(2)) padTop = DpiScale(2);
+            {
+                CDuiString tp;
+                tp.Format(_T("%d,%d,%d,%d"), DpiScale(56), padTop, DpiScale(8), DpiScale(4));
+                tile->SetAttribute(_T("textpadding"), tp);
+            }
         } else {
             tile->SetAttribute(_T("align"), _T("center"));
             tile->SetAttribute(_T("valign"), _T("bottom"));
@@ -750,9 +759,7 @@ void CMainWnd::RebuildIconsView(const std::vector<DirEntry>& dirs,
         return;
     }
     std::vector<DirEntry> all;
-    all.reserve(dirs.size() + files.size());
-    all.insert(all.end(), dirs.begin(), dirs.end());
-    all.insert(all.end(), files.begin(), files.end());
+    BuildDisplayOrder(dirs, files, all);
     if ((int)all.size() >= kVirtThreshold) {
         if (m_hWnd) ::KillTimer(m_hWnd, kTimerVirtSync);
         RebuildIconsViewVirtual(all);
@@ -769,53 +776,65 @@ void CMainWnd::RebuildIconsView(const std::vector<DirEntry>& dirs,
 
 void CMainWnd::FlattenListing(std::vector<DirEntry>& out) const
 {
+    BuildDisplayOrder(m_listingDirs, m_listingFiles, out);
+}
+
+// Strict comparison for the active sort column. Folders are deliberately NOT grouped on
+// top (Explorer behaves the same): sorting by 修改日期 must be able to put the newest
+// *files* first, which is the whole point of "find the file I just saved".
+bool CMainWnd::EntryComesBefore(const DirEntry& a, const DirEntry& b) const
+{
+    if (IsThisPcPath(m_currentPath)) {
+        const wchar_t da = a.fullPath.empty() ? L'Z' : static_cast<wchar_t>(::towupper(a.fullPath[0]));
+        const wchar_t db = b.fullPath.empty() ? L'Z' : static_cast<wchar_t>(::towupper(b.fullPath[0]));
+        if (da == L'C') return db != L'C';
+        if (db == L'C') return false;
+        return da < db;
+    }
+    int r = 0;
+    switch (m_sortColumn) {
+    case SortColumn::Size:
+        if (a.size < b.size) r = -1;
+        else if (a.size > b.size) r = 1;
+        else r = ::_wcsicmp(a.name.c_str(), b.name.c_str());
+        break;
+    case SortColumn::Modified:
+        if (a.mtime < b.mtime) r = -1;
+        else if (a.mtime > b.mtime) r = 1;
+        else r = ::_wcsicmp(a.name.c_str(), b.name.c_str());
+        break;
+    case SortColumn::Type: {
+        const wchar_t* ea = PathFindExtensionW(a.name.c_str());
+        const wchar_t* eb = PathFindExtensionW(b.name.c_str());
+        r = ::_wcsicmp(ea ? ea : L"", eb ? eb : L"");
+        if (r == 0) r = ::_wcsicmp(a.name.c_str(), b.name.c_str());
+        break;
+    }
+    case SortColumn::Name:
+    default:
+        r = ::_wcsicmp(a.name.c_str(), b.name.c_str());
+        break;
+    }
+    return m_sortAscending ? (r < 0) : (r > 0);
+}
+
+void CMainWnd::BuildDisplayOrder(const std::vector<DirEntry>& dirs,
+    const std::vector<DirEntry>& files, std::vector<DirEntry>& out) const
+{
     out.clear();
-    out.reserve(m_listingDirs.size() + m_listingFiles.size());
-    out.insert(out.end(), m_listingDirs.begin(), m_listingDirs.end());
-    out.insert(out.end(), m_listingFiles.begin(), m_listingFiles.end());
+    out.reserve(dirs.size() + files.size());
+    out.insert(out.end(), dirs.begin(), dirs.end());
+    out.insert(out.end(), files.begin(), files.end());
+    // Stable so equal keys (same name/size/time) keep folders before files.
+    std::stable_sort(out.begin(), out.end(),
+        [this](const DirEntry& a, const DirEntry& b) { return EntryComesBefore(a, b); });
 }
 
 void CMainWnd::SortListingCache()
 {
-    auto cmp = [this](const DirEntry& a, const DirEntry& b) {
-        if (IsThisPcPath(m_currentPath)) {
-            const wchar_t da = a.fullPath.empty() ? L'Z' : static_cast<wchar_t>(::towupper(a.fullPath[0]));
-            const wchar_t db = b.fullPath.empty() ? L'Z' : static_cast<wchar_t>(::towupper(b.fullPath[0]));
-            if (da == L'C') return db != L'C';
-            if (db == L'C') return false;
-            return da < db;
-        }
-        int r = 0;
-        switch (m_sortColumn) {
-        case SortColumn::Size:
-            if (a.isDir != b.isDir) return a.isDir && !b.isDir;
-            if (a.size < b.size) r = -1;
-            else if (a.size > b.size) r = 1;
-            else r = ::_wcsicmp(a.name.c_str(), b.name.c_str());
-            break;
-        case SortColumn::Modified:
-            if (a.isDir != b.isDir) return a.isDir && !b.isDir;
-            if (a.mtime < b.mtime) r = -1;
-            else if (a.mtime > b.mtime) r = 1;
-            else r = ::_wcsicmp(a.name.c_str(), b.name.c_str());
-            break;
-        case SortColumn::Type: {
-            if (a.isDir != b.isDir) return a.isDir && !b.isDir;
-            const wchar_t* ea = PathFindExtensionW(a.name.c_str());
-            const wchar_t* eb = PathFindExtensionW(b.name.c_str());
-            r = ::_wcsicmp(ea ? ea : L"", eb ? eb : L"");
-            if (r == 0) r = ::_wcsicmp(a.name.c_str(), b.name.c_str());
-            break;
-        }
-        case SortColumn::Name:
-        default:
-            if (a.isDir != b.isDir) return a.isDir && !b.isDir;
-            r = ::_wcsicmp(a.name.c_str(), b.name.c_str());
-            break;
-        }
-        return m_sortAscending ? (r < 0) : (r > 0);
-    };
-    // Keep dirs/files grouping for Name default; for Size/Type still dirs first via cmp
+    // The visible order comes from BuildDisplayOrder() (folders and files merged); this
+    // keeps the cached vectors themselves sorted for anything that reads them directly.
+    auto cmp = [this](const DirEntry& a, const DirEntry& b) { return EntryComesBefore(a, b); };
     std::sort(m_listingDirs.begin(), m_listingDirs.end(), cmp);
     std::sort(m_listingFiles.begin(), m_listingFiles.end(), cmp);
 }
@@ -1017,9 +1036,7 @@ void CMainWnd::RebuildDetailsVirtual()
     ResetDetailsVirtualState();
 
     m_detailsEntries.clear();
-    m_detailsEntries.reserve(m_listingDirs.size() + m_listingFiles.size());
-    m_detailsEntries.insert(m_detailsEntries.end(), m_listingDirs.begin(), m_listingDirs.end());
-    m_detailsEntries.insert(m_detailsEntries.end(), m_listingFiles.begin(), m_listingFiles.end());
+    BuildDisplayOrder(m_listingDirs, m_listingFiles, m_detailsEntries);
     m_detailsSel.assign(m_detailsEntries.size(), 0);
     m_detailsFirst = 0;
     m_detailsCur = -1;
@@ -1255,15 +1272,12 @@ void CMainWnd::StartDetailsProgressiveFill(const std::vector<DirEntry>& dirs,
     UpdateHeaderSortIndicators();
 
     m_detailsFillQueue.clear();
-    m_detailsFillQueue.reserve(
-        (std::min)(dirs.size() + files.size(), static_cast<size_t>(kMaxListItems)));
-    for (const auto& e : dirs) {
-        if (static_cast<int>(m_detailsFillQueue.size()) >= kMaxListItems) break;
-        m_detailsFillQueue.push_back(e);
-    }
-    for (const auto& e : files) {
-        if (static_cast<int>(m_detailsFillQueue.size()) >= kMaxListItems) break;
-        m_detailsFillQueue.push_back(e);
+    {
+        std::vector<DirEntry> ordered;
+        BuildDisplayOrder(dirs, files, ordered);
+        if ((int)ordered.size() > kMaxListItems)
+            ordered.resize(kMaxListItems);
+        m_detailsFillQueue.swap(ordered);
     }
     m_detailsFillNext = 0;
     m_detailsFilling = true;
@@ -1349,11 +1363,25 @@ void CMainWnd::BindIconTile(CButtonUI* tile, int index, const DirEntry& e, UINT 
         }
     } else if (tilesMode) {
         tile->SetAttribute(_T("align"), _T("left"));
-        tile->SetAttribute(_T("valign"), _T("vcenter"));
         // Name on line 1, size on line 2 (Explorer tiles).
         tile->SetAttribute(_T("multiline"), _T("true"));
+        // DuiLib always paints multi-line text from the top of the text rect, so
+        // valign is ignored; pad the top by hand to centre the block (1-2 name lines
+        // plus the size line) inside the tile.
+        int nameLines = 1;
         {
-            CDuiString tp; tp.Format(_T("%d,%d,%d,%d"), DpiScale(56), DpiScale(4), DpiScale(8), DpiScale(4));
+            const int textW = tileW - DpiScale(56) - DpiScale(8);
+            if (textW > 0 && MeasureTextWidthPx(e.name) > textW)
+                nameLines = 2;
+        }
+        const bool hasSize = (!e.isDir && !FormatFileSize(e.size).empty());
+        const int lineH = DpiScale(16);   // font 12 design line height
+        const int blockLines = nameLines + (hasSize ? 1 : 0);
+        int padTop = (tileH - blockLines * lineH) / 2;
+        if (padTop < DpiScale(2)) padTop = DpiScale(2);
+        {
+            CDuiString tp;
+            tp.Format(_T("%d,%d,%d,%d"), DpiScale(56), padTop, DpiScale(8), DpiScale(4));
             tile->SetAttribute(_T("textpadding"), tp);
         }
     } else {
@@ -1526,4 +1554,18 @@ void CMainWnd::RebuildIconsViewVirtual(const std::vector<DirEntry>& all)
         ::PostMessageW(m_hWnd, kMsgDetailsFill, 1, 0); // wParam=1 => icon mode
     else
         m_detailsFilling = false;
+}
+// Pixel width of a string in the UI font (0 = unknown).
+int CMainWnd::MeasureTextWidthPx(const std::wstring& text)
+{
+    if (text.empty() || !m_hWnd) return 0;
+    HDC dc = ::GetDC(m_hWnd);
+    if (!dc) return 0;
+    HFONT font = m_PaintManager.GetFont(0);
+    HGDIOBJ oldFont = font ? ::SelectObject(dc, font) : nullptr;
+    SIZE sz = { 0, 0 };
+    ::GetTextExtentPoint32W(dc, text.c_str(), static_cast<int>(text.size()), &sz);
+    if (oldFont) ::SelectObject(dc, oldFont);
+    ::ReleaseDC(m_hWnd, dc);
+    return sz.cx;
 }

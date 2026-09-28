@@ -55,7 +55,8 @@ void CMainWnd::InitWindow()
     m_pLeftFavPins = static_cast<CVerticalLayoutUI*>(m_PaintManager.FindControl(_T("left_fav_pins")));
     m_pLeftQuick = static_cast<CVerticalLayoutUI*>(m_PaintManager.FindControl(_T("left_quick")));
     m_pLeftThisPc = static_cast<CVerticalLayoutUI*>(m_PaintManager.FindControl(_T("left_thispc")));
-    m_pPreviewPane = static_cast<CVerticalLayoutUI*>(m_PaintManager.FindControl(_T("preview_pane")));
+    m_pPreviewPane = static_cast<CContainerUI*>(m_PaintManager.FindControl(_T("preview_pane")));
+    m_pLeftPanel = static_cast<CContainerUI*>(m_PaintManager.FindControl(_T("left_panel")));
     m_pPreviewTitle = static_cast<CLabelUI*>(m_PaintManager.FindControl(_T("preview_title")));
     m_pPreviewImage = m_PaintManager.FindControl(_T("preview_image"));
     m_pPreviewText = static_cast<CLabelUI*>(m_PaintManager.FindControl(_T("preview_text")));
@@ -469,6 +470,7 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     }
     if (uMsg == WM_LBUTTONUP) {
         CaptureLeftNavSplitterIfChanged();
+        CapturePaneWidthsIfChanged();
         POINT ptClient = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
         CControlUI* hit = m_PaintManager.FindControl(ptClient);
         if (IsFileViewBlankHit(hit)) {

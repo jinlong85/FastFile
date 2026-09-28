@@ -1,4 +1,4 @@
-﻿# FastFile — 交接说明（给后续 AI / 开发者）
+# FastFile — 交接说明（给后续 AI / 开发者）
 
 更新日期：2026-09-29（Asia/Shanghai）
 
@@ -128,6 +128,55 @@ DuiLib 的 `CTileLayoutUI` 增加 `columnfirst` 属性（本项目对 third_part
   `ReloadPreviewForWidth()` 重新生成缩略图（`PreviewImageBox()` 按窗格宽度给出绘制尺寸，
   图片/文件夹图标/视频帧都按新宽度重取，不会拉伸模糊或穿模）。
   `m_previewFromSelection` 用来区分「选中项的预览」和「当前目录概览」。
+
+## 2026-09-29 第三批：磁贴文字 / 可拖动分隔条 / 排序 / 进度条
+
+### 平铺视图的文件名
+磁贴改成 230×72（设计）：文件名最多两行，大小单独一行，不再被裁掉。
+**坑**：DuiLib 开 `multiline` 后文字总是从文本框顶部开始画（`valign` 被忽略），
+所以 `BindIconTile`／`TryReuseIconsView` 会用 `MeasureTextWidthPx()` 先估名字占几行，
+再按「行数 × 行高」手工算 `textpadding` 的顶部留白，才能看起来垂直居中。
+
+### 左侧栏 / 预览栏都能拖宽度
+根因：**分隔条（sep）是容器自己的能力**——只有 `CHorizontalLayoutUI` 实现 `sepwidth`、
+只有 `CVerticalLayoutUI` 实现 `sepheight`。之前把 `sepwidth` 写在 `VerticalLayout`
+上，属性被静默忽略，所以完全拖不动。
+
+| 想改的方向 | 容器必须是 | 属性 | 热区位置 |
+|---|---|---|---|
+| 宽度 | HorizontalLayout | `sepwidth` | 正数=右边缘，负数=左边缘 |
+| 高度 | VerticalLayout | `sepheight` | 正数=下边缘，负数=上边缘 |
+
+热区**必须落在容器的 padding 区域里**，否则会被子控件挡住、收不到鼠标事件。
+因此结构改成两层：
+
+```xml
+<HorizontalLayout name="left_panel" width="220" sepwidth="8" padding="8,8,8,8">   <!-- 包裹层 -->
+  <VerticalLayout name="left_body" padding="0,0,0,0"> ...左侧内容... </VerticalLayout>
+</HorizontalLayout>
+<HorizontalLayout name="preview_pane" width="320" sepwidth="-12" padding="24,24,24,24">
+  <VerticalLayout name="preview_body" padding="0,0,0,0"> ...预览内容... </VerticalLayout>
+</HorizontalLayout>
+```
+
+宽度用设计单位持久化在 `left_nav.ini`（`LeftPanelW` / `PreviewW`），
+`CapturePaneWidthsIfChanged()` 在 WM_LBUTTONUP 时写入；拖动过程中 200ms 的
+`kTimerLayoutSync` 会把预览缩略图按新宽度重取。
+`m_pPreviewPane` / `m_pLeftPanel` 的类型是 `CContainerUI*`（包裹层是 HorizontalLayout，
+不能再 static_cast 成 CVerticalLayoutUI）。
+
+调试提示：自动化测试点击分隔条时要落在热区**内部**——`PtInRect` 右/下边界是开区间，
+差 1px 就会点空，看起来像"拖动功能没实现"。
+
+### 排序不再强制文件夹在前
+`EntryComesBefore()` 取代了原来"`if (a.isDir != b.isDir) return a.isDir;`"的写法，
+`BuildDisplayOrder()` 把文件夹和文件合并后 `stable_sort`。资源管理器本来就只按当前列
+排序（文件夹不和文件分组），这样"按修改日期降序"才能把刚保存的文件排在最前面。
+三处合并点（详情虚拟列表、渐进填充队列、`FlattenListing`）和图标视图都走同一个函数。
+
+### 驱动器进度条
+高度改成 UI 字体的行高（`GetTextMetrics` 实测，约等于文字高度），形状改成矩形
+（`FillRect`，不再 RoundRect）。
 
 ## 当前顶部结构（自上而下）
 

@@ -345,6 +345,9 @@ private:
 
     // Virtualized icon window + progressive details fill (E)
     void FlattenListing(std::vector<DirEntry>& out) const;
+    bool EntryComesBefore(const DirEntry& a, const DirEntry& b) const;
+    void BuildDisplayOrder(const std::vector<DirEntry>& dirs,
+        const std::vector<DirEntry>& files, std::vector<DirEntry>& out) const;
     void RebuildIconsViewFull(const std::vector<DirEntry>& all);
     void RebuildIconsViewVirtual(const std::vector<DirEntry>& all);
     void EnsureIconTilePool(int poolCount, int tileW, int tileH);
@@ -439,6 +442,7 @@ private:
     void StyleHorizontalScrollBar(CContainerUI* host);
     void ApplyFileViewScrollBars();
     int MeasureListColumnWidth(const std::vector<DirEntry>& all, int iconPx);
+    int MeasureTextWidthPx(const std::wstring& text);
 
     // C: left Quick Access / This PC splitter persist
     static std::wstring GetLeftNavFilePath();
@@ -446,6 +450,9 @@ private:
     void SaveLeftNavSplitter() const;
     void ApplyLeftNavSplitterHeight(int designHeight);
     void CaptureLeftNavSplitterIfChanged();
+    // Sidebar / preview pane widths (design units, persisted in left_nav.ini)
+    void ApplyPaneWidths(int leftDesignW, int previewDesignW);
+    void CapturePaneWidthsIfChanged();
 
     // Drag-drop
     void InitDragDrop();
@@ -527,10 +534,15 @@ private:
     CVerticalLayoutUI* m_pIconScroll = nullptr;
     CTileLayoutUI* m_pIconTiles = nullptr;
     int m_leftQuickDesignH = UiTokens::LeftQuickDefaultH; // @96 DPI, persisted
+    int m_leftPanelDesignW = 220;                         // sidebar width @96 DPI
+    int m_previewPaneDesignW = UiTokens::PreviewPaneW;    // preview width @96 DPI
     std::vector<FavoriteItem> m_favorites;
     std::vector<FavoriteItem> m_quickAccess;
     std::vector<std::wstring> m_shellMenuPaths;
-    CVerticalLayoutUI* m_pPreviewPane = nullptr;
+    // preview_pane is a CHorizontalLayoutUI wrapper (its negative sepwidth is the drag
+    // grip on the left edge); the stacked content lives in preview_body.
+    CContainerUI* m_pPreviewPane = nullptr;
+    CContainerUI* m_pLeftPanel = nullptr;   // left_panel wrapper (right-edge drag grip)
     CLabelUI* m_pPreviewTitle = nullptr;
     CControlUI* m_pPreviewImage = nullptr;
     CLabelUI* m_pPreviewText = nullptr;

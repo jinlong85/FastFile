@@ -105,7 +105,11 @@
     </HorizontalLayout>
 
 <HorizontalLayout name="body_host" bkcolor="#FFFFFFFF">
-      <VerticalLayout name="left_panel" width="220" bkcolor="#FFF3F3F3" bordercolor="#FFE5E5E5" bordersize="0,0,1,0" padding="8,8,8,8">
+      <!-- left_panel is a HORIZONTAL layout so DuiLib's sepwidth grip works (only
+           CHorizontalLayoutUI implements sepwidth; a VerticalLayout ignores it).
+           sepwidth=+6 puts the 6px grip on the RIGHT edge = sidebar resize. -->
+      <HorizontalLayout name="left_panel" width="220" minwidth="150" maxwidth="520" sepwidth="8" sepimm="true" bkcolor="#FFF3F3F3" bordercolor="#FFE5E5E5" bordersize="0,0,1,0" padding="8,8,8,8">
+      <VerticalLayout name="left_body" bkcolor="#00FFFFFF" padding="0,0,0,0">
         <!-- C: Quick Access — sepheight makes bottom edge a vertical splitter (persisted) -->
           <VerticalLayout name="left_quick" height="168" minheight="148" maxheight="720" sepheight="9" sepimm="true" bkcolor="#FFF3F3F3" padding="8,0,2,0">
           <Label name="nav_hdr_quick" text="快速访问" font="0" textcolor="#FF5A5A5A" height="22" padding="8,4,0,0" />
@@ -126,6 +130,7 @@
           <TreeView name="dir_tree" bkcolor="#FFF3F3F3" visiblefolderbtn="true" visiblecheckbtn="false" itemminwidth="200" vscrollbar="true" hscrollbar="true" itemtextcolor="#FF1A1A1A" itemhottextcolor="#FF1A1A1A" selitemtextcolor="#FF1A1A1A" selitemhottextcolor="#FF1A1A1A" itemhotbkcolor="#FFE8F4FC" itemselectedbkcolor="#FFCCE8FF" itemselectedtextcolor="#FF1A1A1A" />
         </VerticalLayout>
       </VerticalLayout>
+      </HorizontalLayout>
 
       <VerticalLayout name="list_host" bkcolor="#FFFFFFFF" padding="0,0,0,0">
         <!-- Empty state: UpdateEmptyStateHint() shows this when the view has no items. -->
@@ -143,9 +148,10 @@
         </VerticalLayout>
       </VerticalLayout>
 
-      <!-- sepwidth is negative: the 6px grip sits on the LEFT edge so the pane can be
-           dragged wider/narrower (minwidth/maxwidth clamp the drag). -->
-      <VerticalLayout name="preview_pane" width="320" minwidth="180" maxwidth="760" sepwidth="-6" sepimm="true" bkcolor="#FFFFFFFF" bordercolor="#FFE5E5E5" bordersize="1,0,0,0" borderround="0,0" padding="24,24,24,24">
+      <!-- Horizontal wrapper (see left_panel): sepwidth=-6 puts the grip on the LEFT edge,
+           so dragging resizes the preview pane. -->
+      <HorizontalLayout name="preview_pane" width="320" minwidth="180" maxwidth="760" sepwidth="-12" sepimm="true" bkcolor="#FFFFFFFF" bordercolor="#FFE5E5E5" bordersize="1,0,0,0" borderround="0,0" padding="24,24,24,24">
+      <VerticalLayout name="preview_body" bkcolor="#00FFFFFF" padding="0,0,0,0">
         <Control name="preview_image" height="196" bkcolor="#FFFFFFFF" bordercolor="#00000000" bordersize="0" borderround="0,0" visible="false" />
         <Control name="preview_gap_title" height="14" visible="false" />
         <Label name="preview_title" text="预览" font="5" textcolor="#FF1A1A1A" height="28" endellipsis="true" />
@@ -182,6 +188,7 @@
         <Control name="preview_gap_text" height="12" visible="false" />
         <Label name="preview_text" text="" font="2" textcolor="#FF8A8A8A" align="left" valign="top" endellipsis="false" />
       </VerticalLayout>
+      </HorizontalLayout>
     </HorizontalLayout>
 
     <HorizontalLayout name="status_bar" height="24" bkcolor="#FFF3F3F3" bordercolor="#FFE0E0E0" bordersize="0,1,0,0" padding="12,4,12,4">

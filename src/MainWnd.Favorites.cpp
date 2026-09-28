@@ -122,6 +122,8 @@ void CMainWnd::ApplyLeftNavSplitterHeight(int designHeight)
 void CMainWnd::LoadLeftNavSplitter()
 {
     int h = m_leftQuickDesignH;
+    int leftW = m_leftPanelDesignW;
+    int previewW = m_previewPaneDesignW;
     std::wstring file = GetLeftNavFilePath();
     FILE* fp = nullptr;
     if (_wfopen_s(&fp, file.c_str(), L"rb") == 0 && fp) {
@@ -143,11 +145,16 @@ void CMainWnd::LoadLeftNavSplitter()
                 pos = eol + 1;
                 if (line.compare(0, 16, L"LeftQuickHeight=") == 0)
                     h = _wtoi(line.c_str() + 16);
+                else if (line.compare(0, 11, L"LeftPanelW=") == 0)
+                    leftW = _wtoi(line.c_str() + 11);
+                else if (line.compare(0, 9, L"PreviewW=") == 0)
+                    previewW = _wtoi(line.c_str() + 9);
             }
         }
         fclose(fp);
     }
     ApplyLeftNavSplitterHeight(h);
+    ApplyPaneWidths(leftW, previewW);
 }
 
 void CMainWnd::SaveLeftNavSplitter() const
@@ -166,9 +173,57 @@ void CMainWnd::SaveLeftNavSplitter() const
     unsigned char bom[2] = { 0xFF, 0xFE };
     fwrite(bom, 1, 2, fp);
     wchar_t buf[128];
-    swprintf_s(buf, L"[LeftNav]\nLeftQuickHeight=%d\n", m_leftQuickDesignH);
+    swprintf_s(buf, L"[LeftNav]\nLeftQuickHeight=%d\nLeftPanelW=%d\nPreviewW=%d\n",
+        m_leftQuickDesignH, m_leftPanelDesignW, m_previewPaneDesignW);
     fwrite(buf, sizeof(wchar_t), wcslen(buf), fp);
     fclose(fp);
+}
+
+// Sidebar / preview widths are design units (persisted) -> physical for the layout.
+void CMainWnd::ApplyPaneWidths(int leftDesignW, int previewDesignW)
+{
+    if (leftDesignW < 150) leftDesignW = 150;
+    if (leftDesignW > 520) leftDesignW = 520;
+    if (previewDesignW < 180) previewDesignW = 180;
+    if (previewDesignW > 760) previewDesignW = 760;
+    m_leftPanelDesignW = leftDesignW;
+    m_previewPaneDesignW = previewDesignW;
+    if (m_pLeftPanel) {
+        m_pLeftPanel->SetMinWidth(DpiScale(150));
+        m_pLeftPanel->SetMaxWidth(DpiScale(520));
+        m_pLeftPanel->SetFixedWidth(DpiScale(leftDesignW));
+    }
+    if (m_pPreviewPane) {
+        m_pPreviewPane->SetMinWidth(DpiScale(180));
+        m_pPreviewPane->SetMaxWidth(DpiScale(760));
+        m_pPreviewPane->SetFixedWidth(DpiScale(previewDesignW));
+    }
+    // Widths changed -> the fitted preview thumb (and the list column split) must follow.
+    if (m_pLeftPanel || m_pPreviewPane) {
+        if (m_pLeftPanel) m_pLeftPanel->NeedParentUpdate();
+        if (m_pPreviewPane) m_pPreviewPane->NeedParentUpdate();
+    }
+}
+
+void CMainWnd::CapturePaneWidthsIfChanged()
+{
+    if (m_dpi == 0) return;
+    bool changed = false;
+    if (m_pLeftPanel) {
+        const int phy = m_pLeftPanel->GetFixedWidth();
+        if (phy > 0) {
+            const int design = ::MulDiv(phy, 96, static_cast<int>(m_dpi));
+            if (design != m_leftPanelDesignW) { m_leftPanelDesignW = design; changed = true; }
+        }
+    }
+    if (m_pPreviewPane) {
+        const int phy = m_pPreviewPane->GetFixedWidth();
+        if (phy > 0) {
+            const int design = ::MulDiv(phy, 96, static_cast<int>(m_dpi));
+            if (design != m_previewPaneDesignW) { m_previewPaneDesignW = design; changed = true; }
+        }
+    }
+    if (changed) SaveLeftNavSplitter();
 }
 
 void CMainWnd::CaptureLeftNavSplitterIfChanged()
