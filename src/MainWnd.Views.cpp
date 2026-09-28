@@ -261,10 +261,15 @@ void CMainWnd::SelectAllItems()
             SetIconSelected(m_pIconTiles->GetItemAt(i), true);
         if (count > 0)
             m_iconAnchor = 0;
-    } else if (m_pFileList) {
-        count = m_pFileList->GetCount();
-        if (count > 0)
-            m_pFileList->SelectItemRange(0, count - 1, false);
+    } else {
+        // Details: select every *entry*, not the pooled rows that happen to be visible.
+        count = static_cast<int>(m_detailsEntries.size());
+        if (count > 0) {
+            std::fill(m_detailsSel.begin(), m_detailsSel.end(), 1);
+            m_detailsCur = 0;
+            m_detailsAnchor = 0;
+            ApplyDetailsSelectionVisuals();
+        }
         UpdateListingStatusTip();
     }
 
@@ -417,9 +422,17 @@ void CMainWnd::RebuildDetailsView(const std::vector<DirEntry>& dirs,
 {
     if (!m_pFileList) return;
     UpdateViewModeButtons();
-    StopDetailsFill();
-    m_pFileList->SetVisible(false);
-    StartDetailsProgressiveFill(dirs, files);
+    if (IsTileViewMode()) {
+        // Icon/tile views still create one control per item, so they keep the bounded
+        // progressive fill (see StartDetailsProgressiveFill).
+        if (m_hWnd)
+            ::KillTimer(m_hWnd, kTimerDetailsSync);
+        StopDetailsFill();
+        m_pFileList->SetVisible(false);
+        StartDetailsProgressiveFill(dirs, files);
+        return;
+    }
+    RebuildDetailsVirtual();
 }
 
 bool CMainWnd::TryReuseIconsView(const std::vector<DirEntry>& dirs,
@@ -684,14 +697,14 @@ void CMainWnd::CaptureColumnWidths()
     }
 }
 
-CListContainerElementUI* CMainWnd::CreateDetailsRow(const DirEntry& e)
+CListContainerElementUI* CMainWnd::CreateDetailsRowShell()
 {
     // ListHBoxElement: children map 1:1 to ListHeader columns (Name/MTime/Type/Size).
+    // Created empty - BindDetailsRow() fills it - so the virtualised list can recycle rows
+    // while scrolling instead of creating one control tree per file.
     auto* pItem = new CListHBoxElementUI;
     pItem->SetFixedHeight(DpiScale(UiTokens::DetailsRowH));
     pItem->SetBorderRound({ DpiScale(UiTokens::RadiusControl), DpiScale(UiTokens::RadiusControl) });
-    pItem->SetUserData(e.fullPath.c_str());
-    pItem->SetTag(e.isDir ? 1 : 0);
 
     const int cellPad = DpiScale(UiTokens::DetailsCellPadL);
     const int iconPx = DpiScale(UiTokens::DetailsIconPx); // SHIL_SMALL ~16
@@ -707,31 +720,73 @@ CListContainerElementUI* CMainWnd::CreateDetailsRow(const DirEntry& e)
     iconCtrl->SetFixedWidth(iconPadL + iconPx + iconGap);
     iconCtrl->SetFixedHeight(rowH);
     iconCtrl->SetMouseEnabled(false);
-    std::wstring iconBmp = PeekCachedIconBmp(e.fullPath, e.isDir, iconPx);
-    if (iconBmp.empty())
-        iconBmp = GetShellFileIconBmp(e.fullPath, e.isDir, iconPx);
-    if (!iconBmp.empty()) {
-        const int oy = (std::max)(0, (rowH - iconPx) / 2);
-        CDuiString imgAttr;
-        imgAttr.Format(_T("file='%s' dest='%d,%d,%d,%d'"),
-            iconBmp.c_str(), iconPadL, oy, iconPadL + iconPx, oy + iconPx);
-        iconCtrl->SetAttribute(_T("bkimage"), imgAttr.GetData());
-    }
     nameCol->Add(iconCtrl);
-    nameCol->Add(MakeCell(e.name.c_str(), 0, 0));
+    nameCol->Add(MakeCell(_T(""), 0, 0));
     pItem->Add(nameCol);
-
-    std::wstring mtimeText = FormatModifiedTime(e.mtime);
-    pItem->Add(MakeCell(mtimeText.c_str(), 0, cellPad));
-    LPCTSTR typeText = e.isDir
-        ? (IsThisPcPath(m_currentPath) ? _T("驱动器") : _T("文件夹"))
-        : _T("文件");
-    pItem->Add(MakeCell(typeText, 0, cellPad));
-    std::wstring sizeText = e.isDir ? L"" : FormatFileSize(e.size);
-    if (IsThisPcPath(m_currentPath) && e.capacity > 0)
-        sizeText = FormatFileSize(e.size) + L" 可用 / " + FormatFileSize(e.capacity);
-    pItem->Add(MakeCell(sizeText.c_str(), 0, cellPad));
+    pItem->Add(MakeCell(_T(""), 0, cellPad));
+    pItem->Add(MakeCell(_T(""), 0, cellPad));
+    pItem->Add(MakeCell(_T(""), 0, cellPad));
     return pItem;
+}
+
+void CMainWnd::BindDetailsRow(CListContainerElementUI* row, int entryIdx)
+{
+    if (!row) return;
+    if (entryIdx < 0 || entryIdx >= static_cast<int>(m_detailsEntries.size())) {
+        // Park an unused pooled row instead of showing stale content.
+        row->SetVisible(false);
+        row->SetUserData(_T(""));
+        row->SetTag(0);
+        return;
+    }
+    const DirEntry& e = m_detailsEntries[entryIdx];
+    const int iconPx = DpiScale(UiTokens::DetailsIconPx);
+    const int iconPadL = DpiScale(UiTokens::DetailsIconPadL);
+    const int rowH = DpiScale(UiTokens::DetailsRowH);
+
+    row->SetVisible(true);
+    row->SetUserData(e.fullPath.c_str());
+    row->SetTag(e.isDir ? 1 : 0);
+
+    if (auto* nameCol = static_cast<CHorizontalLayoutUI*>(row->GetItemAt(0))) {
+        CControlUI* iconCtrl = nameCol->GetItemAt(0);
+        CControlUI* nameLabel = nameCol->GetItemAt(1);
+        std::wstring iconBmp = PeekCachedIconBmp(e.fullPath, e.isDir, iconPx);
+        if (iconBmp.empty())
+            iconBmp = GetShellFileIconBmp(e.fullPath, e.isDir, iconPx);
+        if (iconCtrl) {
+            CDuiString imgAttr = _T("");
+            if (!iconBmp.empty()) {
+                const int oy = (std::max)(0, (rowH - iconPx) / 2);
+                imgAttr.Format(_T("file='%s' dest='%d,%d,%d,%d'"),
+                    iconBmp.c_str(), iconPadL, oy, iconPadL + iconPx, oy + iconPx);
+            }
+            iconCtrl->SetAttribute(_T("bkimage"), imgAttr);
+            iconCtrl->Invalidate();
+        }
+        if (nameLabel) {
+            nameLabel->SetText(e.name.c_str());
+            nameLabel->Invalidate();
+        }
+    }
+    if (CControlUI* c = row->GetItemAt(1)) {
+        c->SetText(FormatModifiedTime(e.mtime).c_str());
+        c->Invalidate();
+    }
+    if (CControlUI* c = row->GetItemAt(2)) {
+        LPCTSTR typeText = e.isDir
+            ? (IsThisPcPath(m_currentPath) ? _T("驱动器") : _T("文件夹"))
+            : _T("文件");
+        c->SetText(typeText);
+        c->Invalidate();
+    }
+    if (CControlUI* c = row->GetItemAt(3)) {
+        std::wstring sizeText = e.isDir ? L"" : FormatFileSize(e.size);
+        if (IsThisPcPath(m_currentPath) && e.capacity > 0)
+            sizeText = FormatFileSize(e.size) + L" 可用 / " + FormatFileSize(e.capacity);
+        c->SetText(sizeText.c_str());
+        c->Invalidate();
+    }
 }
 
 void CMainWnd::StopDetailsFill()
@@ -741,40 +796,269 @@ void CMainWnd::StopDetailsFill()
     m_detailsFillNext = 0;
 }
 
+// ---- Virtual details view -------------------------------------------------------------
+// The list keeps [top spacer][row pool][bottom spacer]. Spacers carry the height of the rows
+// that are not materialised, so the scrollbar stays honest while only the visible window
+// exists. Selection is stored per entry (m_detailsSel), never on the recycled rows.
+
+void CMainWnd::RebuildDetailsVirtual()
+{
+    if (!m_pFileList) return;
+    StopDetailsFill();
+    if (m_hWnd)
+        ::KillTimer(m_hWnd, kTimerDetailsSync);
+
+    m_detailsEntries.clear();
+    m_detailsEntries.reserve(m_listingDirs.size() + m_listingFiles.size());
+    m_detailsEntries.insert(m_detailsEntries.end(), m_listingDirs.begin(), m_listingDirs.end());
+    m_detailsEntries.insert(m_detailsEntries.end(), m_listingFiles.begin(), m_listingFiles.end());
+    m_detailsSel.assign(m_detailsEntries.size(), 0);
+    m_detailsFirst = 0;
+    m_detailsCur = -1;
+    m_detailsSpacerTop = nullptr;
+    m_detailsSpacerBottom = nullptr;
+
+    m_pFileList->RemoveAll();
+    m_pFileList->SetVisible(true);
+    if (m_pIconScroll)
+        m_pIconScroll->SetVisible(false);
+    ApplyColumnWidths();
+    UpdateHeaderSortIndicators();
+
+    const int total = static_cast<int>(m_detailsEntries.size());
+    if (total <= 0) {
+        m_detailsPoolRows = 0;
+        m_pFileList->NeedUpdate();
+        UpdateListingStatusTip();
+        UpdateEmptyStateHint();
+        return;
+    }
+
+    const int rowH = (std::max)(1, DpiScale(UiTokens::DetailsRowH));
+    int viewH = 0;
+    {
+        RECT rc = m_pFileList->GetPos();
+        viewH = (std::max)(0, static_cast<int>(rc.bottom - rc.top) - DpiScale(UiTokens::DetailsHeaderH));
+    }
+    int poolRows = viewH > 0 ? (viewH + rowH - 1) / rowH : 24;
+    poolRows += 2 * kDetailsVirtOverscan;
+    if (poolRows < 24) poolRows = 24;
+    if (poolRows > total) poolRows = total;
+    m_detailsPoolRows = poolRows;
+
+    auto* top = new CListContainerElementUI;
+    top->SetFixedHeight(0);
+    top->SetMaxHeight(kMaxDetailsItems * DpiScale(UiTokens::DetailsRowH));   // see below
+    top->SetMouseEnabled(false);
+    top->SetUserData(_T(""));
+    m_pFileList->Add(top);
+    m_detailsSpacerTop = top;
+
+    for (int i = 0; i < poolRows; ++i) {
+        auto* row = CreateDetailsRowShell();
+        BindDetailsRow(row, i);
+        m_pFileList->Add(row);
+    }
+
+    auto* bottom = new CListContainerElementUI;
+    bottom->SetFixedHeight(0);
+    // DuiLib clamps a control to its max size (default 9999), which would silently cap the
+    // virtual content height and therefore the scroll range.
+    bottom->SetMaxHeight(kMaxDetailsItems * DpiScale(UiTokens::DetailsRowH));
+    bottom->SetMouseEnabled(false);
+    bottom->SetUserData(_T(""));
+    m_pFileList->Add(bottom);
+    m_detailsSpacerBottom = bottom;
+
+    // Vertical for the rows, horizontal because a wide 名称 column can push the remaining
+    // columns out of view (Explorer shows one in the same situation; otherwise they are
+    // unreachable).
+    m_pFileList->EnableScrollBar(true, true);
+    m_pFileList->SetScrollPos({ 0, 0 });
+    ApplyFileViewScrollBars();
+    m_pFileList->NeedUpdate();
+
+    UpdateDetailsWindow(true);
+    if (m_hWnd)
+        ::SetTimer(m_hWnd, kTimerDetailsSync, 60, nullptr);   // safety net for scroll sources
+    UpdateListingStatusTip();
+    UpdateEmptyStateHint();
+}
+
+void CMainWnd::UpdateDetailsWindow(bool force)
+{
+    if (!m_pFileList || m_detailsPoolRows <= 0 || m_detailsEntries.empty())
+        return;
+    const int rowH = (std::max)(1, DpiScale(UiTokens::DetailsRowH));
+    const int total = static_cast<int>(m_detailsEntries.size());
+
+    int first = 0;
+    if (m_detailsPoolRows < total) {
+        const int scrollY = m_pFileList->GetScrollPos().cy;
+        first = scrollY / rowH - kDetailsVirtOverscan;
+        if (first < 0) first = 0;
+        const int maxFirst = total - m_detailsPoolRows;
+        if (first > maxFirst) first = maxFirst;
+    }
+
+    const bool moved = (first != m_detailsFirst);
+    if (moved)
+        m_detailsFirst = first;
+
+    if (moved || force) {
+        for (int i = 0; i < m_detailsPoolRows; ++i)
+            BindDetailsRow(static_cast<CListContainerElementUI*>(m_pFileList->GetItemAt(1 + i)),
+                m_detailsFirst + i);
+    }
+
+    if (m_detailsSpacerTop) {
+        const int h = m_detailsFirst * rowH;
+        if (m_detailsSpacerTop->GetFixedHeight() != h)
+            m_detailsSpacerTop->SetFixedHeight(h);
+        if (m_detailsSpacerTop->GetMaxHeight() < h)
+            m_detailsSpacerTop->SetMaxHeight(h);
+    }
+    if (m_detailsSpacerBottom) {
+        const int tail = total - (m_detailsFirst + m_detailsPoolRows);
+        const int h = tail > 0 ? tail * rowH : 0;
+        if (m_detailsSpacerBottom->GetFixedHeight() != h)
+            m_detailsSpacerBottom->SetFixedHeight(h);
+        if (m_detailsSpacerBottom->GetMaxHeight() < h)
+            m_detailsSpacerBottom->SetMaxHeight(h);
+    }
+
+    if (moved || force) {
+        ApplyDetailsSelectionVisuals();
+        m_pFileList->NeedUpdate();
+    }
+}
+
+int CMainWnd::DetailsEntryFromItem(CControlUI* item) const
+{
+    if (!item || !m_pFileList)
+        return -1;
+    if (item == m_detailsSpacerTop || item == m_detailsSpacerBottom)
+        return -1;
+    const int n = m_pFileList->GetCount();
+    for (int i = 0; i < n; ++i) {
+        if (m_pFileList->GetItemAt(i) != item)
+            continue;
+        const int row = i - 1;   // item 0 is the top spacer
+        if (row < 0 || row >= m_detailsPoolRows)
+            return -1;
+        const int entry = m_detailsFirst + row;
+        return (entry >= 0 && entry < static_cast<int>(m_detailsEntries.size())) ? entry : -1;
+    }
+    return -1;
+}
+
+void CMainWnd::ApplyDetailsSelectionVisuals()
+{
+    if (!m_pFileList)
+        return;
+    const int n = m_pFileList->GetCount();
+    for (int i = 0; i < n; ++i) {
+        CControlUI* item = m_pFileList->GetItemAt(i);
+        if (!item) continue;
+        auto* li = static_cast<IListItemUI*>(item->GetInterface(DUI_CTR_ILISTITEM));
+        if (!li) continue;
+        const int entry = DetailsEntryFromItem(item);
+        const bool sel = (entry >= 0 && m_detailsSel[entry] != 0);
+        if (li->IsSelected() != sel)
+            li->Select(sel, false);
+    }
+}
+
+void CMainWnd::DetailsEnsureEntryVisible(int entryIdx)
+{
+    if (!m_pFileList || entryIdx < 0 || m_detailsPoolRows <= 0)
+        return;
+    const int rowH = (std::max)(1, DpiScale(UiTokens::DetailsRowH));
+    const int visible = (std::max)(1, m_detailsPoolRows - 2 * kDetailsVirtOverscan);
+    if (entryIdx < m_detailsFirst || entryIdx >= m_detailsFirst + visible) {
+        SIZE pos = m_pFileList->GetScrollPos();
+        pos.cy = entryIdx * rowH;
+        m_pFileList->SetScrollPos(pos);
+        UpdateDetailsWindow(true);
+    }
+}
+
+void CMainWnd::DetailsMoveCursor(int delta)
+{
+    const int total = static_cast<int>(m_detailsEntries.size());
+    if (total <= 0 || delta == 0)
+        return;
+
+    int next;
+    if (m_detailsCur < 0)
+        next = (delta > 0) ? 0 : total - 1;
+    else
+        next = m_detailsCur + delta;
+    if (next < 0) next = 0;
+    if (next >= total) next = total - 1;
+
+    const bool shift = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    const bool ctrl = (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    if (shift && m_detailsAnchor >= 0) {
+        std::fill(m_detailsSel.begin(), m_detailsSel.end(), 0);
+        int a = m_detailsAnchor, b = next;
+        if (a > b) { const int t = a; a = b; b = t; }
+        for (int i = a; i <= b; ++i) m_detailsSel[i] = 1;
+    } else if (ctrl) {
+        m_detailsSel[next] = 1;
+        m_detailsAnchor = next;
+    } else {
+        std::fill(m_detailsSel.begin(), m_detailsSel.end(), 0);
+        m_detailsSel[next] = 1;
+        m_detailsAnchor = next;
+    }
+    m_detailsCur = next;
+
+    DetailsEnsureEntryVisible(next);
+    ApplyDetailsSelectionVisuals();
+    UpdateListingStatusTip();
+    UpdatePreviewForSelection();
+}
+
 void CMainWnd::StartDetailsProgressiveFill(const std::vector<DirEntry>& dirs,
     const std::vector<DirEntry>& files)
 {
+    // Icon / tile views only - the details view is virtualised (RebuildDetailsVirtual). These
+    // views still create one control per item, so the queue is bounded by kMaxListItems and
+    // filled in batches to keep the window responsive.
     StopDetailsFill();
-    if (!m_pFileList) return;
+    if (!m_pFileList || !m_pIconTiles) return;
     m_pFileList->RemoveAll();
+    m_pFileList->SetVisible(false);
     ApplyColumnWidths();
     UpdateHeaderSortIndicators();
 
     m_detailsFillQueue.clear();
-    m_detailsFillQueue.reserve(dirs.size() + files.size());
-    m_detailsFillQueue.insert(m_detailsFillQueue.end(), dirs.begin(), dirs.end());
-    m_detailsFillQueue.insert(m_detailsFillQueue.end(), files.begin(), files.end());
+    m_detailsFillQueue.reserve(
+        (std::min)(dirs.size() + files.size(), static_cast<size_t>(kMaxListItems)));
+    for (const auto& e : dirs) {
+        if (static_cast<int>(m_detailsFillQueue.size()) >= kMaxListItems) break;
+        m_detailsFillQueue.push_back(e);
+    }
+    for (const auto& e : files) {
+        if (static_cast<int>(m_detailsFillQueue.size()) >= kMaxListItems) break;
+        m_detailsFillQueue.push_back(e);
+    }
     m_detailsFillNext = 0;
     m_detailsFilling = true;
 
-    const int first = (std::min)(kDetailsFirstBatch, (int)m_detailsFillQueue.size());
-    for (int i = 0; i < first; ++i)
-        m_pFileList->Add(CreateDetailsRow(m_detailsFillQueue[i]));
-    m_detailsFillNext = first;
-
-    m_pFileList->SetVisible(!IsTileViewMode());
-    m_pFileList->EnableScrollBar(true, false);
-    m_pFileList->NeedUpdate();
     if (m_pIconScroll)
-        m_pIconScroll->SetVisible(IsTileViewMode());
-    if (IsTileViewMode() && m_pIconTiles)
-        m_pIconTiles->EnableScrollBar(true, false);
+        m_pIconScroll->SetVisible(true);
+    m_pIconTiles->EnableScrollBar(true, false);
     ApplyFileViewScrollBars();
 
     if (m_detailsFillNext < (int)m_detailsFillQueue.size() && m_hWnd)
         ::PostMessageW(m_hWnd, kMsgDetailsFill, 0, 0);
-    else
+    else {
         m_detailsFilling = false;
+        UpdateListingStatusTip();
+        UpdateEmptyStateHint();
+    }
 }
 
 void CMainWnd::OnDetailsFillTick()
@@ -812,21 +1096,11 @@ void CMainWnd::OnDetailsFillTick()
         return;
     }
 
-    if (!m_pFileList) return;
-    int added = 0;
-    while (m_detailsFillNext < n && added < kDetailsFillBatch) {
-        m_pFileList->Add(CreateDetailsRow(m_detailsFillQueue[m_detailsFillNext]));
-        ++m_detailsFillNext;
-        ++added;
-    }
-    m_pFileList->NeedUpdate();
-    if (m_detailsFillNext < n) {
-        PumpUiMessages();
-        ::PostMessageW(m_hWnd, kMsgDetailsFill, 0, 0);
-    } else {
-        m_detailsFilling = false;
-        m_detailsFillQueue.clear();
-    }
+    // The details view is virtualised now, so there is nothing left to fill here.
+    m_detailsFilling = false;
+    m_detailsFillQueue.clear();
+    UpdateListingStatusTip();
+    UpdateEmptyStateHint();
 }
 
 void CMainWnd::BindIconTile(CButtonUI* tile, int index, const DirEntry& e, UINT gen,

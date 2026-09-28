@@ -126,6 +126,13 @@
     只有 Shell 自己的项（在终端中打开/授予访问权限/新建/属性…），资源管理器显示的
     查看/排序方式/刷新 来自"视图"层，必须自己补（见 `ShowShellBackgroundContextMenu`）。
     另外 FastFile 用自己的剪贴板，Shell 看不到，所以"粘贴"也要自己加
+13. **DuiLib 控件默认最大尺寸是 9999**（`m_cxyMax`）：给列表占位行设高度时必须同时
+    `SetMaxHeight()`，否则高度被静默钳到 9999，滚动范围随之错误。详情视图虚拟化就是
+    踩了这个坑（`RebuildDetailsVirtual` / `UpdateDetailsWindow`）
+14. **详情视图的选中状态不在列表项上**：行会被回收复用，所以选中记录在 `m_detailsSel`
+    （入口索引）里，项索引只在可视窗口内有效。改这块要同步检查：`CollectSelectedItems`、
+    `HasFileSelection`、`ClearFileSelection`、`SelectAllItems`、`ITEMCLICK/ITEMSELECT`
+    与方向键处理（`DetailsMoveCursor`）
 
 ## 会话/配置文件（通常在 `%APPDATA%\FastFile\`）
 

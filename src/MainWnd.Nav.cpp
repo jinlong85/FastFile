@@ -300,7 +300,10 @@ void CMainWnd::RefreshListing()
             if ((scanned % kPumpEvery) == 0)
                 PumpUiMessages();
 
-            if (static_cast<int>(dirs.size() + files.size()) >= kMaxListItems) {
+            // The details view is virtualised and can afford far more entries; the icon views
+            // still create one control per item and keep the smaller bound.
+            const int scanCap = IsTileViewMode() ? kMaxListItems : kMaxDetailsItems;
+            if (static_cast<int>(dirs.size() + files.size()) >= scanCap) {
                 truncated = true;
                 break;
             }

@@ -77,36 +77,15 @@ void CMainWnd::CollectSelectedItems(std::vector<ClipboardItem>& out) const
         return;
     }
 
-    if (!m_pFileList) return;
-
-    const int n = m_pFileList->GetCount();
-    for (int i = 0; i < n; ++i) {
-        CControlUI* p = m_pFileList->GetItemAt(i);
-        if (!p) continue;
-        IListItemUI* pListItem = static_cast<IListItemUI*>(p->GetInterface(DUI_CTR_ILISTITEM));
-        if (!pListItem || !pListItem->IsSelected()) continue;
-        CDuiString ud = p->GetUserData();
-        if (ud.IsEmpty()) continue;
+    // Details view: selection lives per entry (m_detailsSel), not on the recycled list rows -
+    // a row only represents an entry while it is inside the virtual window.
+    const size_t total = (std::min)(m_detailsEntries.size(), m_detailsSel.size());
+    for (size_t i = 0; i < total; ++i) {
+        if (!m_detailsSel[i]) continue;
         ClipboardItem item;
-        item.path = ud.GetData();
-        item.isDir = (p->GetTag() != 0);
+        item.path = m_detailsEntries[i].fullPath;
+        item.isDir = m_detailsEntries[i].isDir;
         out.push_back(std::move(item));
-    }
-
-    if (out.empty()) {
-        const int cur = m_pFileList->GetCurSel();
-        if (cur >= 0) {
-            CControlUI* p = m_pFileList->GetItemAt(cur);
-            if (p) {
-                CDuiString ud = p->GetUserData();
-                if (!ud.IsEmpty()) {
-                    ClipboardItem item;
-                    item.path = ud.GetData();
-                    item.isDir = (p->GetTag() != 0);
-                    out.push_back(std::move(item));
-                }
-            }
-        }
     }
 }
 

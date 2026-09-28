@@ -215,6 +215,40 @@ void CMainWnd::Notify(TNotifyUI& msg)
         // ITEMCLICK is raised before Select() in DuiLib list items, so
         // CollectSelectedItems still sees the previous selection. Prefer the
         // clicked row; Ctrl+deselect already cleared IsSelected before notify.
+        if (!IsTileViewMode()) {
+            // Details view is virtualised: map the clicked row to its entry and drive the
+            // entry-based selection model, then re-apply the visuals from that model. DuiLib's
+            // own item selection (raised just after this notify) is only a visual and gets
+            // corrected in the ITEMSELECT handler.
+            CControlUI* clicked = FindListItemRoot(msg.pSender);
+            const int entry = DetailsEntryFromItem(clicked);
+            if (entry < 0) {
+                UpdatePreviewForSelection();
+                return;
+            }
+            const bool ctrl = (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            const bool shift = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
+            if (ctrl) {
+                m_detailsSel[entry] = m_detailsSel[entry] ? 0 : 1;
+                m_detailsCur = entry;
+                m_detailsAnchor = entry;
+            } else if (shift && m_detailsAnchor >= 0) {
+                std::fill(m_detailsSel.begin(), m_detailsSel.end(), 0);
+                int a = m_detailsAnchor, b = entry;
+                if (a > b) { const int t = a; a = b; b = t; }
+                for (int i = a; i <= b; ++i) m_detailsSel[i] = 1;
+                m_detailsCur = entry;
+            } else {
+                std::fill(m_detailsSel.begin(), m_detailsSel.end(), 0);
+                m_detailsSel[entry] = 1;
+                m_detailsCur = entry;
+                m_detailsAnchor = entry;
+            }
+            ApplyDetailsSelectionVisuals();
+            UpdateListingStatusTip();
+            UpdatePreviewForSelection();
+            return;
+        }
         {
             CControlUI* clicked = FindListItemRoot(msg.pSender);
             if (clicked && !clicked->GetUserData().IsEmpty()) {
@@ -240,9 +274,15 @@ void CMainWnd::Notify(TNotifyUI& msg)
     else if (msg.sType == DUI_MSGTYPE_SCROLL) {
         if (m_iconVirtMode)
             SyncVisibleIconWindow(false);
+        if (!IsTileViewMode())
+            UpdateDetailsWindow(false);
         return;
     }
     else if (msg.sType == DUI_MSGTYPE_ITEMSELECT) {
+        // Keep the pooled rows showing the entry-based selection, whatever DuiLib did to the
+        // clicked item on its own.
+        if (!IsTileViewMode())
+            ApplyDetailsSelectionVisuals();
         UpdatePreviewForSelection();
         UpdateListingStatusTip();
     }
@@ -397,6 +437,7 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         if (m_hWnd) {
             ::KillTimer(m_hWnd, kTimerVirtSync);
             ::KillTimer(m_hWnd, kTimerColWidth);
+            ::KillTimer(m_hWnd, kTimerDetailsSync);
         }
         StopDetailsFill();
         SaveFavorites();
@@ -412,6 +453,7 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     if (uMsg == WM_TIMER) {
         if (wParam == kTimerVirtSync) { SyncVisibleIconWindow(false); return 0; }
         if (wParam == kTimerColWidth) { CaptureColumnWidths(); return 0; }
+        if (wParam == kTimerDetailsSync) { UpdateDetailsWindow(false); return 0; }
     }
     if (uMsg == WM_LBUTTONDOWN && !m_inDoDragDrop) {
         m_dragTracking = true;
@@ -519,6 +561,24 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
         if (!inEdit) {
+            // Details list: arrow / page keys move the *entry* cursor (the pooled rows shift
+            // as the window moves, so DuiLib's own item-based navigation would land on spacers).
+            if (!IsTileViewMode() && m_pFileList && m_pFileList->IsVisible()
+                && m_PaintManager.GetFocus() == m_pFileList) {
+                const int step = (std::max)(1, m_detailsPoolRows - 2 * kDetailsVirtOverscan);
+                if (wParam == VK_DOWN) { DetailsMoveCursor(1); return 0; }
+                if (wParam == VK_UP) { DetailsMoveCursor(-1); return 0; }
+                if (wParam == VK_NEXT) { DetailsMoveCursor(step); return 0; }
+                if (wParam == VK_PRIOR) { DetailsMoveCursor(-step); return 0; }
+                if (wParam == VK_HOME) {
+                    DetailsMoveCursor(-(static_cast<int>(m_detailsEntries.size()) + 1));
+                    return 0;
+                }
+                if (wParam == VK_END) {
+                    DetailsMoveCursor(static_cast<int>(m_detailsEntries.size()) + 1);
+                    return 0;
+                }
+            }
             // ---- navigation ----
             if (wParam == VK_F5) {
                 RefreshListing();
@@ -644,6 +704,11 @@ bool CMainWnd::HasFileSelection() const
         return false;
     }
     if (m_pFileList) {
+        // Details view: selection is stored per entry, not on the pooled rows.
+        for (size_t i = 0; i < m_detailsSel.size(); ++i) {
+            if (m_detailsSel[i])
+                return true;
+        }
         const int n = m_pFileList->GetCount();
         for (int i = 0; i < n; ++i) {
             CControlUI* p = m_pFileList->GetItemAt(i);
@@ -663,8 +728,13 @@ void CMainWnd::ClearFileSelection()
     if (IsTileViewMode()) {
         ClearIconSelection();
         m_iconAnchor = -1;
-    } else if (m_pFileList) {
-        m_pFileList->UnSelectAllItems();
+    } else {
+        if (m_pFileList && m_pFileList->GetCount() > 0)
+            m_pFileList->UnSelectAllItems();
+        std::fill(m_detailsSel.begin(), m_detailsSel.end(), 0);
+        m_detailsCur = -1;
+        m_detailsAnchor = -1;
+        ApplyDetailsSelectionVisuals();
     }
     ClearPreview();
 }

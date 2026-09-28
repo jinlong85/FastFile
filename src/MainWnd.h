@@ -343,7 +343,19 @@ private:
     void StartDetailsProgressiveFill(const std::vector<DirEntry>& dirs, const std::vector<DirEntry>& files);
     void OnDetailsFillTick();
     void StopDetailsFill();
-    CListContainerElementUI* CreateDetailsRow(const DirEntry& e);
+    // --- Details-view virtualization ------------------------------------------------
+    // The list holds only the rows for the visible window (plus overscan) and rebinds them
+    // while scrolling, so a 100k-entry folder costs about as much as a 20-entry one.
+    // Selection therefore lives in m_detailsSel (entry-index space) instead of on the list
+    // items: item indices shift as the window moves, entry indices do not.
+    void RebuildDetailsVirtual();
+    void UpdateDetailsWindow(bool force);
+    void BindDetailsRow(CListContainerElementUI* row, int entryIdx);
+    int DetailsEntryFromItem(CControlUI* item) const;
+    void ApplyDetailsSelectionVisuals();
+    void DetailsMoveCursor(int delta);
+    void DetailsEnsureEntryVisible(int entryIdx);
+    CListContainerElementUI* CreateDetailsRowShell();
 
     // Async thumbnails
     struct ThumbJob {
@@ -565,6 +577,15 @@ private:
     int m_detailsFillNext = 0;
     std::vector<DirEntry> m_detailsFillQueue;
     bool m_detailsFilling = false;
+    // Virtual details view state (see RebuildDetailsVirtual)
+    std::vector<DirEntry> m_detailsEntries;   // every entry, dirs first - the source of truth
+    std::vector<char> m_detailsSel;           // per-entry selection flag (entry-index space)
+    int m_detailsFirst = 0;                   // first entry currently bound to the row pool
+    int m_detailsPoolRows = 0;
+    int m_detailsCur = -1;                    // cursor for Shift ranges and keyboard moves
+    int m_detailsAnchor = -1;                 // where the current selection started
+    CListContainerElementUI* m_detailsSpacerTop = nullptr;
+    CListContainerElementUI* m_detailsSpacerBottom = nullptr;
 
     std::vector<TabInfo> m_tabs;
     int m_activeTab = -1;
@@ -621,6 +642,7 @@ private:
     static constexpr UINT_PTR kCmdFavUnpin = 9101;
     static constexpr UINT_PTR kCmdFavOpen = 9102;
     static constexpr int kMaxListItems = 8000;
+    static constexpr int kMaxDetailsItems = 100000;   // details view virtualizes; icons do not
     static constexpr int kMaxIconThumbs = 400;
     static constexpr int kMaxRecursiveItems = 4000;
     static constexpr int kPumpEvery = 200;
@@ -630,6 +652,8 @@ private:
     static constexpr UINT kMsgThumbReady = WM_USER + 103;
     static constexpr UINT kMsgVirtSync = WM_USER + 104;
     static constexpr UINT kMsgDetailsFill = WM_USER + 105;
+    static constexpr int kDetailsVirtOverscan = 8;
+    static constexpr UINT_PTR kTimerDetailsSync = 0x4603;
     static constexpr int kUiBatchSize = 40;
     static constexpr int kVirtThreshold = 220;
     static constexpr int kVirtOverscanRows = 3;
