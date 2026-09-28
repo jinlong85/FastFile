@@ -85,7 +85,7 @@ void CMainWnd::RebuildTabStrip()
         if (w < DpiScale(UiTokens::TabMinW)) w = DpiScale(UiTokens::TabMinW);
         if (w > DpiScale(UiTokens::TabMaxW)) w = DpiScale(UiTokens::TabMaxW);
         btn->SetFixedWidth(w);
-        SIZE tabRound = { DpiScale(6), DpiScale(6) };
+        SIZE tabRound = { DpiScale(UiTokens::RadiusControl), DpiScale(UiTokens::RadiusControl) };
         btn->SetBorderRound(tabRound);
         std::wstring tabIcon = IsThisPcPath(m_tabs[i].path)
             ? GetStockIconBmp(SIID_DESKTOPPC, tabIconPx)
@@ -397,6 +397,8 @@ void CMainWnd::SaveSession() const
         writeLine(buf);
         swprintf_s(buf, L"ShowHidden=%d", m_showHidden ? 1 : 0);
         writeLine(buf);
+        swprintf_s(buf, L"FavoritesBar=%d", m_favoritesBarVisible ? 1 : 0);
+        writeLine(buf);
     }
     writeLine(L"[Tabs]");
     {
@@ -467,6 +469,7 @@ bool CMainWnd::LoadSession()
         else if (key == L"SortAsc") m_sortAscending = (_wtoi(val.c_str()) != 0);
         else if (key == L"Preview") m_previewVisible = (_wtoi(val.c_str()) != 0);
         else if (key == L"ShowHidden") m_showHidden = (_wtoi(val.c_str()) != 0);
+        else if (key == L"FavoritesBar") m_favoritesBarVisible = (_wtoi(val.c_str()) != 0);
         else if (key == L"Count") count = _wtoi(val.c_str());
         else if (key.size() > 4 && key.compare(0, 4, L"Path") == 0)
             paths[_wtoi(key.c_str() + 4)] = val;
@@ -498,6 +501,8 @@ bool CMainWnd::LoadSession()
         m_pChkRecursive->Selected(recursive != 0);
     ApplyColumnWidths();
     SetPreviewVisible(m_previewVisible);
+    if (m_pFavoritesBar)
+        m_pFavoritesBar->SetVisible(m_favoritesBarVisible);
     UpdateHeaderSortIndicators();
 
     if (active < 0 || active >= (int)m_tabs.size())

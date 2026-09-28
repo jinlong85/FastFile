@@ -47,8 +47,9 @@
 
     <!-- Windows 11 command bar: New | edit commands | Sort / View | More. -->
     <HorizontalLayout name="toolbar" height="40" bkcolor="#FFF3F3F3" padding="12,4,12,4" childvalign="vcenter" bordercolor="#FFE5E5E5" bordersize="0,0,0,1">
-      <Button name="btn_new_glyph" text="" width="28" height="32" tooltip="新建" font="6" textcolor="#FF5E5E5E" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
-      <Button name="btn_new" text="新建  ⌄" width="54" height="32" tooltip="新建" align="left" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
+      <!-- Icon + label + chevron in one button: the glyph is applied as an image in code so the
+           label keeps the UI font, and the whole button highlights as a unit on hover. -->
+      <Button name="btn_new" text="新建  ⌄" width="76" height="32" tooltip="新建" align="left" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
       <Control name="gap_new" width="6" height="1" />
       <Control name="sep_new" width="1" height="20" bkcolor="#FFD0D0D0" />
       <Control name="gap_new2" width="8" height="1" />
@@ -61,10 +62,8 @@
       <Control name="gap_org" width="8" height="1" />
       <Control name="sep_organize" width="1" height="20" bkcolor="#FFD0D0D0" />
       <Control name="gap_org2" width="8" height="1" />
-      <Button name="btn_sort_glyph" text="" width="28" height="32" tooltip="排序" font="6" textcolor="#FF5E5E5E" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
-      <Button name="btn_sort" text="排序  ⌄" width="54" height="32" tooltip="排序" align="left" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
-      <Button name="btn_view_glyph" text="" width="28" height="32" tooltip="查看" font="6" textcolor="#FF5E5E5E" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
-      <Button name="btn_view_menu" text="查看  ⌄" width="54" height="32" tooltip="查看" align="left" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
+      <Button name="btn_sort" text="排序  ⌄" width="76" height="32" tooltip="排序" align="left" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
+      <Button name="btn_view_menu" text="查看  ⌄" width="76" height="32" tooltip="查看" align="left" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
       <Control name="gap_more" width="8" height="1" />
       <Control name="sep_more" width="1" height="20" bkcolor="#FFD0D0D0" />
       <Control name="gap_more2" width="8" height="1" />

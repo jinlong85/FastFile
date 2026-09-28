@@ -391,6 +391,18 @@ bool CMainWnd::IsOverFavoritesBar(POINT ptClient) const
     return false;
 }
 
+void CMainWnd::SetFavoritesBarVisible(bool visible)
+{
+    m_favoritesBarVisible = visible;
+    if (m_pFavoritesBar) {
+        m_pFavoritesBar->SetVisible(visible);
+        m_pFavoritesBar->NeedParentUpdate();   // hidden bands release their height
+    }
+    if (m_pFavoritesStrip)
+        m_pFavoritesStrip->SetVisible(visible && !m_favorites.empty());
+    UpdateStatus(visible ? _T("已显示收藏栏") : _T("已隐藏收藏栏（「查看」菜单可恢复）"));
+}
+
 void CMainWnd::RebuildFavoritesBar()
 {
     if (!m_pFavoritesStrip) return;
@@ -424,6 +436,7 @@ void CMainWnd::RebuildFavoritesBar()
         btn->SetAttribute(_T("endellipsis"), _T("true"));
         const int textPadL = DpiScale(UiTokens::FavIconPx + 8);   // icon inset + icon + gap
         const int textPadR = DpiScale(10);
+        btn->SetBorderRound({ DpiScale(UiTokens::RadiusControl), DpiScale(UiTokens::RadiusControl) });
         {
             CDuiString tp;
             // left room for the icon + gap, small right pad; no vertical pad (valign centers)
@@ -487,6 +500,7 @@ void CMainWnd::RebuildLeftPinnedFavorites()
         CDuiString textPad;
         textPad.Format(_T("%d,0,%d,0"), DpiScale(UiTokens::NavIconPad + UiTokens::NavIconPx + UiTokens::NavIconTextGap + 4), DpiScale(UiTokens::NavTextPadR));
         btn->SetAttribute(_T("textpadding"), textPad.GetData());
+        btn->SetBorderRound({ DpiScale(UiTokens::RadiusControl), DpiScale(UiTokens::RadiusControl) });
         std::wstring icon = GetShellIconBmp(entry.path, true, iconPx);
         if (icon.empty()) icon = GetStockIconBmp(SIID_FOLDER, iconPx);
         if (!icon.empty())

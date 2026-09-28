@@ -689,6 +689,7 @@ CListContainerElementUI* CMainWnd::CreateDetailsRow(const DirEntry& e)
     // ListHBoxElement: children map 1:1 to ListHeader columns (Name/MTime/Type/Size).
     auto* pItem = new CListHBoxElementUI;
     pItem->SetFixedHeight(DpiScale(UiTokens::DetailsRowH));
+    pItem->SetBorderRound({ DpiScale(UiTokens::RadiusControl), DpiScale(UiTokens::RadiusControl) });
     pItem->SetUserData(e.fullPath.c_str());
     pItem->SetTag(e.isDir ? 1 : 0);
 
@@ -837,6 +838,7 @@ void CMainWnd::BindIconTile(CButtonUI* tile, int index, const DirEntry& e, UINT 
     tile->SetName(name);
     tile->SetFixedWidth(tileW);
     tile->SetFixedHeight(tileH);
+    tile->SetBorderRound({ DpiScale(UiTokens::RadiusControl), DpiScale(UiTokens::RadiusControl) });
     tile->SetUserData(e.fullPath.c_str());
     // keep selection bit if same path? reset selection for virt remap
     UINT_PTR tag = e.isDir ? 1 : 0;

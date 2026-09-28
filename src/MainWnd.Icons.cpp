@@ -475,6 +475,117 @@ bool CMainWnd::ExtractModuleIconSized(const wchar_t* moduleFile, int index, int 
     return saved;
 }
 
+bool CMainWnd::RenderGlyphToPng(wchar_t glyph, int px, COLORREF color, const std::wstring& pngPath)
+{
+    if (px <= 0 || pngPath.empty()) return false;
+    if (!EnsureGdiplus()) return false;
+    using namespace Gdiplus;
+
+    // Draw the glyph white-on-black into a 32bpp DIB, then treat the red channel as coverage
+    // and rebuild the pixels as straight-alpha ARGB in the requested colour.
+    HDC hdc = ::GetDC(nullptr);
+    if (!hdc) return false;
+    HDC mem = ::CreateCompatibleDC(hdc);
+    BITMAPINFO bi = {};
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = px;
+    bi.bmiHeader.biHeight = -px;   // top-down
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HBITMAP dib = ::CreateDIBSection(hdc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!dib || !bits) {
+        if (dib) ::DeleteObject(dib);
+        ::DeleteDC(mem);
+        ::ReleaseDC(nullptr, hdc);
+        return false;
+    }
+    ::ZeroMemory(bits, static_cast<size_t>(px) * static_cast<size_t>(px) * 4u);
+    HGDIOBJ oldBmp = ::SelectObject(mem, dib);
+
+    LOGFONTW lf = {};
+    lf.lfHeight = -px;
+    lf.lfWeight = FW_NORMAL;
+    lf.lfCharSet = DEFAULT_CHARSET;
+    lf.lfQuality = ANTIALIASED_QUALITY;
+    wcscpy_s(lf.lfFaceName, L"Segoe MDL2 Assets");
+    HFONT font = ::CreateFontIndirectW(&lf);
+    HGDIOBJ oldFont = font ? ::SelectObject(mem, font) : nullptr;
+    ::SetBkMode(mem, TRANSPARENT);
+    ::SetTextColor(mem, RGB(255, 255, 255));
+    RECT rc = { 0, 0, px, px };
+    ::DrawTextW(mem, &glyph, 1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    bool ok = false;
+    {
+        Bitmap out(px, px, PixelFormat32bppARGB);
+        Rect lock(0, 0, px, px);
+        BitmapData bd = {};
+        if (out.GetLastStatus() == Ok
+            && out.LockBits(&lock, ImageLockModeWrite, PixelFormat32bppARGB, &bd) == Ok) {
+            const DWORD* src = static_cast<const DWORD*>(bits);
+            BYTE* dst = static_cast<BYTE*>(bd.Scan0);
+            const BYTE cr = GetRValue(color), cg = GetGValue(color), cb = GetBValue(color);
+            for (int y = 0; y < px; ++y) {
+                BYTE* row = dst + static_cast<size_t>(y) * static_cast<size_t>(bd.Stride);
+                for (int x = 0; x < px; ++x) {
+                    const BYTE coverage = static_cast<BYTE>(src[y * px + x] & 0xFFu);
+                    row[x * 4 + 0] = cb;
+                    row[x * 4 + 1] = cg;
+                    row[x * 4 + 2] = cr;
+                    row[x * 4 + 3] = coverage;
+                }
+            }
+            out.UnlockBits(&bd);
+            CLSID clsidPng = {};
+            ok = GetPngEncoderClsid(&clsidPng) && out.Save(pngPath.c_str(), &clsidPng, nullptr) == Ok;
+        }
+    }
+
+    if (oldFont) ::SelectObject(mem, oldFont);
+    if (font) ::DeleteObject(font);
+    ::SelectObject(mem, oldBmp);
+    ::DeleteObject(dib);
+    ::DeleteDC(mem);
+    ::ReleaseDC(nullptr, hdc);
+    return ok;
+}
+
+std::wstring CMainWnd::GetGlyphIconBmp(wchar_t glyph, int px, COLORREF color)
+{
+    if (px < 8) px = 8;
+    if (px > 128) px = 128;
+    wchar_t keybuf[96] = {};
+    swprintf_s(keybuf, L"glyph:%04X@%d#%06X", static_cast<unsigned>(glyph), px,
+        static_cast<unsigned>(color & 0x00FFFFFFu));
+    const std::wstring key = keybuf;
+
+    {
+        std::lock_guard<std::mutex> lock(m_iconCacheMutex);
+        auto it = m_iconCache.find(key);
+        if (it != m_iconCache.end() && ::PathFileExistsW(it->second.c_str()))
+            return it->second;
+    }
+
+    size_t h = std::hash<std::wstring>{}(key);
+    wchar_t name[96] = {};
+    swprintf_s(name, L"gly_%08X_%04X_%d_v1.png", static_cast<unsigned>(h & 0xFFFFFFFFu),
+        static_cast<unsigned>(glyph), px);
+    std::wstring bmpPath = m_iconCacheDir + name;
+    if (::PathFileExistsW(bmpPath.c_str())) {
+        std::lock_guard<std::mutex> lock(m_iconCacheMutex);
+        m_iconCache[key] = bmpPath;
+        return bmpPath;
+    }
+    if (RenderGlyphToPng(glyph, px, color, bmpPath)) {
+        std::lock_guard<std::mutex> lock(m_iconCacheMutex);
+        m_iconCache[key] = bmpPath;
+        return bmpPath;
+    }
+    return {};
+}
+
 std::wstring CMainWnd::GetStockIconBmp(int siid, int cx)
 {
     if (cx < 16) cx = 16;
@@ -589,24 +700,49 @@ void CMainWnd::ApplyChromeShellIcons()
         c->Invalidate();
     };
 
+    // Command-bar buttons that show an icon *and* a label ("新建 ⌄"): the glyph becomes a
+    // bitmap so the label keeps the UI font, and textpadding keeps the two from overlapping.
+    // (These used to be two adjacent buttons - a glyph button plus a text button - which made
+    // the hover highlight cover only half of the visual button.)
+    auto applyGlyphLabel = [&](LPCTSTR name, wchar_t glyph) {
+        CControlUI* c = m_PaintManager.FindControl(name);
+        if (!c) return;
+        const int px = DpiScale(UiTokens::ToolbarGlyphPx);
+        std::wstring bmp = GetGlyphIconBmp(glyph, px, RGB(0x1A, 0x1A, 0x1A));
+        if (bmp.empty()) return;
+        int bh = c->GetFixedHeight();
+        if (bh <= 0) bh = DpiScale(UiTokens::CmdBtnH);
+        const int padL = DpiScale(UiTokens::ToolbarIconPad);
+        int y = (bh - px) / 2;
+        if (y < 0) y = 0;
+        ApplyControlForeIcon(c, bmp, px, padL, y, false);
+        CDuiString tp;
+        tp.Format(_T("%d,0,%d,0"),
+            padL + px + DpiScale(UiTokens::SpaceXs), DpiScale(UiTokens::SpaceSm));
+        c->SetAttribute(_T("textpadding"), tp);
+        c->Invalidate();
+    };
+
     // Windows built-in Segoe MDL2 glyphs keep the command bar visually aligned
     // with Explorer without copying icons or using legacy coloured shell32 art.
     applyFluent(_T("btn_back"), 0xE0A6);
     applyFluent(_T("btn_forward"), 0xE0AB);
     applyFluent(_T("btn_up"), 0xE74A);
     applyFluent(_T("btn_refresh"), 0xE72C);
-    applyFluent(_T("btn_new_glyph"), 0xE710);
     applyFluent(_T("btn_cut"), 0xE8C6);
     applyFluent(_T("btn_copy"), 0xE8C8);
     applyFluent(_T("btn_paste"), 0xE77F);
     applyFluent(_T("btn_rename"), 0xE8AC);
     applyFluent(_T("btn_share"), 0xE72D);
     applyFluent(_T("btn_delete"), 0xE74D);
-    applyFluent(_T("btn_sort_glyph"), 0xE8CB);
-    applyFluent(_T("btn_view_glyph"), 0xE80D);
     applyFluent(_T("btn_more"), 0xE712);
     applyFluent(_T("btn_toggle_preview"), 0xE7F4);
     applyFluent(_T("btn_newfolder"), 0xE710);
+
+    // Single-button 新建 / 排序 / 查看: glyph bitmap + label + chevron.
+    applyGlyphLabel(_T("btn_new"), 0xE710);
+    applyGlyphLabel(_T("btn_sort"), 0xE8CB);
+    applyGlyphLabel(_T("btn_view_menu"), 0xE80D);
 
     // Keep hidden legacy view buttons iconized for UpdateViewModeButtons
     applyBtn(_T("btn_view_xlarge"), GetModuleIconBmp(L"shell32.dll", 257, iconPx), true);

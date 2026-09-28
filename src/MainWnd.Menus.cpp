@@ -101,6 +101,7 @@ void CMainWnd::OnViewMenuClicked()
     ::AppendMenuW(hMenu, check(ViewMode::Tiles), 6, L"平铺");
     ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     ::AppendMenuW(hMenu, m_previewVisible ? (MF_STRING | MF_CHECKED) : MF_STRING, 7, L"预览窗格");
+    ::AppendMenuW(hMenu, m_favoritesBarVisible ? (MF_STRING | MF_CHECKED) : MF_STRING, 8, L"收藏栏");
 
     CControlUI* anchor = m_PaintManager.FindControl(_T("btn_view_menu"));
     if (!anchor || !m_hWnd) {
@@ -123,6 +124,9 @@ void CMainWnd::OnViewMenuClicked()
     case 7:
         SetPreviewVisible(!m_previewVisible);
         if (m_previewVisible) UpdatePreviewForSelection();
+        break;
+    case 8:
+        SetFavoritesBarVisible(!m_favoritesBarVisible);
         break;
     default: break;
     }

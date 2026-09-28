@@ -336,9 +336,9 @@ void CMainWnd::OnClick(TNotifyUI& msg)
     if (name == _T("btn_delete")) { OnDeleteClicked(); return; }
     if (name == _T("btn_rename")) { OnRenameClicked(); return; }
     if (name == _T("btn_share") || name == _T("btn_preview_share")) { OnShareClicked(); return; }
-    if (name == _T("btn_new") || name == _T("btn_new_glyph") || name == _T("btn_newfolder")) { OnNewMenuClicked(); return; }
-    if (name == _T("btn_sort") || name == _T("btn_sort_glyph")) { OnSortMenuClicked(); return; }
-    if (name == _T("btn_view_menu") || name == _T("btn_view_glyph")) { OnViewMenuClicked(); return; }
+        if (name == _T("btn_new") || name == _T("btn_newfolder")) { OnNewMenuClicked(); return; }
+        if (name == _T("btn_sort")) { OnSortMenuClicked(); return; }
+        if (name == _T("btn_view_menu")) { OnViewMenuClicked(); return; }
     if (name == _T("btn_more")) { OnMoreMenuClicked(); return; }
     if (name == _T("fav_thispc") || name == _T("fav_documents")
         || name == _T("fav_desktop") || name == _T("fav_downloads")) {

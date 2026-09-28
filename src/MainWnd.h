@@ -154,6 +154,8 @@ private:
     void ShowToolbarPopupMenu(CControlUI* anchor, HMENU hMenu);
     void OnFavoriteClicked(const CDuiString& name);
     void UpdateFavoritesHighlight();
+    // Collapsible favourites bar (toggle lives in the 查看 menu, state in session.ini).
+    void SetFavoritesBarVisible(bool visible);
 
     // C: Horizontal favorites bar (persist %APPDATA%\FastFile\favorites.txt)
     struct FavoriteItem {
@@ -262,6 +264,11 @@ private:
         int iconPx, int destX, int destY, bool clearText);
     std::wstring GetStockIconBmp(int siid, int cx);
     std::wstring GetModuleIconBmp(const wchar_t* moduleFile, int index, int cx);
+    // Segoe MDL2 glyph rendered to a cached PNG. Needed where a button shows an icon *and* a
+    // text label: DuiLib draws a button's text with a single font, so a glyph used as text
+    // would force the label into the symbol font.
+    std::wstring GetGlyphIconBmp(wchar_t glyph, int px, COLORREF color);
+    static bool RenderGlyphToPng(wchar_t glyph, int px, COLORREF color, const std::wstring& pngPath);
     static bool ExtractStockIconSized(int siid, int cx, const std::wstring& bmpPath);
     static bool ExtractModuleIconSized(const wchar_t* moduleFile, int index, int cx, const std::wstring& bmpPath);
 
@@ -536,6 +543,7 @@ private:
     int m_colWidthSize = 110;
     bool m_showHidden = false;
     bool m_previewVisible = true;
+    bool m_favoritesBarVisible = true;
     IContextMenu* m_pCtxMenu = nullptr;
     IContextMenu2* m_pCtxMenu2 = nullptr;
     IContextMenu3* m_pCtxMenu3 = nullptr;

@@ -200,7 +200,7 @@ void CMainWnd::ApplyDpiScaledChrome()
     const LPCTSTR toolbarBtns[] = {
         _T("btn_copy"), _T("btn_paste"), _T("btn_cut"), _T("btn_share"),
         _T("btn_delete"), _T("btn_rename"),
-        _T("btn_new_glyph"), _T("btn_new"), _T("btn_newfolder"), _T("btn_sort_glyph"), _T("btn_sort"), _T("btn_view_glyph"), _T("btn_view_menu"), _T("btn_more"),
+        _T("btn_new"), _T("btn_newfolder"), _T("btn_sort"), _T("btn_view_menu"), _T("btn_more"),
         _T("btn_toggle_preview"),
         _T("btn_view_xlarge"), _T("btn_view_large"), _T("btn_view_medium"),
         _T("btn_view_list"), _T("btn_view_details"), _T("btn_view_tiles"),
@@ -218,12 +218,12 @@ void CMainWnd::ApplyDpiScaledChrome()
     const BtnW widths[] = {
         { _T("btn_back"), UiTokens::ToolbarNavBtnW }, { _T("btn_forward"), UiTokens::ToolbarNavBtnW },
         { _T("btn_up"), UiTokens::ToolbarNavBtnW }, { _T("btn_refresh"), UiTokens::ToolbarNavBtnW },
-        { _T("btn_new_glyph"), 28 }, { _T("btn_new"), 54 },
+        { _T("btn_new"), 76 },
         { _T("btn_cut"), UiTokens::ToolbarBtnW }, { _T("btn_copy"), UiTokens::ToolbarBtnW },
         { _T("btn_paste"), UiTokens::ToolbarBtnW }, { _T("btn_rename"), UiTokens::ToolbarBtnW },
         { _T("btn_share"), UiTokens::ToolbarBtnW }, { _T("btn_delete"), UiTokens::ToolbarBtnW },
-        { _T("btn_sort_glyph"), 28 }, { _T("btn_sort"), 54 },
-        { _T("btn_view_glyph"), 28 }, { _T("btn_view_menu"), 54 },
+        { _T("btn_sort"), 76 },
+        { _T("btn_view_menu"), 76 },
         { _T("btn_more"), UiTokens::ToolbarBtnW },
         { _T("btn_toggle_preview"), UiTokens::ToolbarBtnW },
         { _T("btn_tab_add"), 28 },
@@ -278,11 +278,26 @@ void CMainWnd::ApplyDpiScaledChrome()
     }
 
     // Phase 2: left-nav Quick Access rows use NavRowH
+    const SIZE ctlRound = { DpiScale(UiTokens::RadiusControl), DpiScale(UiTokens::RadiusControl) };
     for (LPCTSTR favName : {
         _T("fav_thispc"), _T("fav_documents"), _T("fav_desktop"), _T("fav_downloads")
     }) {
-        if (CControlUI* cFav = m_PaintManager.FindControl(favName))
+        if (CControlUI* cFav = m_PaintManager.FindControl(favName)) {
             cFav->SetFixedHeight(DpiScale(UiTokens::NavRowH));
+            cFav->SetBorderRound(ctlRound);
+        }
+    }
+
+    // Unify the corner language: command-bar buttons and the address/search inputs are now
+    // 4px like Explorer (they used to be a mix of square and 6px).
+    for (LPCTSTR nm : {
+        _T("btn_new"), _T("btn_cut"), _T("btn_copy"), _T("btn_paste"), _T("btn_rename"),
+        _T("btn_share"), _T("btn_delete"), _T("btn_sort"), _T("btn_view_menu"), _T("btn_more"),
+        _T("btn_back"), _T("btn_forward"), _T("btn_up"), _T("btn_refresh"), _T("btn_search"),
+        _T("btn_tab_add"), _T("path_host"), _T("search_box")
+    }) {
+        if (CControlUI* c = m_PaintManager.FindControl(nm))
+            c->SetBorderRound(ctlRound);
     }
 
     // Grow client area to design*scale on first apply so 150%/200% feels premium

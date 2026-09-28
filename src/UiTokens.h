@@ -19,7 +19,9 @@ constexpr int SpaceLg = 16;
 constexpr int OuterGutter = 14;     // was 8; target band 12-16
 constexpr int InnerPadX = 12;       // chrome band horizontal padding (was ~8)
 constexpr int InnerPadY = 4;        // chrome band vertical padding
-constexpr int ChromeRound = 10;
+// ---- Corner radii (Win11 language: containers 8, controls / rows 4) ----
+constexpr int ChromeRound = 8;      // window/chrome container (was 10)
+constexpr int RadiusControl = 4;    // command-bar buttons, input boxes, list rows, chips
 constexpr int GapGroup = SpaceSm;   // toolbar group gaps
 constexpr int SepH = 20;            // command-bar separators (bar is 40, buttons 32)
 constexpr int HitTabH = 24;
