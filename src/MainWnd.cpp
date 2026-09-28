@@ -512,13 +512,69 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         }
     }
     if (uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN) {
-        CControlUI* pFocus = m_PaintManager.GetFocus();
-        const bool inEdit = (pFocus && pFocus->GetInterface(DUI_CTR_EDIT) != nullptr);
+        const bool inEdit = IsEditingText();
+        const bool ctrl = (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
+        const bool shift = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        const bool alt = (::GetKeyState(VK_MENU) & 0x8000) != 0;
         if (wParam == VK_ESCAPE && m_addressEditMode) {
             ExitAddressEditMode(false);
             return 0;
         }
         if (!inEdit) {
+            // ---- navigation ----
+            if (wParam == VK_F5) {
+                RefreshListing();
+                return 0;
+            }
+            if (wParam == VK_BACK && !ctrl) {
+                GoBack();
+                return 0;
+            }
+            if (alt && wParam == VK_LEFT) {
+                GoBack();
+                return 0;
+            }
+            if (alt && wParam == VK_RIGHT) {
+                GoForward();
+                return 0;
+            }
+            if (alt && wParam == VK_UP) {
+                GoUp();
+                return 0;
+            }
+            if (alt && wParam == 'D') {
+                EnterAddressEditMode();
+                return 0;
+            }
+            // ---- clipboard / file operations ----
+            if (ctrl && wParam == 'C') {
+                OnCopyClicked();
+                return 0;
+            }
+            if (ctrl && wParam == 'V') {
+                OnPasteClicked();
+                return 0;
+            }
+            if (ctrl && wParam == 'X') {
+                OnCutClicked();
+                return 0;
+            }
+            if (ctrl && wParam == 'Z') {
+                OnUndo();
+                return 0;
+            }
+            if (ctrl && shift && wParam == 'N') {
+                OnNewFolderClicked();
+                return 0;
+            }
+            if (ctrl && wParam == 'A') {
+                SelectAllItems();
+                return 0;
+            }
+            if (wParam == VK_DELETE && shift) {
+                OnDeleteClicked(/*permanent*/ true);
+                return 0;
+            }
             if (wParam == VK_DELETE) {
                 OnDeleteClicked();
                 return 0;
@@ -527,41 +583,23 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 OnRenameClicked();
                 return 0;
             }
-            if (wParam == VK_F5) {
-                RefreshListing();
+            if (wParam == VK_F3 || (ctrl && wParam == 'F')) {
+                FocusSearchBox();
                 return 0;
             }
-            if (wParam == VK_BACK && !(::GetKeyState(VK_CONTROL) & 0x8000)) {
-                GoBack();
+            if (alt && wParam == VK_RETURN) {
+                ShowPropertiesForSelection();
                 return 0;
             }
-            if ((::GetKeyState(VK_MENU) & 0x8000) && wParam == VK_LEFT) {
-                GoBack();
+            // ---- tabs ----
+            if (ctrl && wParam == 'T') {
+                AddTab(m_currentPath, true);
                 return 0;
             }
-            if ((::GetKeyState(VK_MENU) & 0x8000) && wParam == VK_RIGHT) {
-                GoForward();
+            if (ctrl && wParam == 'W') {
+                if (m_activeTab >= 0)
+                    CloseTab(m_activeTab);
                 return 0;
-            }
-            if ((::GetKeyState(VK_CONTROL) & 0x8000) && wParam == 'C') {
-                OnCopyClicked();
-                return 0;
-            }
-            if ((::GetKeyState(VK_CONTROL) & 0x8000) && wParam == 'V') {
-                OnPasteClicked();
-                return 0;
-            }
-            if ((::GetKeyState(VK_CONTROL) & 0x8000) && wParam == 'A') {
-                if (IsTileViewMode() && m_pIconTiles) {
-                    const int n = m_pIconTiles->GetCount();
-                    for (int i = 0; i < n; ++i)
-                        SetIconSelected(m_pIconTiles->GetItemAt(i), true);
-                    if (n > 0) m_iconAnchor = 0;
-                    CDuiString tip;
-                    tip.Format(_T("已选 %d 项"), n);
-                    UpdateStatus(tip.GetData());
-                    return 0;
-                }
             }
         }
     }
@@ -575,15 +613,25 @@ LRESULT CMainWnd::ResponseDefaultKeyEvent(WPARAM wParam)
             ExitAddressEditMode(false);
             return TRUE;
         }
-        CControlUI* pFocus = m_PaintManager.GetFocus();
-        const bool inEdit = (pFocus && pFocus->GetInterface(DUI_CTR_EDIT) != nullptr);
-        if (!inEdit && HasFileSelection()) {
+        if (!IsEditingText() && HasFileSelection()) {
             ClearFileSelection();
             UpdateListingStatusTip();
         }
         return TRUE;
     }
     return WindowImplBase::ResponseDefaultKeyEvent(wParam);
+}
+
+bool CMainWnd::IsEditingText() const
+{
+    CControlUI* pFocus = m_PaintManager.GetFocus();
+    if (!pFocus || pFocus->GetInterface(DUI_CTR_EDIT) == nullptr)
+        return false;
+    // The address box keeps its DuiLib focus after edit mode ends (its native edit window
+    // is hidden, not destroyed), so only treat it as editing while the mode is active.
+    if (pFocus == static_cast<CControlUI*>(m_pAddressEdit) && !m_addressEditMode)
+        return false;
+    return true;
 }
 
 bool CMainWnd::HasFileSelection() const

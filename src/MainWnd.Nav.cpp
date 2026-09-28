@@ -570,6 +570,10 @@ void CMainWnd::EnterAddressEditMode()
         m_pBreadcrumb->SetVisible(false);
     if (m_pAddressEditHost)
         m_pAddressEditHost->SetVisible(true);
+    // The native edit window also has to be shown again: ExitAddressEditMode hides the
+    // control itself so that it stops owning the keyboard (see the note there).
+    if (m_pAddressEdit)
+        m_pAddressEdit->SetVisible(true);
     if (m_pPathHost)
         m_pPathHost->NeedUpdate();
     if (m_pAddressEdit) {
@@ -590,6 +594,13 @@ void CMainWnd::ExitAddressEditMode(bool commitNavigate)
     m_addressEditMode = false;
     if (m_pAddressEditHost)
         m_pAddressEditHost->SetVisible(false);
+    // Hiding the host alone is not enough: DuiLib leaves the native edit window alive and
+    // still focused, and Windows routes WM_KEYDOWN (Ctrl+A/C/V/X/Z, Del, F2, ...) to the
+    // focus window - so every file-view shortcut would land in a hidden text box. Hiding
+    // the edit control itself makes DuiLib drop its focus and hand the native focus back
+    // to the paint window (see CEditUI::SetVisible / CPaintManagerUI::SetFocus).
+    if (m_pAddressEdit)
+        m_pAddressEdit->SetVisible(false);
     if (m_pBreadcrumb)
         m_pBreadcrumb->SetVisible(true);
 
@@ -604,6 +615,31 @@ void CMainWnd::ExitAddressEditMode(bool commitNavigate)
     }
     if (m_pPathHost)
         m_pPathHost->NeedUpdate();
+
+    ReturnFocusToFileView();
+}
+
+void CMainWnd::ReturnFocusToFileView()
+{
+    if (!m_hWnd) return;
+
+    // DuiLib hides the native address edit but leaves it holding the keyboard focus, so
+    // every later shortcut (Ctrl+A/C/V/X/Z, Del, F2, F5, ...) would be delivered to a
+    // hidden text box and silently dropped until the user clicked the listing.
+    // Only reclaim focus while it is still that very edit, so clicking into the search box
+    // (or another app) keeps its focus.
+    const HWND hEdit = m_pAddressEdit ? m_pAddressEdit->GetNativeEditHWND() : nullptr;
+    if (!hEdit || ::GetFocus() != hEdit)
+        return;
+
+    CControlUI* focusTarget = nullptr;
+    if (IsTileViewMode() && m_pIconTiles)
+        focusTarget = m_pIconTiles;
+    else if (m_pFileList)
+        focusTarget = m_pFileList;
+    if (focusTarget)
+        m_PaintManager.SetFocus(focusTarget);   // also pulls the native focus to the paint window
+    ::SetFocus(m_hWnd);
 }
 
 void CMainWnd::RebuildBreadcrumb()

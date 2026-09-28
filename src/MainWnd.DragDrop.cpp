@@ -407,7 +407,7 @@ bool CMainWnd::PerformDropTransfer(const std::vector<std::wstring>& srcPaths,
     }
     const bool move = (effect & DROPEFFECT_MOVE) != 0;
     if (move)
-        return TransferWithShell(srcPaths, destDir, true);
+        return TransferWithBackgroundCopy(srcPaths, destDir, /*move*/ true);
     return TransferWithBackgroundCopy(srcPaths, destDir);
 }
 
@@ -440,9 +440,12 @@ bool CMainWnd::BeginDragSelectedItems()
         if (effect & DROPEFFECT_MOVE) {
             // External move: refresh source listing
             RefreshListing();
-            UpdateStatus(_T("已通过拖拽移动"));
+            // An in-app drop starts its own background job; don't stomp that readout.
+            if (!m_copyRunning.load())
+                UpdateStatus(_T("已通过拖拽移动"));
         } else if (effect & DROPEFFECT_COPY) {
-            UpdateStatus(_T("已通过拖拽复制"));
+            if (!m_copyRunning.load())
+                UpdateStatus(_T("已通过拖拽复制"));
         }
         return true;
     }
@@ -475,12 +478,12 @@ CTreeNodeUI* CMainWnd::HitTestTreeNode(POINT ptClient) const
 }
 
 bool CMainWnd::TransferWithBackgroundCopy(const std::vector<std::wstring>& srcPaths,
-    const std::wstring& destDir)
+    const std::wstring& destDir, bool move)
 {
     if (srcPaths.empty() || destDir.empty() || IsThisPcPath(destDir))
         return false;
     if (m_copyRunning.load()) {
-        UpdateStatus(_T("已有复制任务进行中，请稍候或取消后再试"));
+        UpdateStatus(_T("已有复制/移动任务进行中，请稍候或取消后再试"));
         return false;
     }
 
@@ -507,6 +510,6 @@ bool CMainWnd::TransferWithBackgroundCopy(const std::vector<std::wstring>& srcPa
         return false;
     }
     m_lastCopyDest = destDir;
-    StartCopyJob(std::move(items), destDir);
+    StartCopyJob(std::move(items), destDir, move);
     return true;
 }

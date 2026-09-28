@@ -10,6 +10,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using namespace DuiLib;
@@ -126,7 +127,7 @@ private:
     void OnCopyClicked();
     void OnPasteClicked();
     void OnCancelCopyClicked();
-    void OnDeleteClicked();
+    void OnDeleteClicked(bool permanent = false);
     void OnRenameClicked();
     void OnNewFolderClicked();
     void OnCutClicked();
@@ -135,6 +136,21 @@ private:
     void OnSortMenuClicked();
     void OnViewMenuClicked();
     void OnMoreMenuClicked();
+    void FocusSearchBox();
+    void ShowPropertiesForSelection();
+
+    // Undo (Ctrl+Z) — only for operations FastFile performs itself
+    struct UndoRecord {
+        enum class Kind { Rename, CreateFolder, Move } kind = Kind::Rename;
+        std::wstring from;   // path before the operation
+        std::wstring to;     // path after the operation
+        // Kind::Move only: every (source, destination) pair of that one move operation,
+        // so a single Ctrl+Z restores the whole batch.
+        std::vector<std::pair<std::wstring, std::wstring>> moved;
+    };
+    void PushUndo(UndoRecord::Kind kind, std::wstring from, std::wstring to);
+    void PushMoveUndo(std::vector<std::pair<std::wstring, std::wstring>> pairs);
+    void OnUndo();
     void ShowToolbarPopupMenu(CControlUI* anchor, HMENU hMenu);
     void OnFavoriteClicked(const CDuiString& name);
     void UpdateFavoritesHighlight();
@@ -270,6 +286,8 @@ private:
     // Explorer-style path: breadcrumb default; click/focus -> editable address
     void EnterAddressEditMode();
     void ExitAddressEditMode(bool commitNavigate);
+    // Reclaim keyboard focus from the (hidden) native address edit after leaving edit mode.
+    void ReturnFocusToFileView();
     void SyncAddressEditFromPath();
 
     // Preview pane (B) — Win11 Explorer-like details
@@ -352,15 +370,20 @@ private:
     void ActivateIconTile(CControlUI* tile);
     void ClearIconSelection();
     void ClearFileSelection();
+    void SelectAllItems();
     bool IsFileViewBlankHit(CControlUI* hit) const;
     bool HasFileSelection() const;
+    // True while a text box that should own the keyboard has focus. The address box only
+    // counts while it is actually in edit mode: DuiLib leaves it focused (and its native
+    // window alive) after the host is hidden, which would otherwise swallow every shortcut.
+    bool IsEditingText() const;
     void SetIconSelected(CControlUI* tile, bool selected);
     void ApplyIconSelectionVisual(CControlUI* tile);
     int FindIconIndex(CControlUI* tile) const;
     void SelectIconRange(int from, int to);
 
     void CollectSelectedItems(std::vector<ClipboardItem>& out) const;
-    bool DeleteItems(const std::vector<ClipboardItem>& items);
+    bool DeleteItems(const std::vector<ClipboardItem>& items, bool permanent = false);
     bool RenameItem(const ClipboardItem& item, const std::wstring& newName);
     bool CreateNewFolder();
 
@@ -390,9 +413,10 @@ private:
     CTreeNodeUI* HitTestTreeNode(POINT ptClient) const;
     std::wstring ResolveDropDirectory(POINT ptScreen) const;
     bool TransferWithShell(const std::vector<std::wstring>& srcPaths, const std::wstring& destDir, bool move);
-    bool TransferWithBackgroundCopy(const std::vector<std::wstring>& srcPaths, const std::wstring& destDir);
+    bool TransferWithBackgroundCopy(const std::vector<std::wstring>& srcPaths, const std::wstring& destDir,
+        bool move = false);
 
-    void StartCopyJob(std::vector<ClipboardItem> items, std::wstring destDir);
+    void StartCopyJob(std::vector<ClipboardItem> items, std::wstring destDir, bool move = false);
     void StopCopyThread(bool wait);
     void ApplyCopyUiState();
     void OnCopyProgressMessage();
@@ -400,9 +424,15 @@ private:
 
     static void CopyWorkerMain(CMainWnd* self,
         std::vector<ClipboardItem> items,
-        std::wstring destDir);
+        std::wstring destDir,
+        bool move);
     static bool CopyOneFile(CMainWnd* self, const std::wstring& src, const std::wstring& dst);
     static bool CopyDirectoryRecursive(CMainWnd* self, const std::wstring& src, const std::wstring& dst);
+    // Move: same-volume rename fast path, otherwise copy-with-progress then delete the source.
+    // itemFiles/itemBytes are pre-measured so the rename path can still advance the bar.
+    static bool MoveOneItem(CMainWnd* self, const ClipboardItem& item, const std::wstring& dest,
+        int itemFiles, ULONGLONG itemBytes);
+    static bool DeleteTreePermanent(const std::wstring& path);
     static ULONGLONG CalcTotalBytes(const std::vector<ClipboardItem>& items, std::atomic<bool>& cancel);
     static ULONGLONG CalcPathBytes(const std::wstring& path, bool isDir, std::atomic<bool>& cancel);
     static int CountFiles(const std::vector<ClipboardItem>& items, std::atomic<bool>& cancel);
@@ -537,6 +567,10 @@ private:
     std::vector<ClipboardItem> m_clipboard;
     bool m_clipboardIsCut = false;
     std::wstring m_lastCopyDest;
+    bool m_jobIsMove = false;
+    // (source, destination) pairs of items moved by the running job; guarded by m_progressMutex.
+    std::vector<std::pair<std::wstring, std::wstring>> m_moveUndoPairs;
+    std::vector<UndoRecord> m_undoStack;
 
     std::map<std::wstring, std::wstring> m_iconCache;
     std::mutex m_iconCacheMutex;

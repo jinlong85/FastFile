@@ -251,6 +251,29 @@ void CMainWnd::SetIconSelected(CControlUI* tile, bool selected)
     UpdateListingStatusTip();
 }
 
+void CMainWnd::SelectAllItems()
+{
+    int count = 0;
+
+    if (IsTileViewMode() && m_pIconTiles) {
+        count = m_pIconTiles->GetCount();
+        for (int i = 0; i < count; ++i)
+            SetIconSelected(m_pIconTiles->GetItemAt(i), true);
+        if (count > 0)
+            m_iconAnchor = 0;
+    } else if (m_pFileList) {
+        count = m_pFileList->GetCount();
+        if (count > 0)
+            m_pFileList->SelectItemRange(0, count - 1, false);
+        UpdateListingStatusTip();
+    }
+
+    CDuiString tip;
+    tip.Format(_T("已全选 %d 项"), count);
+    UpdateStatus(tip.GetData());
+    UpdatePreviewForSelection();
+}
+
 void CMainWnd::ApplyIconSelectionVisual(CControlUI* tile)
 {
     if (!tile) return;

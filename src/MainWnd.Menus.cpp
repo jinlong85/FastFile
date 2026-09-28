@@ -137,6 +137,9 @@ void CMainWnd::OnMoreMenuClicked()
         2, L"预览窗格");
     ::AppendMenuW(hMenu, m_showHidden ? (MF_STRING | MF_CHECKED) : MF_STRING,
         3, L"显示隐藏的项目");
+    ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+    ::AppendMenuW(hMenu, m_undoStack.empty() ? (MF_STRING | MF_GRAYED) : MF_STRING,
+        4, L"撤销\tCtrl+Z");
 
     CControlUI* anchor = m_PaintManager.FindControl(_T("btn_more"));
     if (!anchor || !m_hWnd) {
@@ -157,6 +160,8 @@ void CMainWnd::OnMoreMenuClicked()
         if (m_previewVisible) UpdatePreviewForSelection();
     } else if (cmd == 3) {
         ToggleShowHidden();
+    } else if (cmd == 4) {
+        OnUndo();
     }
 }
 

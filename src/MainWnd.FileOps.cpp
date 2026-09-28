@@ -161,15 +161,14 @@ void CMainWnd::OnPasteClicked()
     }
 
     if (m_clipboardIsCut) {
-        std::vector<std::wstring> paths;
-        paths.reserve(m_clipboard.size());
-        for (const auto& it : m_clipboard)
-            paths.push_back(it.path);
-        if (TransferWithShell(paths, m_currentPath, true)) {
-            m_clipboard.clear();
-            m_clipboardIsCut = false;
-            ApplyCopyUiState();
-        }
+        // Cut + paste runs through the background job engine so a move gets the same
+        // in-app progress readout and cancel button as a copy (no Shell dialog).
+        std::vector<ClipboardItem> moving = m_clipboard;
+        m_clipboard.clear();
+        m_clipboardIsCut = false;
+        ApplyCopyUiState();
+        m_lastCopyDest = m_currentPath;
+        StartCopyJob(std::move(moving), m_currentPath, /*move*/ true);
         return;
     }
 
@@ -181,10 +180,10 @@ void CMainWnd::OnCancelCopyClicked()
 {
     if (!m_copyRunning.load()) return;
     m_copyCancel.store(true);
-    UpdateStatus(_T("正在取消复制…"));
+    UpdateStatus(m_jobIsMove ? _T("正在取消移动…") : _T("正在取消复制…"));
 }
 
-void CMainWnd::OnDeleteClicked()
+void CMainWnd::OnDeleteClicked(bool permanent)
 {
     std::vector<ClipboardItem> items;
     CollectSelectedItems(items);
@@ -194,10 +193,15 @@ void CMainWnd::OnDeleteClicked()
     }
 
     CDuiString msg;
+    const wchar_t* target = permanent ? _T("永久删除（不进回收站）") : _T("删除到回收站");
     if (items.size() == 1) {
-        msg.Format(_T("确定将「%s」删除到回收站吗？"), GetLeafName(items[0].path).c_str());
+        msg.Format(permanent ? _T("确定将「%s」永久删除吗？\n\n该项目不会进入回收站，无法通过资源管理器还原。")
+                             : _T("确定将「%s」删除到回收站吗？"),
+            GetLeafName(items[0].path).c_str());
     } else {
-        msg.Format(_T("确定将选中的 %d 项删除到回收站吗？"), static_cast<int>(items.size()));
+        msg.Format(permanent ? _T("确定将选中的 %d 项永久删除吗？\n\n这些项目不会进入回收站。")
+                             : _T("确定将选中的 %d 项删除到回收站吗？"),
+            static_cast<int>(items.size()));
     }
     int ret = ::MessageBoxW(m_hWnd, msg.GetData(), L"FastFile - 确认删除",
         MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
@@ -206,15 +210,15 @@ void CMainWnd::OnDeleteClicked()
         return;
     }
 
-    if (DeleteItems(items)) {
+    if (DeleteItems(items, permanent)) {
         CDuiString tip;
-        tip.Format(_T("已删除 %d 项到回收站"), static_cast<int>(items.size()));
+        tip.Format(_T("已%s %d 项"), target, static_cast<int>(items.size()));
         UpdateStatus(tip.GetData());
         RefreshListing();
     }
 }
 
-bool CMainWnd::DeleteItems(const std::vector<ClipboardItem>& items)
+bool CMainWnd::DeleteItems(const std::vector<ClipboardItem>& items, bool permanent)
 {
     // Build double-null-terminated path list for SHFileOperation
     std::wstring from;
@@ -228,7 +232,8 @@ bool CMainWnd::DeleteItems(const std::vector<ClipboardItem>& items)
     op.hwnd = m_hWnd;
     op.wFunc = FO_DELETE;
     op.pFrom = from.c_str();
-    op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
+    // FOF_ALLOWUNDO is what routes the delete through the recycle bin.
+    op.fFlags = (permanent ? 0 : FOF_ALLOWUNDO) | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
     int r = ::SHFileOperationW(&op);
     if (r != 0 || op.fAnyOperationsAborted) {
         CDuiString tip;
@@ -315,6 +320,7 @@ bool CMainWnd::RenameItem(const ClipboardItem& item, const std::wstring& newName
         UpdateStatus(tip.GetData());
         return false;
     }
+    PushUndo(UndoRecord::Kind::Rename, item.path, dest);
     return true;
 }
 
@@ -405,8 +411,9 @@ bool CMainWnd::CreateNewFolder()
         return false;
     }
     CDuiString tip;
-    tip.Format(_T("已创建: %s"), GetLeafName(dest).c_str());
+    tip.Format(_T("已创建: %s（Ctrl+Z 可撤销）"), GetLeafName(dest).c_str());
     UpdateStatus(tip.GetData());
+    PushUndo(UndoRecord::Kind::CreateFolder, std::wstring(), dest);
     RefreshListing();
     return true;
 }
@@ -503,26 +510,30 @@ void CMainWnd::StopCopyThread(bool wait)
     m_copyRunning.store(false);
 }
 
-void CMainWnd::StartCopyJob(std::vector<ClipboardItem> items, std::wstring destDir)
+void CMainWnd::StartCopyJob(std::vector<ClipboardItem> items, std::wstring destDir, bool move)
 {
     StopCopyThread(true);
 
     m_copyCancel.store(false);
     m_copyRunning.store(true);
+    m_jobIsMove = move;
     {
         std::lock_guard<std::mutex> lock(m_progressMutex);
         m_progress = CopyProgressSnapshot{};
         m_progress.state = CopyProgressSnapshot::State::Running;
         m_progress.filesTotal = static_cast<int>(items.size());
+        m_moveUndoPairs.clear();
     }
     m_workerBytesBase = 0;
     m_workerFileSize = 0;
 
     ApplyCopyUiState();
-    UpdateStatus(_T("正在准备复制…（可继续浏览目录）"));
+    UpdateStatus(move ? _T("正在准备移动…（可继续浏览目录）")
+                      : _T("正在准备复制…（可继续浏览目录）"));
 
-    m_copyThread = std::thread([this, items = std::move(items), destDir = std::move(destDir)]() mutable {
-        CopyWorkerMain(this, std::move(items), std::move(destDir));
+    const bool moveJob = move;
+    m_copyThread = std::thread([this, items = std::move(items), destDir = std::move(destDir), moveJob]() mutable {
+        CopyWorkerMain(this, std::move(items), std::move(destDir), moveJob);
     });
 }
 
@@ -534,20 +545,21 @@ void CMainWnd::OnCopyProgressMessage()
         snap = m_progress;
     }
 
+    const wchar_t* verb = m_jobIsMove ? L"移动" : L"复制";
     wchar_t buf[512] = {};
     const wchar_t* name = snap.current[0] ? snap.current : L"…";
     if (snap.bytesTotal > 0) {
         const double pct = (100.0 * static_cast<double>(snap.bytesDone))
             / static_cast<double>(snap.bytesTotal);
         swprintf_s(buf,
-            L"复制中 %d/%d  ·  %s / %s (%.0f%%)  ·  %s  ·  可继续浏览",
-            snap.filesDone, snap.filesTotal,
+            L"%s中 %d/%d  ·  %s / %s (%.0f%%)  ·  %s  ·  可继续浏览",
+            verb, snap.filesDone, snap.filesTotal,
             FormatFileSize(snap.bytesDone).c_str(),
             FormatFileSize(snap.bytesTotal).c_str(),
             pct, name);
     } else {
-        swprintf_s(buf, L"复制中 %d/%d  ·  %s  ·  可继续浏览",
-            snap.filesDone, snap.filesTotal, name);
+        swprintf_s(buf, L"%s中 %d/%d  ·  %s  ·  可继续浏览",
+            verb, snap.filesDone, snap.filesTotal, name);
     }
     UpdateStatus(buf);
 }
@@ -565,18 +577,37 @@ void CMainWnd::OnCopyFinishedMessage(WPARAM resultCode)
         snap = m_progress;
     }
 
+    const bool wasMove = m_jobIsMove;
+    const wchar_t* verb = wasMove ? _T("移动") : _T("复制");
+
+    if (wasMove) {
+        // One undo step for the whole move, so a single Ctrl+Z puts every item back.
+        std::vector<std::pair<std::wstring, std::wstring>> pairs;
+        {
+            std::lock_guard<std::mutex> lock(m_progressMutex);
+            pairs.swap(m_moveUndoPairs);
+        }
+        PushMoveUndo(std::move(pairs));
+    }
+
     CDuiString tip;
     if (resultCode == 2)
-        tip.Format(_T("复制已取消（完成 %d/%d）"), snap.filesDone, snap.filesTotal);
+        tip.Format(_T("%s已取消（完成 %d/%d）"), verb, snap.filesDone, snap.filesTotal);
     else if (resultCode == 1)
-        tip.Format(_T("复制失败 (错误 %lu)，已完成 %d/%d"),
-            snap.lastError, snap.filesDone, snap.filesTotal);
+        tip.Format(_T("%s失败 (错误 %lu)，已完成 %d/%d"),
+            verb, snap.lastError, snap.filesDone, snap.filesTotal);
+    else if (wasMove && !m_undoStack.empty())
+        tip.Format(_T("移动完成：%d 个文件 → %s（Ctrl+Z 可撤销）"),
+            snap.filesDone, m_lastCopyDest.c_str());
     else
         tip.Format(_T("复制完成：%d 个文件 → %s"),
             snap.filesDone, m_lastCopyDest.c_str());
     UpdateStatus(tip.GetData());
 
-    if (_wcsicmp(m_currentPath.c_str(), m_lastCopyDest.c_str()) == 0)
+    m_jobIsMove = false;
+
+    // A move empties the source folder too, so refresh whenever the job was a move.
+    if (wasMove || _wcsicmp(m_currentPath.c_str(), m_lastCopyDest.c_str()) == 0)
         RefreshListing();
 }
 
@@ -796,12 +827,24 @@ bool CMainWnd::CopyDirectoryRecursive(CMainWnd* self, const std::wstring& src, c
 
 void CMainWnd::CopyWorkerMain(CMainWnd* self,
     std::vector<ClipboardItem> items,
-    std::wstring destDir)
+    std::wstring destDir,
+    bool move)
 {
     WPARAM result = 0;
 
-    const int fileTotal = CountFiles(items, self->m_copyCancel);
-    const ULONGLONG bytesTotal = CalcTotalBytes(items, self->m_copyCancel);
+    // Measure each item once: the totals feed the progress readout, while the per-item
+    // values let a same-volume rename advance the bar (it emits no byte-level progress).
+    std::vector<ULONGLONG> itemBytes(items.size(), 0);
+    std::vector<int> itemFiles(items.size(), 0);
+    ULONGLONG bytesTotal = 0;
+    int fileTotal = 0;
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (self->m_copyCancel.load()) { result = 2; break; }
+        itemBytes[i] = CalcPathBytes(items[i].path, items[i].isDir, self->m_copyCancel);
+        itemFiles[i] = CountFilesInPath(items[i].path, items[i].isDir, self->m_copyCancel);
+        bytesTotal += itemBytes[i];
+        fileTotal += itemFiles[i];
+    }
     {
         std::lock_guard<std::mutex> lock(self->m_progressMutex);
         self->m_progress.filesTotal = fileTotal;
@@ -815,19 +858,25 @@ void CMainWnd::CopyWorkerMain(CMainWnd* self,
     self->m_workerBytesBase = 0;
     self->m_workerFileSize = 0;
 
-    for (const auto& it : items) {
+    for (size_t i = 0; result != 2 && i < items.size(); ++i) {
         if (self->m_copyCancel.load()) { result = 2; break; }
+        const ClipboardItem& it = items[i];
 
         size_t slash = it.path.find_last_of(L"\\/");
         std::wstring leaf = (slash == std::wstring::npos) ? it.path : it.path.substr(slash + 1);
         std::wstring dest = UniqueDestPath(JoinPath(destDir, leaf));
 
-        bool ok = it.isDir
-            ? CopyDirectoryRecursive(self, it.path, dest)
-            : CopyOneFile(self, it.path, dest);
+        const bool ok = move
+            ? MoveOneItem(self, it, dest, itemFiles[i], itemBytes[i])
+            : (it.isDir ? CopyDirectoryRecursive(self, it.path, dest)
+                        : CopyOneFile(self, it.path, dest));
         if (!ok) {
             result = self->m_copyCancel.load() ? 2 : 1;
             break;
+        }
+        if (move) {
+            std::lock_guard<std::mutex> lock(self->m_progressMutex);
+            self->m_moveUndoPairs.emplace_back(it.path, dest);
         }
     }
 
@@ -843,4 +892,205 @@ void CMainWnd::CopyWorkerMain(CMainWnd* self,
 
     if (self->m_hWnd)
         ::PostMessageW(self->m_hWnd, kMsgCopyFinished, result, 0);
+}
+
+// ---- Move --------------------------------------------------------------
+
+bool CMainWnd::MoveOneItem(CMainWnd* self, const ClipboardItem& item, const std::wstring& dest,
+    int itemFiles, ULONGLONG itemBytes)
+{
+    if (self->m_copyCancel.load()) return false;
+
+    {
+        std::lock_guard<std::mutex> lock(self->m_progressMutex);
+        wcsncpy_s(self->m_progress.current, GetLeafName(item.path).c_str(), _TRUNCATE);
+    }
+    PostProgress(self);
+
+    // Fast path: same volume, so this is an atomic rename that moves no data.
+    // MOVEFILE_COPY_ALLOWED is deliberately NOT passed - a cross-volume move must fail
+    // here so our own engine runs it with progress and a working cancel button.
+    if (::MoveFileExW(item.path.c_str(), dest.c_str(), 0)) {
+        self->m_workerBytesBase += itemBytes;
+        {
+            std::lock_guard<std::mutex> lock(self->m_progressMutex);
+            self->m_progress.filesDone += itemFiles;
+            self->m_progress.bytesDone = self->m_workerBytesBase;
+        }
+        PostProgress(self);
+        return true;
+    }
+
+    const DWORD err = ::GetLastError();
+    if (err != ERROR_NOT_SAME_DEVICE) {
+        std::lock_guard<std::mutex> lock(self->m_progressMutex);
+        self->m_progress.lastError = err;
+        return false;
+    }
+
+    // Cross-volume: copy with progress, then drop the source permanently (not to the bin).
+    const bool copied = item.isDir ? CopyDirectoryRecursive(self, item.path, dest)
+                                   : CopyOneFile(self, item.path, dest);
+    if (!copied) return false;
+    if (!DeleteTreePermanent(item.path)) {
+        std::lock_guard<std::mutex> lock(self->m_progressMutex);
+        self->m_progress.lastError = ::GetLastError();
+        return false;
+    }
+    return true;
+}
+
+bool CMainWnd::DeleteTreePermanent(const std::wstring& path)
+{
+    std::wstring from = path;
+    from.push_back(L'\0');
+    from.push_back(L'\0');
+    SHFILEOPSTRUCTW op = {};
+    op.wFunc = FO_DELETE;
+    op.pFrom = from.c_str();
+    op.fFlags = FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI | FOF_NOCONFIRMMKDIR;
+    const int r = ::SHFileOperationW(&op);
+    return r == 0 && !op.fAnyOperationsAborted;
+}
+
+// ---- Undo (Ctrl+Z) -----------------------------------------------------
+
+void CMainWnd::PushUndo(UndoRecord::Kind kind, std::wstring from, std::wstring to)
+{
+    if (from.empty() && to.empty()) return;
+    m_undoStack.push_back(UndoRecord{ kind, std::move(from), std::move(to) });
+    constexpr size_t kMaxUndoRecords = 50;
+    if (m_undoStack.size() > kMaxUndoRecords) {
+        m_undoStack.erase(m_undoStack.begin(),
+            m_undoStack.begin() + (m_undoStack.size() - kMaxUndoRecords));
+    }
+}
+
+void CMainWnd::PushMoveUndo(std::vector<std::pair<std::wstring, std::wstring>> pairs)
+{
+    if (pairs.empty()) return;
+    UndoRecord rec;
+    rec.kind = UndoRecord::Kind::Move;
+    rec.moved = std::move(pairs);
+    m_undoStack.push_back(std::move(rec));
+    constexpr size_t kMaxUndoRecords = 50;
+    if (m_undoStack.size() > kMaxUndoRecords) {
+        m_undoStack.erase(m_undoStack.begin(),
+            m_undoStack.begin() + (m_undoStack.size() - kMaxUndoRecords));
+    }
+}
+
+void CMainWnd::OnUndo()
+{
+    if (m_copyRunning.load()) {
+        UpdateStatus(_T("有复制/移动任务在进行，完成后再撤销"));
+        return;
+    }
+    if (m_undoStack.empty()) {
+        UpdateStatus(_T("没有可撤销的操作"));
+        return;
+    }
+
+    const UndoRecord rec = m_undoStack.back();
+    bool ok = false;
+    bool keepRecord = false;
+    CDuiString tip;
+
+    switch (rec.kind) {
+    case UndoRecord::Kind::Rename:
+        if (::GetFileAttributesW(rec.to.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            tip.Format(_T("撤销失败：「%s」已不在原位"), GetLeafName(rec.to).c_str());
+        } else if (::GetFileAttributesW(rec.from.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            tip.Format(_T("撤销失败：「%s」处已有同名项目"), GetLeafName(rec.from).c_str());
+        } else if (!::MoveFileExW(rec.to.c_str(), rec.from.c_str(), MOVEFILE_COPY_ALLOWED)) {
+            tip.Format(_T("撤销失败 (错误 %lu)"), ::GetLastError());
+        } else {
+            ok = true;
+            tip.Format(_T("已撤销重命名：%s"), GetLeafName(rec.from).c_str());
+        }
+        break;
+    case UndoRecord::Kind::Move: {
+        if (rec.moved.empty()) {
+            tip = _T("没有可撤销的移动");
+            break;
+        }
+        // Walk the batch in reverse; items already back home are skipped, so a repeated
+        // Ctrl+Z after a partial failure is safe.
+        int restored = 0, failed = 0;
+        for (auto it = rec.moved.rbegin(); it != rec.moved.rend(); ++it) {
+            if (::GetFileAttributesW(it->second.c_str()) == INVALID_FILE_ATTRIBUTES)
+                continue;
+            if (::GetFileAttributesW(it->first.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                ++failed;
+                continue;
+            }
+            // Undo may have to cross volumes; let the OS copy+delete in that case.
+            if (!::MoveFileExW(it->second.c_str(), it->first.c_str(), MOVEFILE_COPY_ALLOWED)) {
+                ++failed;
+                continue;
+            }
+            ++restored;
+        }
+        if (failed == 0) {
+            ok = true;
+            tip.Format(_T("已撤销移动：%d 项"), restored);
+        } else if (restored > 0) {
+            keepRecord = true;   // let the user fix the blocker and press Ctrl+Z again
+            tip.Format(_T("已还原 %d 项，%d 项失败（修正后可再次 Ctrl+Z）"), restored, failed);
+        } else {
+            tip.Format(_T("撤销移动失败：%d 项无法还原"), failed);
+        }
+        break;
+    }
+    case UndoRecord::Kind::CreateFolder:
+        if (::RemoveDirectoryW(rec.to.c_str())) {
+            ok = true;
+            tip.Format(_T("已撤销新建：%s"), GetLeafName(rec.to).c_str());
+        } else {
+            const DWORD err = ::GetLastError();
+            if (err == ERROR_DIR_NOT_EMPTY)
+                tip.Format(_T("「%s」已非空，无法撤销新建"), GetLeafName(rec.to).c_str());
+            else
+                tip.Format(_T("撤销失败 (错误 %lu)"), err);
+        }
+        break;
+    }
+
+    if (ok) m_undoStack.pop_back();
+    UpdateStatus(tip.GetData());
+    if (ok || keepRecord) RefreshListing();
+}
+
+// ---- Keyboard helpers --------------------------------------------------
+
+void CMainWnd::FocusSearchBox()
+{
+    if (!m_pSearchEdit) return;
+    SetSearchPlaceholder(false);
+    m_pSearchEdit->SetFocus();
+    m_pSearchEdit->SetSelAll();
+}
+
+void CMainWnd::ShowPropertiesForSelection()
+{
+    std::vector<ClipboardItem> items;
+    CollectSelectedItems(items);
+
+    const std::wstring target = items.empty() ? m_currentPath : items.front().path;
+    if (target.empty()) {
+        UpdateStatus(_T("没有可显示属性的对象"));
+        return;
+    }
+
+    SHELLEXECUTEINFOW sei = {};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_INVOKEIDLIST | SEE_MASK_FLAG_NO_UI;
+    sei.lpVerb = L"properties";
+    sei.lpFile = target.c_str();
+    sei.nShow = SW_SHOWNORMAL;
+    if (!::ShellExecuteExW(&sei)) {
+        CDuiString tip;
+        tip.Format(_T("无法显示属性 (错误 %lu)"), ::GetLastError());
+        UpdateStatus(tip.GetData());
+    }
 }
