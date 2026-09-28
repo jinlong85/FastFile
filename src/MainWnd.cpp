@@ -461,9 +461,53 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         if (wParam == kTimerLayoutSync) { SyncLayoutDependents(); return 0; }
     }
     if (uMsg == WM_LBUTTONDOWN && !m_inDoDragDrop) {
+        // Pane dividers own a generous grab band that straddles the divider line: the
+        // cursor turns into a left/right arrow there and the press starts a drag.
+        const int px = (short)LOWORD(lParam);
+        const int py = (short)HIWORD(lParam);
+        const int pane = HitTestPaneDivider(px, py);
+        if (pane != 0) {
+            m_paneDragKind = pane;
+            m_paneDragStartX = px;
+            m_paneDragStartLeft = m_pLeftPanel ? m_pLeftPanel->GetFixedWidth() : 0;
+            m_paneDragStartPreview = m_pPreviewPane ? m_pPreviewPane->GetFixedWidth() : 0;
+            ::SetCapture(m_hWnd);
+            return 0;
+        }
         m_dragTracking = true;
         m_dragStartPt.x = (short)LOWORD(lParam);
         m_dragStartPt.y = (short)HIWORD(lParam);
+    }
+    if (uMsg == WM_MOUSEMOVE && m_paneDragKind != 0) {
+        const int x = (short)LOWORD(lParam);
+        const int dx = x - m_paneDragStartX;
+        int w = 0;
+        if (m_paneDragKind == 1) w = m_paneDragStartLeft + dx;         // sidebar: right edge
+        else w = m_paneDragStartPreview - dx;                          // preview: left edge
+        ApplyPaneDragWidth(m_paneDragKind, w);
+        return 0;
+    }
+    if (uMsg == WM_SETCURSOR && LOWORD(lParam) == HTCLIENT) {
+        if (m_paneDragKind != 0) {
+            ::SetCursor(::LoadCursor(nullptr, IDC_SIZEWE));
+            return TRUE;
+        }
+        POINT pt = {};
+        ::GetCursorPos(&pt);
+        ::ScreenToClient(m_hWnd, &pt);
+        if (HitTestPaneDivider(pt.x, pt.y) != 0) {
+            ::SetCursor(::LoadCursor(nullptr, IDC_SIZEWE));
+            return TRUE;
+        }
+    }
+    if (uMsg == WM_LBUTTONUP && m_paneDragKind != 0) {
+        m_paneDragKind = 0;
+        ::ReleaseCapture();
+        CapturePaneWidthsIfChanged();
+        return 0;
+    }
+    if (uMsg == WM_CAPTURECHANGED && m_paneDragKind != 0) {
+        m_paneDragKind = 0;
     }
     if (uMsg == WM_LBUTTONUP || uMsg == WM_RBUTTONDOWN) {
         m_dragTracking = false;

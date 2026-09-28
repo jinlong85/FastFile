@@ -205,6 +205,46 @@ void CMainWnd::ApplyPaneWidths(int leftDesignW, int previewDesignW)
     }
 }
 
+// ---- Pane dividers (sidebar / preview) -----------------------------------
+// DuiLib's own sep band is only a few pixels wide and sits strictly inside the padded
+// area, which made the splitters almost impossible to grab. We hit-test a band that
+// straddles the divider line instead, so the cursor turns into the resize arrow as soon
+// as the mouse gets near it.
+int CMainWnd::PaneDividerBandPx() const
+{
+    return (std::max)(8, DpiScale(8));   // +/- this many px around the divider line
+}
+
+int CMainWnd::HitTestPaneDivider(int clientX, int /*clientY*/) const
+{
+    const int band = PaneDividerBandPx();
+    if (m_pLeftPanel) {
+        const RECT r = m_pLeftPanel->GetPos();
+        if (r.right > r.left && clientX >= r.right - band && clientX <= r.right + band)
+            return 1;
+    }
+    if (m_pPreviewPane && m_pPreviewPane->IsVisible()) {
+        const RECT r = m_pPreviewPane->GetPos();
+        if (r.right > r.left && clientX >= r.left - band && clientX <= r.left + band)
+            return 2;
+    }
+    return 0;
+}
+
+void CMainWnd::ApplyPaneDragWidth(int kind, int physicalWidth)
+{
+    const int minD = (kind == 1) ? 150 : 180;
+    const int maxD = (kind == 1) ? 520 : 760;
+    int w = physicalWidth;
+    if (w < DpiScale(minD)) w = DpiScale(minD);
+    if (w > DpiScale(maxD)) w = DpiScale(maxD);
+    CContainerUI* pane = (kind == 1) ? m_pLeftPanel : m_pPreviewPane;
+    if (!pane) return;
+    if (pane->GetFixedWidth() == w) return;
+    pane->SetFixedWidth(w);
+    pane->NeedParentUpdate();
+}
+
 void CMainWnd::CapturePaneWidthsIfChanged()
 {
     if (m_dpi == 0) return;

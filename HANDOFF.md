@@ -137,24 +137,23 @@ DuiLib 的 `CTileLayoutUI` 增加 `columnfirst` 属性（本项目对 third_part
 所以 `BindIconTile`／`TryReuseIconsView` 会用 `MeasureTextWidthPx()` 先估名字占几行，
 再按「行数 × 行高」手工算 `textpadding` 的顶部留白，才能看起来垂直居中。
 
-### 左侧栏 / 预览栏都能拖宽度
-根因：**分隔条（sep）是容器自己的能力**——只有 `CHorizontalLayoutUI` 实现 `sepwidth`、
-只有 `CVerticalLayoutUI` 实现 `sepheight`。之前把 `sepwidth` 写在 `VerticalLayout`
-上，属性被静默忽略，所以完全拖不动。
+### 左侧栏 / 预览栏都能拖宽度（自带热区 + 光标提示）
+**不用 DuiLib 的 sep**，改成自己做命中测试（原因见下）：
 
-| 想改的方向 | 容器必须是 | 属性 | 热区位置 |
-|---|---|---|---|
-| 宽度 | HorizontalLayout | `sepwidth` | 正数=右边缘，负数=左边缘 |
-| 高度 | VerticalLayout | `sepheight` | 正数=下边缘，负数=上边缘 |
+1. `HitTestPaneDivider(x,y)` 判断鼠标是否落在分隔线两侧 `±PaneDividerBandPx()` 内
+   （8 设计像素、约 12 物理像素，横跨两侧）；
+2. `WM_SETCURSOR` 命中就把光标设成 `IDC_SIZEWE`（拖动过程中也保持）；
+3. `WM_LBUTTONDOWN` 命中 → `SetCapture` 并记下起始宽度；`WM_MOUSEMOVE` 实时
+   `ApplyPaneDragWidth()`（左栏改右边缘、预览栏改左边缘，各自有 min/max）；
+   `WM_LBUTTONUP` 释放并 `CapturePaneWidthsIfChanged()` 落盘。
 
-热区**必须落在容器的 padding 区域里**，否则会被子控件挡住、收不到鼠标事件。
-因此结构改成两层：
+结构上左右两侧都改成“包裹层 + 内容层”两层，因为要改的是包裹层的固定宽度：
 
 ```xml
-<HorizontalLayout name="left_panel" width="220" sepwidth="8" padding="8,8,8,8">   <!-- 包裹层 -->
+<HorizontalLayout name="left_panel" width="220" padding="8,8,8,8">   <!-- 包裹层 -->
   <VerticalLayout name="left_body" padding="0,0,0,0"> ...左侧内容... </VerticalLayout>
 </HorizontalLayout>
-<HorizontalLayout name="preview_pane" width="320" sepwidth="-12" padding="24,24,24,24">
+<HorizontalLayout name="preview_pane" width="320" padding="24,24,24,24">
   <VerticalLayout name="preview_body" padding="0,0,0,0"> ...预览内容... </VerticalLayout>
 </HorizontalLayout>
 ```
@@ -165,8 +164,14 @@ DuiLib 的 `CTileLayoutUI` 增加 `columnfirst` 属性（本项目对 third_part
 `m_pPreviewPane` / `m_pLeftPanel` 的类型是 `CContainerUI*`（包裹层是 HorizontalLayout，
 不能再 static_cast 成 CVerticalLayoutUI）。
 
-调试提示：自动化测试点击分隔条时要落在热区**内部**——`PtInRect` 右/下边界是开区间，
-差 1px 就会点空，看起来像"拖动功能没实现"。
+**为什么不用 DuiLib 的 sep**：①`sepwidth` 只有 `CHorizontalLayoutUI` 实现、
+`sepheight` 只有 `CVerticalLayoutUI` 实现（写在别的类型上会被静默忽略）；
+②sep 热区**必须完全落在容器的 padding 区域内**，否则被子控件挡住收不到事件，
+因此热区被限制在 8px 左右；③sep 的热区不跨两侧，鼠标必须精确压在容器边缘，
+实测很不好抓。自己命中测试后热区可以横跨分隔线两边的 24px，而且光标提示同步出现。
+
+调试提示：`WM_SETCURSOR` 的 `lParam` 低字要判 `HTCLIENT`；`GetCursorPos`+`ScreenToClient`
+取的是物理坐标（进程需 PerMonitorV2 感知，否则坐标会被 /1.5 虚拟化而对不上）。
 
 ### 排序不再强制文件夹在前
 `EntryComesBefore()` 取代了原来"`if (a.isDir != b.isDir) return a.isDir;`"的写法，

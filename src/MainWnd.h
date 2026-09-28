@@ -453,6 +453,10 @@ private:
     // Sidebar / preview pane widths (design units, persisted in left_nav.ini)
     void ApplyPaneWidths(int leftDesignW, int previewDesignW);
     void CapturePaneWidthsIfChanged();
+    // Divider hit testing / live drag for the sidebar (1) and preview pane (2)
+    int PaneDividerBandPx() const;
+    int HitTestPaneDivider(int clientX, int clientY) const;
+    void ApplyPaneDragWidth(int kind, int physicalWidth);
 
     // Drag-drop
     void InitDragDrop();
@@ -536,6 +540,10 @@ private:
     int m_leftQuickDesignH = UiTokens::LeftQuickDefaultH; // @96 DPI, persisted
     int m_leftPanelDesignW = 220;                         // sidebar width @96 DPI
     int m_previewPaneDesignW = UiTokens::PreviewPaneW;    // preview width @96 DPI
+    int m_paneDragKind = 0;          // 0 = none, 1 = sidebar, 2 = preview
+    int m_paneDragStartX = 0;
+    int m_paneDragStartLeft = 0;
+    int m_paneDragStartPreview = 0;
     std::vector<FavoriteItem> m_favorites;
     std::vector<FavoriteItem> m_quickAccess;
     std::vector<std::wstring> m_shellMenuPaths;

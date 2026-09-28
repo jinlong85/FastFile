@@ -105,10 +105,11 @@
     </HorizontalLayout>
 
 <HorizontalLayout name="body_host" bkcolor="#FFFFFFFF">
-      <!-- left_panel is a HORIZONTAL layout so DuiLib's sepwidth grip works (only
-           CHorizontalLayoutUI implements sepwidth; a VerticalLayout ignores it).
-           sepwidth=+6 puts the 6px grip on the RIGHT edge = sidebar resize. -->
-      <HorizontalLayout name="left_panel" width="220" minwidth="150" maxwidth="520" sepwidth="8" sepimm="true" bkcolor="#FFF3F3F3" bordercolor="#FFE5E5E5" bordersize="0,0,1,0" padding="8,8,8,8">
+      <!-- left_panel / preview_pane are HorizontalLayouts so the app can resize their
+           fixed width; the grab band is hit-tested in CMainWnd::HitTestPaneDivider
+           (+/- 8px around the divider line) so the cursor turns into a resize arrow
+           as soon as the mouse gets near the line. DuiLib's own sepwidth is NOT used. -->
+      <HorizontalLayout name="left_panel" width="220" minwidth="150" maxwidth="520" bkcolor="#FFF3F3F3" bordercolor="#FFE5E5E5" bordersize="0,0,1,0" padding="8,8,8,8">
       <VerticalLayout name="left_body" bkcolor="#00FFFFFF" padding="0,0,0,0">
         <!-- C: Quick Access — sepheight makes bottom edge a vertical splitter (persisted) -->
           <VerticalLayout name="left_quick" height="168" minheight="148" maxheight="720" sepheight="9" sepimm="true" bkcolor="#FFF3F3F3" padding="8,0,2,0">
@@ -148,9 +149,7 @@
         </VerticalLayout>
       </VerticalLayout>
 
-      <!-- Horizontal wrapper (see left_panel): sepwidth=-6 puts the grip on the LEFT edge,
-           so dragging resizes the preview pane. -->
-      <HorizontalLayout name="preview_pane" width="320" minwidth="180" maxwidth="760" sepwidth="-12" sepimm="true" bkcolor="#FFFFFFFF" bordercolor="#FFE5E5E5" bordersize="1,0,0,0" borderround="0,0" padding="24,24,24,24">
+      <HorizontalLayout name="preview_pane" width="320" minwidth="180" maxwidth="760" bkcolor="#FFFFFFFF" bordercolor="#FFE5E5E5" bordersize="1,0,0,0" borderround="0,0" padding="24,24,24,24">
       <VerticalLayout name="preview_body" bkcolor="#00FFFFFF" padding="0,0,0,0">
         <Control name="preview_image" height="196" bkcolor="#FFFFFFFF" bordercolor="#00000000" bordersize="0" borderround="0,0" visible="false" />
         <Control name="preview_gap_title" height="14" visible="false" />
