@@ -106,8 +106,17 @@
    导致后续所有 `WM_KEYDOWN`（Ctrl+A/C/V/X/Z、Del、F2…）被隐藏输入框吞掉。
    `ExitAddressEditMode()` 里已通过隐藏 edit 控件本身 + `ReturnFocusToFileView()` 修复；
    改动这段时务必保留，`IsEditingText()` 也要继续排除"已退出编辑态的地址框"
-7. **窗口初始尺寸 = 设计单位 × DPI，未按显示器工作区钳制**：150% 缩放 + 1707×960 屏幕上
-   窗口达 1770×1110，右下角（含状态栏）会跑出屏幕。下一步建议按 `SPI_GETWORKAREA` 钳制
+7. **关窗必须退出进程**：DuiLib 的 `WindowImplBase::OnClose` 只清 `bHandled`，不会
+   `PostQuitMessage`，所以关掉窗口后进程会残留（还会一直占用 `FastFile.exe`，导致重新编译
+   报 LNK1104）。已在 `HandleMessage` 的 `WM_DESTROY` 里补上 `PostQuitMessage(0)`
+8. **窗口尺寸按显示器工作区钳制**：`MainWnd.Dpi.cpp` 的 `ClampSizeToWorkArea` /
+   `ClampRectToWorkArea` 会在"设计尺寸 × DPI"超出工作区时退让，并保证窗口不被推出屏幕。
+   本机 150% 缩放（屏幕 2560×1440，工作区 2560×1368）时设计尺寸装得下；只有小工作区
+   （如 1366×768 笔电 + 150%）才真正触发
+9. **外部脚本量窗口/屏幕坐标前必须声明 DPI 感知**：PowerShell 默认不是 DPI 感知进程，
+   `GetWindowRect`/`SetCursorPos` 拿到的是被按 DPI 缩放的虚拟坐标，而 DWM 接口返回物理
+   坐标。两者混用会得出"窗口比屏幕还大"之类的错误结论（已踩坑一次），排查窗口问题时
+   先调用 `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)`
 
 ## 会话/配置文件（通常在 `%APPDATA%\FastFile\`）
 
@@ -116,7 +125,6 @@
 ## 建议下一轮方向（用户曾提过）
 
 - 继续对齐资源管理器 / 360 密度与图标风格（自有 Shell 图标）
-- 按显示器工作区钳制初始窗口尺寸（见「已知坑」7）
 - 安装包、详情视图虚拟化（当前是分批填充 + 8000 项上限）
 - 预览/工具栏细节打磨
 

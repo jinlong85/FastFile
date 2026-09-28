@@ -6,6 +6,49 @@
 
 namespace {
 
+// Target outer size for the monitor the window is on: the 96-DPI design size scaled to the
+// current DPI, clamped so it always fits the monitor work area. The design size is already
+// large (1180x740 becomes 1770x1110 at 150%), so on a small work area - a 1366x768 laptop at
+// 150% leaves roughly 911x512 - the unclamped window would hang off-screen and hide the
+// status bar.
+SIZE ClampSizeToWorkArea(HWND hWnd, SIZE size)
+{
+    HMONITOR mon = ::MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = {};
+    mi.cbSize = sizeof(mi);
+    if (mon && ::GetMonitorInfoW(mon, &mi)) {
+        const int availW = mi.rcWork.right - mi.rcWork.left;
+        const int availH = mi.rcWork.bottom - mi.rcWork.top;
+        if (size.cx > availW) size.cx = availW;
+        if (size.cy > availH) size.cy = availH;
+    }
+    return size;
+}
+
+// Keep an outer rect inside the monitor work area: a remembered position or the rect Windows
+// suggests on WM_DPICHANGED can otherwise leave part of the window off-screen.
+RECT ClampRectToWorkArea(HWND hWnd, RECT rc)
+{
+    HMONITOR mon = ::MonitorFromRect(&rc, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = {};
+    mi.cbSize = sizeof(mi);
+    if (mon && ::GetMonitorInfoW(mon, &mi)) {
+        const RECT& wa = mi.rcWork;
+        if (rc.right > wa.right) { rc.left -= rc.right - wa.right; rc.right = wa.right; }
+        if (rc.bottom > wa.bottom) { rc.top -= rc.bottom - wa.bottom; rc.bottom = wa.bottom; }
+        if (rc.left < wa.left) { rc.right += wa.left - rc.left; rc.left = wa.left; }
+        if (rc.top < wa.top) { rc.bottom += wa.top - rc.top; rc.top = wa.top; }
+        // Window bigger than the work area: pin the origin so the top/left stay reachable.
+        if (rc.left < wa.left) rc.left = wa.left;
+        if (rc.top < wa.top) rc.top = wa.top;
+    }
+    return rc;
+}
+
+} // namespace
+
+namespace {
+
 #ifndef WM_DPICHANGED
 #define WM_DPICHANGED 0x02E0
 #endif
@@ -241,9 +284,12 @@ void CMainWnd::ApplyDpiScaledChrome()
     if (!m_dpiChromeApplied && m_hWnd && m_dpi != 96) {
         RECT rc = {};
         ::GetWindowRect(m_hWnd, &rc);
-        int w = DpiScale(m_designClientW);
-        int h = DpiScale(m_designClientH);
-        ::SetWindowPos(m_hWnd, nullptr, rc.left, rc.top, w, h,
+        const SIZE sz = ClampSizeToWorkArea(m_hWnd,
+            SIZE{ DpiScale(m_designClientW), DpiScale(m_designClientH) });
+        rc.right = rc.left + sz.cx;
+        rc.bottom = rc.top + sz.cy;
+        rc = ClampRectToWorkArea(m_hWnd, rc);
+        ::SetWindowPos(m_hWnd, nullptr, rc.left, rc.top, sz.cx, sz.cy,
             SWP_NOZORDER | SWP_NOACTIVATE);
     }
     m_dpiChromeApplied = true;
@@ -262,10 +308,13 @@ void CMainWnd::EnsureDpiLayout()
     if (m_hWnd) {
         RECT rc = {};
         ::GetWindowRect(m_hWnd, &rc);
-        const int w = DpiScale(m_designClientW);
-        const int h = DpiScale(m_designClientH);
-        if (w > 0 && h > 0) {
-            ::SetWindowPos(m_hWnd, nullptr, rc.left, rc.top, w, h,
+        const SIZE sz = ClampSizeToWorkArea(m_hWnd,
+            SIZE{ DpiScale(m_designClientW), DpiScale(m_designClientH) });
+        if (sz.cx > 0 && sz.cy > 0) {
+            rc.right = rc.left + sz.cx;
+            rc.bottom = rc.top + sz.cy;
+            rc = ClampRectToWorkArea(m_hWnd, rc);
+            ::SetWindowPos(m_hWnd, nullptr, rc.left, rc.top, sz.cx, sz.cy,
                 SWP_NOZORDER | SWP_NOACTIVATE);
         }
     }
@@ -296,13 +345,19 @@ void CMainWnd::OnDpiChanged(UINT newDpi, const RECT* suggested)
     }
     // Keep design*DPI outer size. Suggested rect is for cross-monitor position only.
     if (m_hWnd) {
+        const SIZE sz = ClampSizeToWorkArea(m_hWnd,
+            SIZE{ DpiScale(m_designClientW), DpiScale(m_designClientH) });
         RECT rc = {};
         ::GetWindowRect(m_hWnd, &rc);
-        const int w = DpiScale(m_designClientW);
-        const int h = DpiScale(m_designClientH);
         int x = rc.left, y = rc.top;
         if (suggested) { x = suggested->left; y = suggested->top; }
-        ::SetWindowPos(m_hWnd, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+        rc.left = x;
+        rc.top = y;
+        rc.right = x + sz.cx;
+        rc.bottom = y + sz.cy;
+        rc = ClampRectToWorkArea(m_hWnd, rc);
+        ::SetWindowPos(m_hWnd, nullptr, rc.left, rc.top, sz.cx, sz.cy,
+            SWP_NOZORDER | SWP_NOACTIVATE);
     }
     m_PaintManager.NeedUpdate();
 }
