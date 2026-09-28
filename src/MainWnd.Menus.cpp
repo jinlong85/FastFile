@@ -357,6 +357,18 @@ bool CMainWnd::TrackPopupShellMenu(IContextMenu* pMenu, HMENU hMenu, POINT ptScr
         wchar_t verb[128] = {};
         const bool hasVerb = SUCCEEDED(pMenu->GetCommandString(cmd - idCmdFirst,
             GCS_VERBW, nullptr, reinterpret_cast<LPSTR>(verb), _countof(verb)));
+
+        // "属性" goes through the documented API instead of the menu's offset verb.
+        // The offset verb is resolved against whatever folder object the menu was bound to,
+        // and for a drive in 此电脑 that produced the *Computer folder's* sheet (系统关于)
+        // rather than the drive's own property pages. SHObjectProperties() always targets
+        // the selected path itself.
+        if (hasVerb && ::_wcsicmp(verb, L"properties") == 0 && m_shellMenuPaths.size() == 1
+            && ::SHObjectProperties(m_hWnd, SHOP_FILEPATH, m_shellMenuPaths.front().c_str(), nullptr)) {
+            RefreshListing();
+            return true;
+        }
+
         CMINVOKECOMMANDINFOEX info = {};
         info.cbSize = sizeof(info);
         info.fMask = CMIC_MASK_UNICODE | CMIC_MASK_PTINVOKE;
@@ -616,8 +628,16 @@ bool CMainWnd::ShowShellContextMenu(const std::vector<std::wstring>& paths, POIN
         return true;
     };
 
+    // A drive root has no usable parent ("I:" resolves as a *drive-relative* path and the
+    // folder happily returns a PIDL for it, which then yields the wrong menu — Properties
+    // opened 系统关于 instead of the drive's own property sheet). Skip straight to the
+    // desktop-bound lookup, which resolves the real drive object.
+    const bool driveRoot = (paths[0].size() >= 2 && paths[0][1] == L':'
+        && (paths[0].size() == 2
+            || (paths[0].size() == 3 && (paths[0][2] == L'\\' || paths[0][2] == L'/'))));
+
     bool ok = false;
-    if (!parent.empty())
+    if (!driveRoot && !parent.empty())
         ok = bindParentFolder(parent);
     if (!ok)
         ok = bindDesktopFolder();
