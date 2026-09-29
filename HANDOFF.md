@@ -946,25 +946,76 @@ Plowshares」→「太平年」；纯中文 / 纯英文 / 中文+数字不动。
 改了图形一定要 bump `GetCommandIconBmp` 里的 PNG 文件名版本（现在是 `_v2`），否则
 `%LOCALAPPDATA%\FastFile` 里的旧图标缓存会被继续复用。
 
-### 下次开工（按顺序，都不需要再问用户）
+## 第十八批：滚动条 hover 加宽（Fluent 悬浮滑块）
 
-1. **不要动**：`CTabStripUI::RecalcRects()` 的"按标题实测宽度 + 夹紧 [120|148,200] + 溢出
-   横滚"是上一轮按用户纠正重做的，禁止退回 `avail/n` 均分。
-2. **滚动条 hover 加宽**（用户口径未定，默认跳过）：需新增
-   `CFluentScrollBarUI : CScrollBarUI`（`DoPaint` 画 6→12 物理圆角滑块，
-   `UIEVENT_MOUSEENTER/LEAVE` 切宽度），替换列表/树/预览三处滚动条类。会覆盖更早
-   "滚动条统一 12 设计像素"的要求，开工前确认。
+用户已确认口径（4→8 逻辑 = 150% 下 6→12 物理、悬停带浅灰圆角轨道、鼠标靠近列表
+右边缘就展开、树与预览导轨同参数），本批做完。**不要动**：`CTabStripUI::RecalcRects()`
+的"按标题实测宽度 + 夹紧 [120|148,200] + 溢出横滚"是上一轮按用户纠正重做的，禁止退回
+`avail/n` 均分。
 
-**回归截图脚本要点**（踩过坑）：`Start-Process` 起来的新进程会被单实例转发吃掉并立即退出，
+### 实现（`src/FluentScrollBarUI.h/.cpp`）
+
+- `CFluentScrollBarUI : CScrollBarUI`，只重写 `DoPaint`：静止画细的圆角滑块（4 逻辑，
+  颜色 = `thumbcolor`），展开时滑块加宽到 8 逻辑、颜色压暗 14，并补一条圆角轨道
+  （轨道色 = `bkcolor`，没有轨道的文件区用 `#FFF0F0F0`）。拖拽中（`UISTATE_PUSHED`）
+  再压暗一档。沿轴长度、圆角半径都用控件宽度算，短滑块也保证是胶囊而不是圆点。
+- **滑块画在控件矩形之外**（overlay 式）：DuiLib 的滑块宽度就是控件宽度
+  （`CScrollBarUI::SetPos`：`m_rcThumb.right = rc.left + m_cxyFixed.cx`），所以加宽不能
+  从布局拿空间，否则文件区/树/预览会永久少掉几个像素。安全性来自三点，改这块前务必确认：
+  1. `CRenderEngine::DrawColor()` 对 `color <= 0x00FFFFFF` 直接 return → 容器不会把
+     悬浮出来的那一条盖回去（注意：透明 bkcolor 是 `0x00FFFFFF` **不是 0**，判颜色一定要
+     看 alpha，否则"有轨道但什么都没画"）；
+  2. `CContainerUI::DoPaint()` 在子控件之后才画 `m_pVerticalScrollBar` → 不会被兄弟控件盖；
+  3. 展开时额外 `m_pManager->Invalidate(溢出后的矩形)`，否则 update region 裁剪会把
+     悬浮部分切掉（`IntersectRect` 为空的控件会被整个跳过）。
+- 方向：右侧/底部的条（文件区、树、横向条）`SetDockFar(true)`，向左/上溢出；预览导轨在
+  `preview_pane` 的**左边缘**，向左会出父容器被裁掉，所以 `SetDockFar(false)` 向右溢出。
+- 颜色完全沿用原来的 `bkcolor` / `thumbcolor`（`GetBkColor()` / `GetThumbColor()`），
+  所以 `SyncPreviewRail()` 里"不可滚动就把 thumbcolor 设 0"的逻辑继续有效（0 = 不画滑块）。
+
+### 挂接（3 处）
+
+- **创建**：vendored DuiLib 里 `CContainerUI::EnableScrollBar()` 与 `CDialogBuilder`
+  都是写死的 `new CScrollBarUI`，没有 setter。加了一个全局工厂
+  （`UIScrollBar.h/.cpp` 的 `SetScrollBarUICreator` / `CreateScrollBarUIInstance`，
+  默认仍是 `new CScrollBarUI`），FastFile 在 `CMainWnd` **构造函数**里注册——必须在
+  构造函数里，`InitWindow()` 已经晚于 `OnCreate` 的皮肤加载（`preview_rail` 那时已经建好）。
+- **参数**：`ApplyFluentScrollBar(sb, dockFar)` 在 `StyleVerticalScrollBar` /
+  `StyleHorizontalScrollBar` / `StyleSidePaneScrollBars` / `StylePreviewRail` 四处调用，
+  设 `SetRailMetrics(DpiScale(ScrollBarW), DpiScale(ScrollBarHoverW))` + dock 方向。
+- **悬停**：DuiLib 自带的 `UISTATE_HOT` 只在指针压在那 6 物理像素上才算，资源管理器的
+  行为是"靠近边缘就展开"。所以 `CMainWnd::HandleMessage` 的 `WM_MOUSEMOVE` 调
+  `UpdateFluentScrollBarHover()`（把 file_list / file_icons / dir_tree 的竖横条 + 预览
+  导轨一起做命中，最近的赢，其余的收起），`WM_MOUSELEAVE` 全部收起（**不 return**，
+  免得吞掉 DuiLib 自己的 leave 清理）。命中范围 = 条本身，或它贴着的那一侧 6 逻辑像素内。
+
+### 还没做（可选，未开工）
+
+- 展开的过渡动画（现在是瞬时）。要做得多一个定时器和逐帧重绘；口径没提，先不做。
+- 横向滚动条（详情视图列超宽时出现）走的是同一套代码，但没有专门截图验证过。
+
+## 回归截图脚本要点（踩过坑，越往后越新）
+
+`Start-Process` 起来的新进程会被单实例转发吃掉并立即退出，
 不要按新进程 PID 找窗口；直接枚举已运行实例的 `FastFile_MainWnd`（宽度 > 800）取 HWND。
 改宽前必须先 `ShowWindow(SW_RESTORE)` 并确认 `IsZoomed=false`（在最大化态 `SetWindowPos`
 会截到命令行）；抓屏前确认屏幕未锁。四张必测：还原 1 标签 / 还原 8 标签 / 最大化 / 还原后改宽。
-**新踩坑（本批）**：屏幕是 150% 缩放，用来发鼠标事件的 PowerShell 进程如果是 DPI-unaware，
-`ClientToScreen`/`SetCursorPos` 会算错（点到的 tile 和预期差一截）——脚本开头要
-`SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)`。另外：**启动时 DuiLib 的焦点在
-标签栏的「+」（`btn_tab_add`）**，此时方向键不会落在文件区；要用点击某个 tile（或
-先 `Alt+D` 进地址栏再退出）把焦点送进 `file_icons`。发修饰键组合（Shift/Ctrl）要用
-`keybd_event` 带真实扫描码，否则 `GetKeyState` 看不到修饰键状态。
+
+1. **DPI**：屏幕是 150% 缩放，发鼠标事件的 PowerShell 进程如果是 DPI-unaware，
+   `ClientToScreen`/`SetCursorPos` 会算错（点到的位置和预期差一截）——脚本开头要
+   `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)`。
+2. **焦点**：启动时 DuiLib 的焦点在标签栏的「+」（`btn_tab_add`），此时方向键不会落在
+   文件区；要点击某个 tile 把焦点送进 `file_icons`（`Alt+D` 再退出也行，但见第 3 条）。
+3. **输入法**：中文 IME 会把 `\` 打成「、」，脚本没法用地址栏输入 Windows 路径
+   （`D:\Program Files` → `D:、ProgramFiles`）。用鼠标导航（双击盘符卡 → 双击列表行）
+   或改用 `/` 分隔符。
+4. **修饰键**：发 Shift/Ctrl 组合要用 `keybd_event` 并带真实扫描码，否则 `GetKeyState`
+   看不到修饰键状态（`GetKeyState` 读的是消息队列状态，`PostMessage` 不会更新它）。
+5. **句柄**：`Process.MainWindowHandle` 会失效（进程还有隐藏的顶层窗口），失效后
+   `DwmGetWindowAttribute` 返回全 0 矩形、截图构造 Bitmap 直接抛异常。按窗口类名
+   `FastFile_MainWnd` 用 `FindWindowW` 取 HWND，并在截图前重试。
+6. **条的位置别靠眼估**：读截图里某一行的像素颜色（`Bitmap.GetPixel`）来定位滚动条矩形，
+   左面板背景 `#F3F3F3` 和轨道 `#F7F7F7` 只差 4，肉眼和阈值都容易混。
 
 
 ## 已实现能力（摘要）
@@ -980,9 +1031,11 @@ Plowshares」→「太平年」；纯中文 / 纯英文 / 中文+数字不动。
 - 右侧预览（元数据 + 图/视频帧），窗格宽度可拖拽，面包屑/缩略图按宽度自适应
 - 排序：图标/列表/平铺视图文件夹在前；详细信息视图严格按列排序
 - DPI PerMonitorV2；`UiTokens.h` 设计令牌；应用图标见 `res\`
-- 会话/设置的持久化、每文件夹视图记忆；安装程序见 `installer\`（当前 1.0.7，源码已到 1.0.8）
+- 会话/设置的持久化、每文件夹视图记忆；安装程序见 `installer\`（源码已到 1.0.9）
 - 图标/平铺/列表视图键盘导航（方向键 + Home/End + PageUp/PageDown + Shift/Ctrl 连选 +
   Enter/Space 打开，自动滚动到可见）
+- 滚动条 hover 加宽：静止是 4 逻辑细轨，鼠标靠近列表/树/预览导轨就展开到 8 逻辑的
+  圆角滑块 + 浅灰圆角轨道（悬浮在内容之上，布局不动）
 - 详细信息：名称列 Shell 小图标（`bkimage`，勿用 `CControlUI`+`foreimage`）
 - 图标：PNG alpha；文件夹/盘符/工具栏用 HICON，勿对文件夹用 `SIIGBF_ICONONLY`（会黑框）
 
