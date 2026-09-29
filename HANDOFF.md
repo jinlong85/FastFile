@@ -901,38 +901,71 @@ Plowshares」→「太平年」；纯中文 / 纯英文 / 中文+数字不动。
 
 ## 当前顶部结构（自上而下）
 
-## 第十七批 未完成项（下次开工只需读这一节）
+1. **标题行 = 标题栏**（`titlebar`，32px）：标签栏（自绘卡片）+“+” + 弹性空白 + 窗口按钮
+2. **收藏栏**（`favorites_bar`，26px，白底，与选中标签卡片连通）
+3. **地址栏**（`address_bar`，28px）：后退/前进/上级/刷新 + 路径（面包屑↔编辑）+ 搜索 + 含子目录
+4. **命令栏**（`toolbar`，28px，白底）：新建/剪切复制…/排序/查看/更多
+
+## 第十七批（续）：视图键盘导航 + 命令栏图标
 
 现状：`HEAD` 干净可编译，Release 产物 `build\Release\FastFile.exe`，程序正常启动。
+本批做完了第十七批待办的第 1、4 项；第 3 项（滚动条 hover 加宽）用户口径未定，继续跳过；
+第 2 项仍是"不要动"。
+
 已验收行为（不要回退）：标签最小宽 120 + 溢出横滚、单标签与收藏行连体且「+」紧贴最后
 可见标签（4 逻辑间距、不靠系统按钮）、树与路径同步、每目录视图模式、收藏芯片中文短名
 清洗、地址栏点空白进 Edit（带 `#FF0078D4` 焦点框）、「此电脑」不再双高亮、细滚动条
 （`ScrollBarW/SidePaneScrollBarW = 4` 逻辑）、磁盘条 6 逻辑圆角 + 20%/10% 橙红阈值。
+**本批新增（已截图验收）**：图标/平铺/列表视图的键盘导航；命令栏 10 个图标重画为
+资源管理器的实心双色风格。
 
-待办（按顺序，都不需要再问用户）：
+### 视图键盘导航（本批实现）
 
-1. **平铺/图标视图键盘导航**（`MainWnd.Views.cpp`）：焦点在 `file_icons`（`TileLayout`）
-   时，方向键按当前列数移动选中，Enter/Space 打开。现有方向键逻辑只覆盖详细信息视图
-   （`DetailsMoveCursor`）；选中态分散在 `m_iconAnchor`、tile `GetTag()&0x100`、
-   `SetIconSelected` / `ApplyIconSelectionVisuals` 几处，改前先读这三处保证单击选中不坏。
-2. **不要动**：`CTabStripUI::RecalcRects()` 的"按标题实测宽度 + 夹紧 [120|148,200] + 溢出
+- 焦点在文件区（`file_icons` 子树，或 `ReturnFocusToFileView()` 把焦点给了
+  `m_pIconTiles` 本身）时，`CMainWnd::HandleMessage` 的 `WM_KEYDOWN` 分支接管
+  ←/→/↑/↓、PageUp/PageDown、Home/End、Enter/Space，**早于** DuiLib 把
+  Space/Enter 当成按钮点击（`CButtonUI::DoEvent` 会 `Activate()`）。
+- 步进量取 `CTileLayoutUI::GetColumns()/GetRows()`（`SetPos` 里算出来的真实网格）。
+  图标/平铺是行优先：`index = row*cols + col`；列表视图是列优先：
+  `index = col*rows + row`（`SetColumnFirst(true)`）。
+- 光标 = **当前获得焦点的 tile**（每次移动都会 `SetFocus`），`m_iconAnchor` 只记 Shift
+  连选的起点。这是本批修掉的一个真 bug：早先版本用 anchor 当光标，Shift 连选后
+  再按 Ctrl+方向键会跳回锚点。
+- `IconEnsureVisible` 用子控件 `GetPos()` 与 `m_pIconTiles->GetPos()` 求交集算出滚动量，
+  再 `SetScrollPos`（子控件坐标已是"已滚动"后的窗口坐标，直接比即可）。
+- 新增成员：`IsIconViewFocused / IconCursorIndex / IconMoveTo / IconNavigate /
+  IconPageMove / IconEnsureVisible / IconActivateCursor`（都在 `MainWnd.Views.cpp`）。
+
+### 命令栏图标重画（本批实现）
+
+`MainWnd.Icons.cpp` 的 `DrawCommandIcon`：描边从 `px/12` 加粗到 `px/9`（≈1.7 逻辑像素，
+对齐 Explorer）；圆角 1.6 个网格单位；复制/粘贴的蓝色纸张改用"浅蓝 tint 填充 + 蓝描边"
+（tint = `0x26` alpha 的 accent），剪切手柄圆环放大到 2.9 并带 tint，垃圾桶改成上宽下窄
+梯形，共享箭头改成实心三角，排序箭头加大，**查看由"显示器"改成资源管理器现在的四条
+横线图标**（自上而下逐渐变粗）。图标仍 16 逻辑、热区仍 32×32 逻辑。
+改了图形一定要 bump `GetCommandIconBmp` 里的 PNG 文件名版本（现在是 `_v2`），否则
+`%LOCALAPPDATA%\FastFile` 里的旧图标缓存会被继续复用。
+
+### 下次开工（按顺序，都不需要再问用户）
+
+1. **不要动**：`CTabStripUI::RecalcRects()` 的"按标题实测宽度 + 夹紧 [120|148,200] + 溢出
    横滚"是上一轮按用户纠正重做的，禁止退回 `avail/n` 均分。
-3. **滚动条 hover 加宽**（用户口径未定，默认跳过）：需新增
+2. **滚动条 hover 加宽**（用户口径未定，默认跳过）：需新增
    `CFluentScrollBarUI : CScrollBarUI`（`DoPaint` 画 6→12 物理圆角滑块，
    `UIEVENT_MOUSEENTER/LEAVE` 切宽度），替换列表/树/预览三处滚动条类。会覆盖更早
    "滚动条统一 12 设计像素"的要求，开工前确认。
-4. **命令栏图标重画**（`MainWnd.Icons.cpp` 的 `GetCommandIconBmp`）：10 条 `GraphicsPath`
-   改成系统那种实心/双色，保持图标 16 逻辑、热区 32×32 逻辑不变，改完必须逐张截图看重量。
 
 **回归截图脚本要点**（踩过坑）：`Start-Process` 起来的新进程会被单实例转发吃掉并立即退出，
 不要按新进程 PID 找窗口；直接枚举已运行实例的 `FastFile_MainWnd`（宽度 > 800）取 HWND。
 改宽前必须先 `ShowWindow(SW_RESTORE)` 并确认 `IsZoomed=false`（在最大化态 `SetWindowPos`
 会截到命令行）；抓屏前确认屏幕未锁。四张必测：还原 1 标签 / 还原 8 标签 / 最大化 / 还原后改宽。
+**新踩坑（本批）**：屏幕是 150% 缩放，用来发鼠标事件的 PowerShell 进程如果是 DPI-unaware，
+`ClientToScreen`/`SetCursorPos` 会算错（点到的 tile 和预期差一截）——脚本开头要
+`SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)`。另外：**启动时 DuiLib 的焦点在
+标签栏的「+」（`btn_tab_add`）**，此时方向键不会落在文件区；要用点击某个 tile（或
+先 `Alt+D` 进地址栏再退出）把焦点送进 `file_icons`。发修饰键组合（Shift/Ctrl）要用
+`keybd_event` 带真实扫描码，否则 `GetKeyState` 看不到修饰键状态。
 
-1. **标题行 = 标题栏**（`titlebar`，32px）：标签栏（自绘卡片）+“+” + 弹性空白 + 窗口按钮
-2. **收藏栏**（`favorites_bar`，26px，白底，与选中标签卡片连通）
-3. **地址栏**（`address_bar`，28px）：后退/前进/上级/刷新 + 路径（面包屑↔编辑）+ 搜索 + 含子目录
-4. **命令栏**（`toolbar`，28px，白底）：新建/剪切复制…/排序/查看/更多
 
 ## 已实现能力（摘要）
 
@@ -947,7 +980,9 @@ Plowshares」→「太平年」；纯中文 / 纯英文 / 中文+数字不动。
 - 右侧预览（元数据 + 图/视频帧），窗格宽度可拖拽，面包屑/缩略图按宽度自适应
 - 排序：图标/列表/平铺视图文件夹在前；详细信息视图严格按列排序
 - DPI PerMonitorV2；`UiTokens.h` 设计令牌；应用图标见 `res\`
-- 会话/设置的持久化、每文件夹视图记忆；安装程序见 `installer\`（当前 1.0.7）
+- 会话/设置的持久化、每文件夹视图记忆；安装程序见 `installer\`（当前 1.0.7，源码已到 1.0.8）
+- 图标/平铺/列表视图键盘导航（方向键 + Home/End + PageUp/PageDown + Shift/Ctrl 连选 +
+  Enter/Space 打开，自动滚动到可见）
 - 详细信息：名称列 Shell 小图标（`bkimage`，勿用 `CControlUI`+`foreimage`）
 - 图标：PNG alpha；文件夹/盘符/工具栏用 HICON，勿对文件夹用 `SIIGBF_ICONONLY`（会黑框）
 
@@ -969,6 +1004,10 @@ Plowshares」→「太平年」；纯中文 / 纯英文 / 中文+数字不动。
 | Delete / Shift+Delete | 删除到回收站 / 永久删除（不进回收站） |
 | Alt+Enter | 显示属性 |
 | Esc | 退出地址编辑 / 取消选择 |
+| ↑/↓/←/→ | 文件区光标移动（图标/平铺按列步进；列表视图上下走行、左右跳列） |
+| Home / End、PageUp / PageDown | 跳到首/尾、翻一屏（图标 / 平铺 / 列表 / 详细信息都支持） |
+| Shift/ Ctrl + 方向键 | 连选一段 / 在现有选择上增减（图标与详细信息视图） |
+| Enter / Space | 打开光标所在项目（文件夹进入、文件用默认程序打开） |
 
 ## 已知坑
 
