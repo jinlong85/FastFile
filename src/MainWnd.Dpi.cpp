@@ -356,6 +356,8 @@ void CMainWnd::OnDpiChanged(UINT newDpi, const RECT* suggested)
         ApplyWindowCornerAndPadding();
         ApplyLeftNavSplitterHeight(m_leftQuickDesignH);
         ApplyFileViewScrollBars();
+        StyleSidePaneScrollBars(m_pDirTree);
+        StyleSidePaneScrollBars(m_pPreviewBody);
         ApplyChromeShellIcons();
         RefreshTreeShellIcons();
         RebuildBreadcrumb();

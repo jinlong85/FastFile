@@ -150,7 +150,7 @@
       </VerticalLayout>
 
       <HorizontalLayout name="preview_pane" width="320" minwidth="180" maxwidth="760" bkcolor="#FFFFFFFF" bordercolor="#FFE5E5E5" bordersize="1,0,0,0" borderround="0,0" padding="24,24,24,24">
-      <VerticalLayout name="preview_body" bkcolor="#00FFFFFF" padding="0,0,0,0">
+      <VerticalLayout name="preview_body" bkcolor="#00FFFFFF" padding="0,0,0,0" vscrollbar="true">
         <Control name="preview_image" height="196" bkcolor="#FFFFFFFF" bordercolor="#00000000" bordersize="0" borderround="0,0" visible="false" />
         <Control name="preview_gap_title" height="14" visible="false" />
         <Label name="preview_title" text="预览" font="5" textcolor="#FF1A1A1A" height="28" endellipsis="true" />

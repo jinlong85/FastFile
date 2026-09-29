@@ -468,6 +468,7 @@ private:
     void StyleVerticalScrollBar(CContainerUI* host);
     void StyleHorizontalScrollBar(CContainerUI* host);
     void ApplyFileViewScrollBars();
+    void StyleSidePaneScrollBars(CContainerUI* host);
     int MeasureListColumnWidth(const std::vector<DirEntry>& all, int iconPx);
     int MeasureTextWidthPx(const std::wstring& text);
 
@@ -483,6 +484,7 @@ private:
     // Divider hit testing / live drag for the sidebar (1) and preview pane (2)
     int PaneDividerBandPx() const;
     int HitTestPaneDivider(int clientX, int clientY) const;
+    bool IsPaneScrollBarHit(int clientX, int clientY) const;
     void ApplyPaneDragWidth(int kind, int physicalWidth);
 
     // Drag-drop
@@ -577,6 +579,7 @@ private:
     // preview_pane is a CHorizontalLayoutUI wrapper (its negative sepwidth is the drag
     // grip on the left edge); the stacked content lives in preview_body.
     CContainerUI* m_pPreviewPane = nullptr;
+    CVerticalLayoutUI* m_pPreviewBody = nullptr;
     CContainerUI* m_pLeftPanel = nullptr;   // left_panel wrapper (right-edge drag grip)
     CLabelUI* m_pPreviewTitle = nullptr;
     CControlUI* m_pPreviewImage = nullptr;

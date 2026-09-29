@@ -316,6 +316,27 @@ void CMainWnd::ApplyFileViewScrollBars()
         m_pIconScroll->EnableScrollBar(false, false);
 }
 
+// Navigation and preview panes need a more forgiving scrollbar than the dense file view.
+// The larger thickness also gives the draggable thumb a sensible minimum grab size.
+void CMainWnd::StyleSidePaneScrollBars(CContainerUI* host)
+{
+    if (!host) return;
+    const int extent = (std::max)(DpiScale(UiTokens::SidePaneScrollBarW), 10);
+    const auto style = [extent](CScrollBarUI* sb, bool vertical) {
+        if (!sb) return;
+        if (vertical) sb->SetFixedWidth(extent);
+        else sb->SetFixedHeight(extent);
+        sb->SetShowButton1(false);
+        sb->SetShowButton2(false);
+        sb->SetAttribute(_T("bkcolor"), UiTokens::ColorScrollTrack);
+        sb->SetThumbColor(0xFFB5B5B5);
+        sb->SetAttribute(_T("button1color"), UiTokens::ColorScrollTrack);
+        sb->SetAttribute(_T("button2color"), UiTokens::ColorScrollTrack);
+    };
+    style(host->GetVerticalScrollBar(), true);
+    style(host->GetHorizontalScrollBar(), false);
+}
+
 // Horizontal twin of StyleVerticalScrollBar (list view needs it when the columns
 // grow past the right edge). The bar itself is created by EnableScrollBar().
 void CMainWnd::StyleHorizontalScrollBar(CContainerUI* host)

@@ -217,6 +217,12 @@ int CMainWnd::PaneDividerBandPx() const
 
 int CMainWnd::HitTestPaneDivider(int clientX, int clientY) const
 {
+    // The side pane's scroll track and draggable thumb take priority over the nearby
+    // width divider.  Otherwise the divider's generous grab band steals the cursor
+    // and click from the scroll thumb at the tree's right edge.
+    if (IsPaneScrollBarHit(clientX, clientY))
+        return 0;
+
     const int band = PaneDividerBandPx();
     if (m_pLeftPanel) {
         const RECT r = m_pLeftPanel->GetPos();
@@ -236,6 +242,21 @@ int CMainWnd::HitTestPaneDivider(int clientX, int clientY) const
             return 2;
     }
     return 0;
+}
+
+bool CMainWnd::IsPaneScrollBarHit(int clientX, int clientY) const
+{
+    const auto contains = [clientX, clientY](CScrollBarUI* bar) {
+        if (!bar || !bar->IsVisible()) return false;
+        const RECT r = bar->GetPos();
+        return clientX >= r.left && clientX < r.right
+            && clientY >= r.top && clientY < r.bottom;
+    };
+    if (m_pDirTree && (contains(m_pDirTree->GetVerticalScrollBar())
+        || contains(m_pDirTree->GetHorizontalScrollBar())))
+        return true;
+    return m_pPreviewBody && (contains(m_pPreviewBody->GetVerticalScrollBar())
+        || contains(m_pPreviewBody->GetHorizontalScrollBar()));
 }
 
 void CMainWnd::ApplyPaneDragWidth(int kind, int physicalWidth)

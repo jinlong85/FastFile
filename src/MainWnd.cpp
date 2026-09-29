@@ -56,6 +56,7 @@ void CMainWnd::InitWindow()
     m_pLeftQuick = static_cast<CVerticalLayoutUI*>(m_PaintManager.FindControl(_T("left_quick")));
     m_pLeftThisPc = static_cast<CVerticalLayoutUI*>(m_PaintManager.FindControl(_T("left_thispc")));
     m_pPreviewPane = static_cast<CContainerUI*>(m_PaintManager.FindControl(_T("preview_pane")));
+    m_pPreviewBody = static_cast<CVerticalLayoutUI*>(m_PaintManager.FindControl(_T("preview_body")));
     m_pLeftPanel = static_cast<CContainerUI*>(m_PaintManager.FindControl(_T("left_panel")));
     m_pPreviewTitle = static_cast<CLabelUI*>(m_PaintManager.FindControl(_T("preview_title")));
     m_pPreviewImage = m_PaintManager.FindControl(_T("preview_image"));
@@ -91,7 +92,11 @@ void CMainWnd::InitWindow()
         m_pDirTree->SetVisibleCheckBtn(false);
         m_pDirTree->SetVisibleFolderBtn(true);
         m_pDirTree->SetItemMinWidth(DpiScale(200));
-        StyleVerticalScrollBar(m_pDirTree);
+        StyleSidePaneScrollBars(m_pDirTree);
+    }
+    if (m_pPreviewBody) {
+        m_pPreviewBody->EnableScrollBar(true, false);
+        StyleSidePaneScrollBars(m_pPreviewBody);
     }
 
     wchar_t tmp[MAX_PATH] = {};

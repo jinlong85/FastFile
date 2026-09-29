@@ -549,6 +549,14 @@ void CMainWnd::SyncLayoutDependents()
         }
     }
     if (m_pPreviewPane && m_previewVisible && m_pPreviewPane->IsVisible()) {
+        // When content does not need to scroll, retain a quiet hairline that separates
+        // preview from the file area. A visible scrollbar already provides that edge.
+        const bool hasScrollBar = m_pPreviewBody && m_pPreviewBody->GetVerticalScrollBar()
+            && m_pPreviewBody->GetVerticalScrollBar()->IsVisible();
+        m_pPreviewPane->SetAttribute(_T("bordercolor"),
+            hasScrollBar ? _T("#00000000") : UiTokens::ColorBorder);
+        m_pPreviewPane->SetAttribute(_T("bordersize"), hasScrollBar ? _T("0") : _T("1,0,0,0"));
+
         const int w = static_cast<int>(m_pPreviewPane->GetWidth());
         if (w > 8 && w != m_previewPaneW) {
             m_previewPaneW = w;

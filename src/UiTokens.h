@@ -49,6 +49,7 @@ constexpr int AddressBarPadY = 2;
 constexpr int SearchBoxH = 28;
 constexpr int SearchChkW = 100;        // ☐ 含子目录
 constexpr int ScrollBarW = 8;        // thin, low-weight Win11-like scrollbar
+constexpr int SidePaneScrollBarW = 12; // roomier track and thumb for navigation / preview panes
 
 // ---- Phase 2: left nav / tree (Win11 Explorer density) ----
 constexpr int NavSectionHeaderH = 22;  // Quick Access / This PC (Explorer denser)
