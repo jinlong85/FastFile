@@ -124,7 +124,6 @@ void CMainWnd::ApplyDpiScaledChrome()
 {
     // Scale chrome bands + key panels from 96-DPI design sizes in main.xml.
     // Phase 3: command bar is 40px; separators/gaps DPI-scaled.
-    ScaleNamedFixed(m_PaintManager, _T("title_bar"), 0, UiTokens::TitleBarH, m_dpi);
     ScaleNamedFixed(m_PaintManager, _T("tab_bar"), 0, UiTokens::TabBarH, m_dpi);
     ScaleNamedFixed(m_PaintManager, _T("toolbar"), 0, UiTokens::ToolbarH, m_dpi);
     ScaleNamedFixed(m_PaintManager, _T("favorites_bar"), 0, UiTokens::FavoritesBarH, m_dpi);

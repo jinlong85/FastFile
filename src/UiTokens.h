@@ -34,7 +34,7 @@ constexpr int CmdBtnH = 32;
 // Phase 6: Explorer-style chrome - a taller tab strip with tab "cards", a roomier address
 // row whose path/search fields are white rounded boxes, and the command bar sitting on the
 // white content surface instead of the grey chrome.
-constexpr int TabBarH = 37;
+constexpr int TabBarH = 38;
 constexpr int TabCardH = 32;          // chip inside the strip; its bottom edge = strip bottom
 constexpr int TabCardGap = 5;         // gap between chips
 constexpr int TabCardRound = 8;       // chip corner radius (Explorer-like)
@@ -94,8 +94,8 @@ constexpr int ToolbarBtnH = 32;
 constexpr int ToolbarTextBtnMinW = 76;  // New/Sort/View: icon + label + chevron
 constexpr int ToolbarIconPad = 8;       // left/right pad around toolbar glyphs
 constexpr int ToolbarChevronPad = 16;   // room for dropdown chevron
-constexpr int ToolbarNavBtnW = 28;      // address-row navigation buttons
-constexpr int NavGlyphPx = 20;          // address-row glyph size (roomier row)
+constexpr int ToolbarNavBtnW = 48;      // address-row navigation buttons (wide, small glyph)
+constexpr int NavGlyphPx = 13;          // address-row glyph (reference: small icon, wide button)
 constexpr int ToolbarGroupGap = SpaceSm;
 constexpr int ToolbarSepPad = SpaceSm;
 

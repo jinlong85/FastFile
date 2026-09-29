@@ -24,21 +24,18 @@
   <!-- Outer gutter + rounded chrome (Win11-ish); DWM round corners applied in code -->
   <VerticalLayout name="outer_gutter" bkcolor="#FFE8E8E8" padding="14,14,14,14">
   <VerticalLayout name="chrome_root" bkcolor="#FFF3F3F3" bordercolor="#FFE0E0E0" bordersize="1" borderround="10,10">
-    <!-- A: Dedicated caption band. DuiLib's standard names preserve close/min/max/restore behavior. -->
-    <HorizontalLayout name="title_bar" height="32" bkcolor="#FFF3F3F3" padding="8,0,0,0" bordercolor="#FFE5E5E5" bordersize="0,0,0,1">
-      <Label name="title_drag" text="FastFile" font="0" textcolor="#FF4A4A4A" valign="vcenter" />
-      <Button name="minbtn" text="−" width="46" height="32" font="0" textcolor="#FF3B3B3B" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" tooltip="最小化" />
-      <Button name="maxbtn" text="□" width="46" height="32" font="0" textcolor="#FF3B3B3B" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" tooltip="最大化" />
-      <Button name="restorebtn" text="❐" width="46" height="32" font="0" textcolor="#FF3B3B3B" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" tooltip="还原" visible="false" />
-      <Button name="closebtn" text="×" width="46" height="32" font="0" textcolor="#FF3B3B3B" bkcolor="#00FFFFFF" hotbkcolor="#FFE81123" hottextcolor="#FFFFFFFF" pushedbkcolor="#FFC50F1F" pushedtextcolor="#FFFFFFFF" tooltip="关闭" />
-    </HorizontalLayout>
-
-    <!-- B: Tabs below the caption; the trailing spacer keeps + next to the last tab. -->
-    <HorizontalLayout name="tab_bar" height="37" bkcolor="#FFDBDBDB" padding="12,5,12,0" bordercolor="#FFCECECE" bordersize="0,0,0,1">
+    <!-- A/B: Explorer-style title row - the tab strip *is* the caption band, with the window
+         buttons at its right end. Only the empty part of the strip drags the window
+         (WM_NCHITTEST in CMainWnd::HandleMessage); tabs and buttons keep normal clicks. -->
+    <HorizontalLayout name="tab_bar" height="38" bkcolor="#FFDBDBDB" padding="12,6,0,0" bordercolor="#FFCECECE" bordersize="0,0,0,1">
       <HorizontalLayout name="tab_strip" />
       <Button name="btn_tab_add" text="+" width="30" height="32" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#FFCFCFCF" pushedbkcolor="#FFC4C4C4" bordersize="0" padding="4,0,0,0" tooltip="新建标签" />
       <!-- Flexible trailing area; tab_strip is resized to its actual tab content in code. -->
       <Control />
+      <Button name="minbtn" text="−" width="46" height="32" font="0" textcolor="#FF3B3B3B" bkcolor="#00FFFFFF" hotbkcolor="#FFE0E0E0" pushedbkcolor="#FFD0D0D0" tooltip="最小化" />
+      <Button name="maxbtn" text="□" width="46" height="32" font="0" textcolor="#FF3B3B3B" bkcolor="#00FFFFFF" hotbkcolor="#FFE0E0E0" pushedbkcolor="#FFD0D0D0" tooltip="最大化" />
+      <Button name="restorebtn" text="❐" width="46" height="32" font="0" textcolor="#FF3B3B3B" bkcolor="#00FFFFFF" hotbkcolor="#FFE0E0E0" pushedbkcolor="#FFD0D0D0" tooltip="还原" visible="false" />
+      <Button name="closebtn" text="×" width="46" height="32" font="0" textcolor="#FF3B3B3B" bkcolor="#00FFFFFF" hotbkcolor="#FFE81123" hottextcolor="#FFFFFFFF" pushedbkcolor="#FFC50F1F" pushedtextcolor="#FFFFFFFF" tooltip="关闭" />
     </HorizontalLayout>
 
     <!-- C: Favorites bar under tabs (drag folders to pin) -->
@@ -51,10 +48,10 @@
 
     <!-- Path + search: Explorer-style breadcrumb/address merge (favorites stay above) -->
     <HorizontalLayout name="address_bar" height="48" bkcolor="#FFF3F3F3" padding="12,8,12,8" childvalign="vcenter" bordercolor="#FFDCDCDC" bordersize="0,0,0,1">
-      <Button name="btn_back" text="←" width="40" height="32" tooltip="后退" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
-      <Button name="btn_forward" text="→" width="40" height="32" tooltip="前进" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
-      <Button name="btn_up" text="" width="40" height="32" tooltip="上级" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
-      <Button name="btn_refresh" text="" width="40" height="32" tooltip="刷新" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
+      <Button name="btn_back" text="" width="48" height="32" tooltip="后退" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
+      <Button name="btn_forward" text="" width="48" height="32" tooltip="前进" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
+      <Button name="btn_up" text="" width="48" height="32" tooltip="上级" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
+      <Button name="btn_refresh" text="" width="48" height="32" tooltip="刷新" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
       <Control name="gap_address_nav" width="6" />
       <HorizontalLayout name="path_host" height="32" bkcolor="#FFFFFFFF" bordercolor="#FFD6D6D6" bordersize="1" borderround="8,8" padding="6,0,6,0" childvalign="vcenter">
         <HorizontalLayout name="breadcrumb" childpadding="0" childvalign="vcenter" />

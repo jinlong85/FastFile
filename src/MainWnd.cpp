@@ -437,6 +437,39 @@ void CMainWnd::OnClick(TNotifyUI& msg)
 
 LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
+    if (uMsg == WM_NCHITTEST) {
+        // The tab strip doubles as the window caption (there is no separate title bar any
+        // more, the window buttons live at its right end). Dragging its empty part moves the
+        // window, while tabs, the "+" and the window buttons keep their normal clicks. The
+        // outer size box stays with DuiLib so the window can still be resized by its edges.
+        POINT pt = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
+        ::ScreenToClient(m_hWnd, &pt);
+        CControlUI* strip = m_PaintManager.FindControl(_T("tab_bar"));
+        if (strip && strip->IsVisible()) {
+            RECT rcClient = {};
+            ::GetClientRect(m_hWnd, &rcClient);
+            const RECT szb = m_PaintManager.GetSizeBox();
+            const RECT r = strip->GetPos();
+            if (r.right > r.left && r.bottom > r.top
+                && pt.y >= rcClient.top + szb.top
+                && pt.x >= r.left && pt.x < r.right
+                && pt.y >= r.top && pt.y < r.bottom) {
+                CControlUI* c = m_PaintManager.FindControl(pt);
+                bool interactive = false;
+                while (c) {
+                    const CDuiString cls = c->GetClass();
+                    if (cls == DUI_CTR_BUTTON || cls == DUI_CTR_OPTION || cls == DUI_CTR_EDIT
+                        || cls == DUI_CTR_LABEL || cls == DUI_CTR_TEXT) {
+                        interactive = true;
+                        break;
+                    }
+                    if (c == strip) break;
+                    c = c->GetParent();
+                }
+                return interactive ? HTCLIENT : HTCAPTION;
+            }
+        }
+    }
     // A second FastFile process forwards folders through WM_COPYDATA, then exits.  Use a
     // line-delimited payload: Windows paths cannot contain a line break, and the copy is
     // bounded by cbData so an untrusted sender cannot make us read beyond its buffer.

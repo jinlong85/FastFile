@@ -264,6 +264,19 @@ Windows 11 样式）：两条 `#FFF7F7F7` 轨道紧挨着会连成一条 36 设�
 `ToolbarIconPad` 左对齐，`textpadding` 与原来一致。查看图标是资源管理器那种“显示器 + 底座”，
 删除图标的内侧两道竖线用次级浅色。
 
+### 标题栏并入标签行（窗口按钮 + 拖动）
+`main.xml` 里删掉了 `title_bar`（连同 “FastFile” 标签），把 `minbtn`/`maxbtn`/`restorebtn`/
+`closebtn` 移到 `tab_bar` 末尾（名字不变，DuiLib 的最小化/最大化/还原/关闭行为照旧），
+标签行右侧不再留 padding，按钮贴住窗口右边缘。
+
+**坑**：`<Window caption="0,0,0,32">` 把顶部 32 设计像素当作标题区，
+`WindowImplBase::OnNcHitTest` 对“不是 Button/Option/Text 的控件”返回 `HTCAPTION`——标签行
+从第一行开始，于是点标签卡的空白处会变成拖窗口。现在 `CMainWnd::HandleMessage` 自己处理
+`WM_NCHITTEST`：命中 `tab_bar` 且不在最外层 sizebox 内时，向上回溯控件链，遇到
+Button/Option/Edit/Label 就返回 `HTCLIENT`（标签、×、+、窗口按钮照常点击），否则返回
+`HTCAPTION`（拖窗口）。其它区域仍交给 DuiLib，窗口四边缩放不变。
+实测：空白处 HTCAPTION、标签/×/+/关闭按钮 HTCLIENT，最大化/还原/关闭按钮都正常。
+
 ### 顶部功能区改版（标签卡片 / 地址栏在命令栏之上 / 命令栏白底）
 按资源管理器参考重排了 `main.xml` 里的顶部顺序：`tab_bar` → `favorites_bar` →
 `address_bar` → `toolbar`。**顺序很重要**：参考里地址栏在命令栏*上方*，命令栏与文件区同为

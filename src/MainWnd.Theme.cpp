@@ -132,7 +132,6 @@ void CMainWnd::ApplyUiChromeTokens()
     const int px = UiTokens::InnerPadX;
     const int py = UiTokens::InnerPadY;
 
-    setPad(_T("title_bar"), UiTokens::SpaceSm, 0, 0, 0);
     setPad(_T("tab_bar"), px, py, px, 0);
     setPad(_T("toolbar"), px, py, px, py);
     setPad(_T("favorites_bar"), px, UiTokens::FavBarPadY, px, UiTokens::FavBarPadY);
@@ -152,7 +151,7 @@ void CMainWnd::ApplyUiChromeTokens()
     const LPCWSTR surf = UiTokens::ColorSurface;
     const LPCWSTR border = UiTokens::ColorChromeDivider;
     for (LPCTSTR band : {
-        _T("title_bar"), _T("tab_bar"), _T("favorites_bar"), _T("toolbar"),
+        _T("tab_bar"), _T("favorites_bar"), _T("toolbar"),
         _T("address_bar"),
         _T("status_bar"), _T("left_panel")
     }) {
