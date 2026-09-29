@@ -325,12 +325,26 @@ void CMainWnd::StyleVerticalScrollBar(CContainerUI* host)
     sb->SetThumbColor(0xFFC4C4C4); // ColorScrollThumb #FFC4C4C4
     sb->SetAttribute(_T("button1color"), UiTokens::ColorTransparent);
     sb->SetAttribute(_T("button2color"), UiTokens::ColorTransparent);
+    ApplyFluentScrollBar(sb, true);      // thin rail at the right edge, widens leftwards
+}
+
+// No-op unless the bar is CFluentScrollBarUI (see FluentScrollBarUI.h). dockFar selects
+// which edge the visible rail hugs, i.e. which way it grows when the pointer arrives.
+void CMainWnd::ApplyFluentScrollBar(CScrollBarUI* sb, bool dockFar)
+{
+    auto* fluent = dynamic_cast<CFluentScrollBarUI*>(sb);
+    if (!fluent) return;
+    fluent->SetRailMetrics(DpiScale(UiTokens::ScrollBarW), DpiScale(UiTokens::ScrollBarHoverW));
+    fluent->SetDockFar(dockFar);
 }
 
 void CMainWnd::ApplyFileViewScrollBars()
 {
     if (m_pFileList)
+    {
         StyleVerticalScrollBar(m_pFileList);
+        StyleHorizontalScrollBar(m_pFileList);   // appears once the detail columns overflow
+    }
     if (m_pIconTiles)
         StyleVerticalScrollBar(m_pIconTiles);
     if (m_pIconScroll)
@@ -343,7 +357,7 @@ void CMainWnd::StyleSidePaneScrollBars(CContainerUI* host)
 {
     if (!host) return;
     const int extent = (std::max)(DpiScale(UiTokens::SidePaneScrollBarW), 6);
-    const auto style = [extent](CScrollBarUI* sb, bool vertical) {
+    const auto style = [this, extent](CScrollBarUI* sb, bool vertical) {
         if (!sb) return;
         if (vertical) sb->SetFixedWidth(extent);
         else sb->SetFixedHeight(extent);
@@ -353,6 +367,7 @@ void CMainWnd::StyleSidePaneScrollBars(CContainerUI* host)
         sb->SetThumbColor(0xFFB5B5B5);
         sb->SetAttribute(_T("button1color"), UiTokens::ColorScrollTrack);
         sb->SetAttribute(_T("button2color"), UiTokens::ColorScrollTrack);
+        ApplyFluentScrollBar(sb, true);
     };
     style(host->GetVerticalScrollBar(), true);
     style(host->GetHorizontalScrollBar(), false);
@@ -381,6 +396,9 @@ void CMainWnd::StylePreviewRail()
     m_pPreviewRail->SetAttribute(_T("button2color"), UiTokens::ColorScrollTrack);
     m_pPreviewRail->SetThumbColor(0xFFB5B5B5);
     m_pPreviewRail->SetVisible(true);
+    // The rail owns the preview pane's LEFT edge, so it grows rightwards (into the pane's
+    // own padding) instead of overflowing past the pane boundary, which would be clipped.
+    ApplyFluentScrollBar(m_pPreviewRail, false);
 
     if (m_pPreviewBody) {
         if (CScrollBarUI* bodyBar = m_pPreviewBody->GetVerticalScrollBar()) {
@@ -452,6 +470,33 @@ void CMainWnd::StyleHorizontalScrollBar(CContainerUI* host)
     sb->SetThumbColor(0xFFC4C4C4);
     sb->SetAttribute(_T("button1color"), UiTokens::ColorTransparent);
     sb->SetAttribute(_T("button2color"), UiTokens::ColorTransparent);
+    ApplyFluentScrollBar(sb, true);
+}
+
+// Explorer widens the bar while the pointer is anywhere near the scrolling view, not only
+// when it sits on the 6px rail, so the window runs its own proximity test on mouse move and
+// drives the bars from there (DuiLib's own UISTATE_HOT only fires on the bar itself).
+void CMainWnd::UpdateFluentScrollBarHover(POINT clientPt)
+{
+    CScrollBarUI* bars[8] = {};
+    int count = 0;
+    const auto add = [&](CScrollBarUI* sb) { if (sb && count < 8) bars[count++] = sb; };
+    if (m_pFileList) { add(m_pFileList->GetVerticalScrollBar()); add(m_pFileList->GetHorizontalScrollBar()); }
+    if (m_pIconTiles) { add(m_pIconTiles->GetVerticalScrollBar()); add(m_pIconTiles->GetHorizontalScrollBar()); }
+    if (m_pDirTree) { add(m_pDirTree->GetVerticalScrollBar()); add(m_pDirTree->GetHorizontalScrollBar()); }
+    add(m_pPreviewRail);
+
+    const int margin = DpiScale(UiTokens::ScrollBarHoverMargin);
+    CFluentScrollBarUI* hovered = nullptr;
+    for (int i = 0; i < count && !hovered; ++i) {
+        auto* fluent = dynamic_cast<CFluentScrollBarUI*>(bars[i]);
+        if (fluent && fluent->IsVisible() && fluent->HitTestHover(clientPt, margin))
+            hovered = fluent;
+    }
+    for (int i = 0; i < count; ++i) {
+        if (auto* fluent = dynamic_cast<CFluentScrollBarUI*>(bars[i]))
+            fluent->SetExpanded(fluent == hovered);
+    }
 }
 
 // ---- View modes ----------------------------------------------------------

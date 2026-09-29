@@ -153,6 +153,13 @@ namespace DuiLib
 		TDrawInfo m_diRailPushed;
 		TDrawInfo m_diRailDisabled;
 	};
+
+	// FastFile: every scrollbar in the app is created through this hook, so the app can
+	// substitute its own CScrollBarUI subclass (rounded, hover-widening thumb) in one place
+	// instead of patching each creation site. Defaults to a plain CScrollBarUI.
+	typedef CScrollBarUI* (*FnCreateScrollBarUI)();
+	DUILIB_API void SetScrollBarUICreator(FnCreateScrollBarUI fn);
+	DUILIB_API CScrollBarUI* CreateScrollBarUIInstance();
 }
 
 #endif // __UISCROLLBAR_H__

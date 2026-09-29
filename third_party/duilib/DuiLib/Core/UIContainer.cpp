@@ -531,7 +531,7 @@ namespace DuiLib
 	void CContainerUI::EnableScrollBar(bool bEnableVertical, bool bEnableHorizontal)
 	{
 		if( bEnableVertical && !m_pVerticalScrollBar ) {
-			m_pVerticalScrollBar = new CScrollBarUI;
+			m_pVerticalScrollBar = CreateScrollBarUIInstance();
 			m_pVerticalScrollBar->SetScrollRange(0);
 			m_pVerticalScrollBar->SetOwner(this);
 			m_pVerticalScrollBar->SetManager(m_pManager, NULL, false);
@@ -548,7 +548,7 @@ namespace DuiLib
 		}
 
 		if( bEnableHorizontal && !m_pHorizontalScrollBar ) {
-			m_pHorizontalScrollBar = new CScrollBarUI;
+			m_pHorizontalScrollBar = CreateScrollBarUIInstance();
 			m_pHorizontalScrollBar->SetScrollRange(0);
 			m_pHorizontalScrollBar->SetHorizontal(true);
 			m_pHorizontalScrollBar->SetOwner(this);

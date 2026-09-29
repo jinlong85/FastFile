@@ -1098,4 +1098,20 @@ void CScrollBarUI::PaintRail(HDC hDC)
 	if( DrawImage(hDC, m_diRailNormal) ) return;
 }
 
+// FastFile: creation hook (see UIScrollBar.h). Lets the app swap in its own subclass for
+// every bar DuiLib builds, including the containers' own scrollbars and the <ScrollBar>
+// elements the skin loader instantiates.
+static FnCreateScrollBarUI s_pfnCreateScrollBarUI = NULL;
+
+void SetScrollBarUICreator(FnCreateScrollBarUI fn)
+{
+	s_pfnCreateScrollBarUI = fn;
+}
+
+CScrollBarUI* CreateScrollBarUIInstance()
+{
+	if( s_pfnCreateScrollBarUI != NULL ) return s_pfnCreateScrollBarUI();
+	return new CScrollBarUI;
+}
+
 } // namespace DuiLib

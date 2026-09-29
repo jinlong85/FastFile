@@ -4,6 +4,7 @@
 // are used from more than one translation unit (kept inline).
 
 #include "MainWnd.h"
+#include "FluentScrollBarUI.h"
 
 #include <algorithm>
 #include <commctrl.h>

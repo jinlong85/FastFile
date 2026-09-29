@@ -36,7 +36,7 @@ struct IContextMenu3;
 class CMainWnd : public WindowImplBase
 {
 public:
-    CMainWnd() = default;
+    CMainWnd();
     ~CMainWnd() override;
 
     // Paths supplied by a Shell folder-open invocation.  The main window consumes these
@@ -538,6 +538,11 @@ private:
     // left/right pane resize gesture (see IsPreviewScrollBarHit / WM_LBUTTONDOWN).
     void StylePreviewRail();
     void SyncPreviewRail();
+    // Configures the Fluent bar (idle/hover thickness + which edge it hugs) when the
+    // scrollbar is ours; no-op for a plain DuiLib bar.
+    void ApplyFluentScrollBar(CScrollBarUI* sb, bool dockFar);
+    // Expands the bar under (or just beside) the pointer and collapses the others.
+    void UpdateFluentScrollBarHover(POINT clientPt);
     bool PreviewRailThumbRect(RECT& out) const;
     // Shared row metrics for the Quick Access list: the four built-in rows (XML) and the
     // runtime-pinned favorites must land on exactly the same pixels.

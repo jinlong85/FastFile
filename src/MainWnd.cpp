@@ -4,6 +4,14 @@
 
 #include "MainWndInternal.h"
 
+CMainWnd::CMainWnd()
+{
+    // Every scrollbar DuiLib creates (containers' own bars and the <ScrollBar> elements the
+    // skin loader builds) goes through this hook, so the Fluent rounded/hover-widening bar
+    // is in place before the skin is loaded in OnCreate. See FluentScrollBarUI.h.
+    DuiLib::SetScrollBarUICreator([]() -> CScrollBarUI* { return new CFluentScrollBarUI; });
+}
+
 CMainWnd::~CMainWnd()
 {
     CaptureColumnWidths();
@@ -935,6 +943,18 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             BeginDragSelectedItems();
             return 0;
         }
+    }
+    if (uMsg == WM_MOUSEMOVE) {
+        // Explorer widens the scrollbar as soon as the pointer nears the edge of the
+        // scrolling view, so this runs on every move (cheap: a handful of rect tests).
+        POINT pt = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
+        UpdateFluentScrollBarHover(pt);
+    }
+    if (uMsg == WM_MOUSELEAVE) {
+        // Collapse every bar; deliberately falls through so DuiLib still clears its own
+        // control hot-states for this message.
+        POINT away = { -100000, -100000 };
+        UpdateFluentScrollBarHover(away);
     }
     if (uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN) {
         const bool inEdit = IsEditingText();

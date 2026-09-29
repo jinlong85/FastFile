@@ -81,6 +81,11 @@ constexpr int SearchChkW = 100;        // ☐ 含子目录
 // Fluent pass: thin rail (4 logical = 6 physical at 150%), matching Explorer's overlay bar.
 constexpr int ScrollBarW = 4;          // file views (list / tiles)
 constexpr int SidePaneScrollBarW = 4;  // navigation + preview rail
+// Fluent pass: the rail stays thin while idle and widens toward the content on hover
+// (Explorer's overlay bar). The overhang is painted outside the control rect, so the
+// layout keeps using ScrollBarW and nothing shifts when the pointer arrives.
+constexpr int ScrollBarHoverW = 8;          // 8 logical = 12 physical at 150%
+constexpr int ScrollBarHoverMargin = 6;     // pointer distance that triggers the widening
 
 // ---- Phase 2: left nav / tree (Win11 Explorer density) ----
 constexpr int NavSectionHeaderH = 22;  // hidden legacy section labels; retained for layout compatibility
