@@ -43,17 +43,20 @@ constexpr int BreadcrumbBarH = 28;     // legacy; path merged into address_bar
 constexpr int BreadcrumbSegPadX = 3;   // compact Explorer-style segment gap
 constexpr int BreadcrumbSepW = 12;
 constexpr int TitleBarH = 32;
-constexpr int FavoritesBarH = 32;
-constexpr int FavBarPadY = 2;          // tighter than InnerPadY so chips fit
+constexpr int FavoritesBarH = 40;
+constexpr int FavBarPadY = 2;          // legacy; kept for compatibility
+constexpr int FavBarPadTop = 12;       // favourite chips sit below the tab strip, not glued to it
+constexpr int FavBarPadBottom = 0;     // the address row's own top inset balances the rest
 constexpr int FavChipH = 22;
 constexpr int FavIconPx = 16;
-constexpr int FavLabelW = 72;          // star + fav left mark
+constexpr int FavLabelW = 56;          // star + fav left mark (tight, so the first chip starts early)
 constexpr int FavLabelBaselineLift = 4; // design px to raise the CJK "★ 收藏" label onto the
                                         // Latin baseline of the chips beside it
 constexpr int AddressBarH = 48;       // roomier row; the path/search fields stay 32 and centre
 constexpr int FieldRound = 8;         // path / search field corner radius
+constexpr int FieldH = 32;             // path / search field height (centred in the address row)
 constexpr int AddressBarPadY = 2;
-constexpr int SearchBoxH = 28;
+constexpr int SearchBoxH = 32;   // matches the path field (48px at 150%)
 constexpr int SearchChkW = 100;        // ☐ 含子目录
 // One scrollbar thickness for the whole window: the file views sit right next to the
 // preview rail (and the rail sits next to the file list), so a thinner list bar made the

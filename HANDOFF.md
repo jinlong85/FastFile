@@ -264,6 +264,24 @@ Windows 11 样式）：两条 `#FFF7F7F7` 轨道紧挨着会连成一条 36 设�
 `ToolbarIconPad` 左对齐，`textpadding` 与原来一致。查看图标是资源管理器那种“显示器 + 底座”，
 删除图标的内侧两道竖线用次级浅色。
 
+### 收藏栏的垂直位置 / 第一个收藏的左移 / 路径框漏缩放
+三个小问题的根因各不相同：
+
+1. **收藏夹紧贴标签栏**：`favorites_strip` 是 `HorizontalLayout`，它把高度撑满收藏栏，
+   但内部子控件默认**顶对齐**——所以收藏夹被画在行顶部（实测离标签栏只有 3px，下面却空
+   了 40+px）。修法：`favorites_strip` 加 `childvalign="vcenter"`。再把收藏栏的上
+   padding 提到 `FavBarPadTop`(12)、下 padding 设 0：因为 DuiLib 会把**子控件 padding
+   也计入占位**（同快速访问那节），这样收藏夹正好落在标签栏与地址栏之间（实测上 32px、
+   下 29px）。
+2. **第一个收藏离“★ 收藏”太远**：`FavLabelW` 72 → 56（`ScaleNamedFixed` 会把它应用到
+   `fav_bar_label`，XML 同步改），收藏区整体左移约 24 物理像素。
+3. **地址栏路径框又细又小**：`path_host` 的 XML 高度 32 是**物理像素**——它从来没进过
+   `ScaleNamedFixed()`，所以 150% 下只有 32px 高，而旁边的搜索框是 `DpiScale(32)`=48px。
+   现在两个框都用 `UiTokens::FieldH`(32 设计) 走 `ScaleNamedFixed()`，`SearchBoxH` 也统一
+   成 32。
+
+标签字号：新增的 `<Font id="7">` 从 13 调到 14，让标签文字与 32 设计高的标签卡片匹配。
+
 ### 标题栏并入标签行（窗口按钮 + 拖动）
 `main.xml` 里删掉了 `title_bar`（连同 “FastFile” 标签），把 `minbtn`/`maxbtn`/`restorebtn`/
 `closebtn` 移到 `tab_bar` 末尾（名字不变，DuiLib 的最小化/最大化/还原/关闭行为照旧），

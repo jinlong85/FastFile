@@ -159,7 +159,10 @@ void CMainWnd::ApplyDpiScaledChrome()
     ScaleNamedFixed(m_PaintManager, _T("btn_preview_share"), UiTokens::PreviewActionW, UiTokens::PreviewActionH, m_dpi);
     ScaleNamedFixed(m_PaintManager, _T("btn_cancel_copy"), UiTokens::StatusCancelW, UiTokens::StatusCancelH, m_dpi);
     ScaleNamedFixed(m_PaintManager, _T("view_switcher"), 248, 28, m_dpi);
-    ScaleNamedFixed(m_PaintManager, _T("search_box"), 210, UiTokens::SearchBoxH, m_dpi);
+    ScaleNamedFixed(m_PaintManager, _T("search_box"), 210, UiTokens::FieldH, m_dpi);
+    // The path field shares the search field's metrics; without this it kept its raw XML
+    // height (32 physical px) and looked like a thin strip inside the roomier address row.
+    ScaleNamedFixed(m_PaintManager, _T("path_host"), 0, UiTokens::FieldH, m_dpi);
     ScaleNamedFixed(m_PaintManager, _T("nav_hdr_quick"), 0, UiTokens::NavSectionHeaderH, m_dpi);
     ScaleNamedFixed(m_PaintManager, _T("nav_hdr_thispc"), 0, UiTokens::NavSectionHeaderH, m_dpi);
     if (m_pLeftQuick) {

@@ -134,7 +134,9 @@ void CMainWnd::ApplyUiChromeTokens()
 
     setPad(_T("tab_bar"), px, py, px, 0);
     setPad(_T("toolbar"), px, py, px, py);
-    setPad(_T("favorites_bar"), px, UiTokens::FavBarPadY, px, UiTokens::FavBarPadY);
+    // Favourite chips hang below the tab strip: the top inset keeps them off the strip and
+    // lets the address row's own inset make the gaps above/below look even.
+    setPad(_T("favorites_bar"), px, UiTokens::FavBarPadTop, px, UiTokens::FavBarPadBottom);
     setPad(_T("address_bar"), px, UiTokens::AddressBarPadY, px, UiTokens::AddressBarPadY);
     setPad(_T("left_panel"), UiTokens::SpaceSm, UiTokens::SpaceSm, UiTokens::SpaceSm, UiTokens::SpaceSm);
     setPad(_T("icon_scroll"), px, px, px, px);

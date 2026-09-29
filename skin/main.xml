@@ -15,7 +15,7 @@
   <!-- Built-in Windows 11-style symbol font; no third-party icon assets. -->
   <Font id="6" name="Segoe MDL2 Assets" size="18" />
   <!-- Tab labels: Explorer-style tabs read slightly larger than the body font. -->
-  <Font id="7" name="Microsoft YaHei UI" size="13" />
+  <Font id="7" name="Microsoft YaHei UI" size="14" />
   <!-- A: visible light-theme vertical scrollbar (width/colors; DPI re-applied in code) -->
   <!-- 12 @96dpi everywhere: the file view's bar sits directly beside the preview rail, so all
        scrollbars use the navigation (left function area) thickness. -->
@@ -39,10 +39,10 @@
     </HorizontalLayout>
 
     <!-- C: Favorites bar under tabs (drag folders to pin) -->
-    <HorizontalLayout name="favorites_bar" height="32" bkcolor="#FFF3F3F3" padding="16,5,12,5" bordercolor="#FFE5E5E5" bordersize="0,0,0,1" childvalign="vcenter">
-      <Label name="fav_bar_label" text="★ 收藏" font="0" textcolor="#FF4A4A4A" width="72" height="22" valign="vcenter" endellipsis="true" />
+    <HorizontalLayout name="favorites_bar" height="40" bkcolor="#FFF3F3F3" padding="16,9,12,9" bordercolor="#FFE5E5E5" bordersize="0,0,0,1" childvalign="vcenter">
+      <Label name="fav_bar_label" text="★ 收藏" font="0" textcolor="#FF4A4A4A" width="56" height="22" valign="vcenter" endellipsis="true" />
       <Label name="fav_bar_hint" text="可将文件夹拖到此处固定" font="0" textcolor="#FF8A8A8A" width="180" height="22" align="left" valign="vcenter" />
-      <HorizontalLayout name="favorites_strip" />
+      <HorizontalLayout name="favorites_strip" childvalign="vcenter" />
       <Control />
     </HorizontalLayout>
 
