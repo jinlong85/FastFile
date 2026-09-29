@@ -649,6 +649,12 @@ void CMainWnd::EnterAddressEditMode()
     }
     m_addressEditMode = true;
     SyncAddressEditFromPath();
+    // Focus must be visible: while the address is editable the field wears the system accent
+    // border (the caret alone was too easy to miss).
+    if (m_pPathHost) {
+        m_pPathHost->SetAttribute(_T("bordercolor"), L"#FF0078D4");
+        m_pPathHost->SetAttribute(_T("bordersize"), _T("1"));
+    }
     if (m_pBreadcrumb)
         m_pBreadcrumb->SetVisible(false);
     if (m_pAddressEditHost)
@@ -675,6 +681,10 @@ void CMainWnd::ExitAddressEditMode(bool commitNavigate)
         typed = m_pAddressEdit->GetText().GetData();
 
     m_addressEditMode = false;
+    if (m_pPathHost) {
+        m_pPathHost->SetAttribute(_T("bordercolor"), UiTokens::ColorFieldBorder);
+        m_pPathHost->SetAttribute(_T("bordersize"), _T("1"));
+    }
     if (m_pAddressEditHost)
         m_pAddressEditHost->SetVisible(false);
     // Hiding the host alone is not enough: DuiLib leaves the native edit window alive and
