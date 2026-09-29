@@ -137,6 +137,19 @@ void CMainWnd::InitWindow()
     ApplyWindowCornerAndPadding();
     SyncRecursiveCheckLabel();
     SetSearchPlaceholder(true);
+
+    // A first launch from a folder association should land directly in that folder,
+    // rather than briefly opening the normal "This PC" start tab.
+    if (!m_startupOpenPaths.empty()) {
+        std::vector<std::wstring> paths;
+        paths.swap(m_startupOpenPaths);
+        OpenExternalPaths(paths, true);
+    }
+}
+
+void CMainWnd::SetStartupOpenPaths(std::vector<std::wstring> paths)
+{
+    m_startupOpenPaths = std::move(paths);
 }
 
 void CMainWnd::Notify(TNotifyUI& msg)
@@ -420,6 +433,42 @@ void CMainWnd::OnClick(TNotifyUI& msg)
 
 LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
+    // A second FastFile process forwards folders through WM_COPYDATA, then exits.  Use a
+    // line-delimited payload: Windows paths cannot contain a line break, and the copy is
+    // bounded by cbData so an untrusted sender cannot make us read beyond its buffer.
+    constexpr ULONG_PTR kOpenPathsCopyData = 0x46464F50; // "FFOP"
+    if (uMsg == WM_COPYDATA) {
+        const auto* cds = reinterpret_cast<const COPYDATASTRUCT*>(lParam);
+        if (!cds || cds->dwData != kOpenPathsCopyData || !cds->lpData
+            || cds->cbData < sizeof(wchar_t) || (cds->cbData % sizeof(wchar_t)) != 0)
+            return 0;
+
+        const auto* data = static_cast<const wchar_t*>(cds->lpData);
+        size_t chars = cds->cbData / sizeof(wchar_t);
+        size_t len = 0;
+        while (len < chars && data[len] != L'\0')
+            ++len;
+        std::vector<std::wstring> paths;
+        size_t begin = 0;
+        while (begin < len) {
+            size_t end = begin;
+            while (end < len && data[end] != L'\n')
+                ++end;
+            if (end > begin)
+                paths.emplace_back(data + begin, end - begin);
+            begin = end + 1;
+        }
+        if (paths.empty())
+            return 0;
+        auto* pending = new (std::nothrow) std::vector<std::wstring>(std::move(paths));
+        if (!pending || !::PostMessageW(m_hWnd, kMsgOpenExternalPaths, 0,
+                reinterpret_cast<LPARAM>(pending))) {
+            delete pending;
+            return 0;
+        }
+        return 1;
+    }
+
     // Forward owner-draw / cascading submenu messages to IContextMenu2/3
     if (m_pCtxMenu2 || m_pCtxMenu3) {
         if (uMsg == WM_INITMENUPOPUP || uMsg == WM_DRAWITEM || uMsg == WM_MEASUREITEM || uMsg == WM_MENUCHAR) {
@@ -907,6 +956,16 @@ LRESULT CMainWnd::HandleCustomMessage(UINT uMsg, WPARAM wParam, LPARAM lParam, B
             const bool addToHistory = pending->second;
             delete pending;                 // free before navigating: it can post more work
             NavigateToNow(path, addToHistory);
+        }
+        return 0;
+    }
+    if (uMsg == kMsgOpenExternalPaths) {
+        bHandled = TRUE;
+        auto* paths = reinterpret_cast<std::vector<std::wstring>*>(lParam);
+        if (paths) {
+            BringToForeground();
+            OpenExternalPaths(*paths, false);
+            delete paths;
         }
         return 0;
     }

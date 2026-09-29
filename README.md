@@ -15,7 +15,7 @@
 安装程序不需要任何第三方打包工具，用仓库里的脚本即可重新生成：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File installer\build_installer.ps1 -Version 1.0.6
+powershell -ExecutionPolicy Bypass -File installer\build_installer.ps1 -Version 1.0.7
 ```
 
 源码直接运行也可以：构建后启动 `build\Release\FastFile.exe`。
@@ -52,6 +52,10 @@ powershell -ExecutionPolicy Bypass -File installer\build_installer.ps1 -Version 
 
 **系统集成**
 
+- 可选「使用 FastFile 打开系统文件夹」：在「更多选项」中由用户确认后，接管当前用户的
+  文件夹 / 目录 / 磁盘的默认**打开**动作；外部双击会直接打开目标目录，已有 FastFile
+  窗口则新建标签。关闭开关或卸载会恢复此前动作；**不替换** Windows 桌面、任务栏、
+  开始菜单、`Win+E` 或系统文件选择窗口
 - 右键菜单全部走 **Windows 原生 Shell 接口**（`IShellFolder::CreateViewObject` /
   `IShellFolder::GetUIObjectOf` + `IContextMenu(2/3)`）：选中项菜单、文件夹背景菜单、
   磁盘菜单（含「固定到快速访问 / 管理 / 格式化 / 属性」等真实动词）

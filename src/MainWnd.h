@@ -38,6 +38,10 @@ public:
     CMainWnd() = default;
     ~CMainWnd() override;
 
+    // Paths supplied by a Shell folder-open invocation.  The main window consumes these
+    // after its controls and initial tab have been created.
+    void SetStartupOpenPaths(std::vector<std::wstring> paths);
+
     CDuiString GetSkinFolder() override;
     CDuiString GetSkinFile() override;
     LPCTSTR GetWindowClassName() const override;
@@ -139,6 +143,7 @@ private:
     void OnSortMenuClicked();
     void OnViewMenuClicked();
     void OnMoreMenuClicked();
+    void OnFolderOpenHandlerMenuClicked();
     void FocusSearchBox();
     void ShowPropertiesForSelection();
 
@@ -214,6 +219,14 @@ private:
     void ActivateTab(int index);
     void UpdateActiveTabPath(const std::wstring& path);
     std::wstring TabTitleForPath(const std::wstring& path) const;
+    void OpenExternalPaths(const std::vector<std::wstring>& paths, bool replaceInitialTab);
+    static std::wstring ResolveFolderOpenTarget(const std::wstring& path);
+
+    // Optional per-user Folder/Directory/Drive open handler.  This deliberately leaves
+    // Explorer's desktop, taskbar and Start menu alone; it only changes what opens a folder.
+    bool IsFolderOpenHandlerEnabled() const;
+    bool EnableFolderOpenHandler();
+    bool DisableFolderOpenHandler();
 
     // Session persist
     void SaveSession() const;
@@ -588,6 +601,7 @@ private:
 
     std::wstring m_currentPath;
     std::wstring m_searchFilter;
+    std::vector<std::wstring> m_startupOpenPaths;
     ViewMode m_viewMode = ViewMode::Tiles;
     UINT m_dpi = 96;
     bool m_dpiChromeApplied = false;
@@ -706,6 +720,7 @@ private:
     static constexpr UINT kMsgVirtSync = WM_USER + 104;
     static constexpr UINT kMsgDetailsFill = WM_USER + 105;
     static constexpr UINT kMsgDeferredNav = WM_USER + 106;
+    static constexpr UINT kMsgOpenExternalPaths = WM_USER + 107;
     static constexpr int kDetailsVirtOverscan = 8;
     static constexpr UINT_PTR kTimerDetailsSync = 0x4603;
     static constexpr int kUiBatchSize = 40;

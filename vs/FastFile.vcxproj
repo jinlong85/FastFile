@@ -77,6 +77,7 @@
     <ClCompile Include="..\src\MainWnd.Favorites.cpp" />
     <ClCompile Include="..\src\MainWnd.FileOps.cpp" />
     <ClCompile Include="..\src\MainWnd.Menus.cpp" />
+    <ClCompile Include="..\src\MainWnd.Integration.cpp" />
     <ClCompile Include="..\src\MainWnd.Views.cpp" />
     <ClCompile Include="..\src\MainWnd.Icons.cpp" />
     <ClCompile Include="..\src\MainWnd.Preview.cpp" />

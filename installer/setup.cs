@@ -195,6 +195,12 @@ internal static class Setup
 
         KillRunning(Assembly.GetExecutingAssembly());
 
+        // Folder opening is opt-in and stored per user.  Restore it before deleting the
+        // program folder so Windows can never retain a default command pointing at an
+        // uninstalled FastFile.exe.  If the user chose a different default meanwhile, that
+        // choice wins and is left intact.
+        RestoreFolderOpenHandler();
+
         try
         {
             string lnk = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs),
@@ -230,6 +236,82 @@ internal static class Setup
         if (!quiet)
             MessageBox.Show(AppName + " 已卸载。", AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
         return 0;
+    }
+
+    private static void RestoreFolderOpenHandler()
+    {
+        string[] classes = { "Folder", "Directory", "Drive" };
+        const string verb = "FastFile.open";
+        const string backupRoot = @"Software\FastFile\FolderHandlerBackup\";
+        const string classesRoot = @"Software\Classes\";
+        bool allDefaultsRestored = true;
+
+        foreach (string cls in classes)
+        {
+            try
+            {
+                RegistryKey backup = Registry.CurrentUser.OpenSubKey(backupRoot + cls, false);
+                if (backup == null) continue;
+                try
+                {
+                    object saved = backup.GetValue("Saved", 0);
+                    if (!(saved is int) || (int)saved != 1)
+                    {
+                        allDefaultsRestored = false;
+                        continue;
+                    }
+
+                    RegistryKey shell = Registry.CurrentUser.OpenSubKey(classesRoot + cls + @"\shell", true);
+                    if (shell == null)
+                    {
+                        allDefaultsRestored = false;
+                        continue;
+                    }
+                    try
+                    {
+                        object current = shell.GetValue(string.Empty, null,
+                            RegistryValueOptions.DoNotExpandEnvironmentNames);
+                        if (current is string && string.Equals((string)current, verb,
+                            StringComparison.OrdinalIgnoreCase))
+                        {
+                            object hadPrevious = backup.GetValue("ShellDefaultPresent", 0);
+                            if (hadPrevious is int && (int)hadPrevious != 0)
+                            {
+                                object previous = backup.GetValue("ShellDefault", null,
+                                    RegistryValueOptions.DoNotExpandEnvironmentNames);
+                                if (previous is string)
+                                    shell.SetValue(string.Empty, (string)previous, RegistryValueKind.String);
+                                else
+                                    shell.DeleteValue(string.Empty, false);
+                            }
+                            else
+                            {
+                                shell.DeleteValue(string.Empty, false);
+                            }
+                        }
+                        current = shell.GetValue(string.Empty, null,
+                            RegistryValueOptions.DoNotExpandEnvironmentNames);
+                        if (current is string && string.Equals((string)current, verb,
+                            StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Preserve a working command rather than deleting an association
+                            // whose former default could not be restored.
+                            allDefaultsRestored = false;
+                            continue;
+                        }
+                    }
+                    finally { shell.Close(); }
+                    Registry.CurrentUser.DeleteSubKeyTree(classesRoot + cls + @"\shell\" + verb, false);
+                }
+                finally { backup.Close(); }
+            }
+            catch { allDefaultsRestored = false; }
+        }
+        if (allDefaultsRestored)
+        {
+            try { Registry.CurrentUser.DeleteSubKeyTree(@"Software\FastFile\FolderHandlerBackup", false); }
+            catch { }
+        }
     }
 
     // Runs from the %TEMP% copy: waits for the original process to exit, then removes the

@@ -144,6 +144,9 @@ void CMainWnd::OnMoreMenuClicked()
     ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     ::AppendMenuW(hMenu, m_undoStack.empty() ? (MF_STRING | MF_GRAYED) : MF_STRING,
         4, L"撤销\tCtrl+Z");
+    ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+    ::AppendMenuW(hMenu, IsFolderOpenHandlerEnabled() ? (MF_STRING | MF_CHECKED) : MF_STRING,
+        5, L"使用 FastFile 打开系统文件夹");
 
     CControlUI* anchor = m_PaintManager.FindControl(_T("btn_more"));
     if (!anchor || !m_hWnd) {
@@ -166,6 +169,8 @@ void CMainWnd::OnMoreMenuClicked()
         ToggleShowHidden();
     } else if (cmd == 4) {
         OnUndo();
+    } else if (cmd == 5) {
+        OnFolderOpenHandlerMenuClicked();
     }
 }
 

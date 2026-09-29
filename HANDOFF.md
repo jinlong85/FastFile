@@ -4,7 +4,7 @@
 
 > 2026-09-28：已纳入 Git 版本管理；原 8000 行单文件 `src\MainWnd.cpp` 已拆分为 14 个编译单元（见「源码结构」）。
 >
-> 2026-09-29：完成「第二批～第十批」共 9 轮修复/打磨（含安装程序、应用图标、右键菜单、崩溃修复）。
+> 2026-09-29：完成「第二批～第十一批」共 10 轮修复/打磨（含安装程序、应用图标、右键菜单、崩溃修复、可选文件夹打开接管）。
 > 面向使用者的版本记录见 [CHANGELOG.md](CHANGELOG.md)；下面的「开发日志」按批次保留完整细节。
 
 ## 开发日志索引（2026-09-29）
@@ -21,6 +21,7 @@
 | 第八批 | `46d67ea` | 右键菜单清理：去掉旧版 PowerShell 动词、第三方「用 X 打开」、空子菜单 |
 | 第九批 | `fd1a154` | 驱动器右键改走原生 Shell 菜单；删项后多余分隔线 |
 | 第十批 | `61674ab` | 磁盘「属性」作用于选中路径（SHObjectProperties）；磁盘根绑定走桌面+完整路径 |
+| 第十一批 | （待提交） | 可选接管文件夹 / 目录 / 磁盘的默认打开动作；外部路径转发到现有窗口新标签；关闭或卸载恢复 |
 
 ## 目标
 
@@ -73,7 +74,7 @@
 - 改 `main.xml` 后务必重建或确保 `build\Release\skin\` 与源 skin 同步，否则会「加载资源文件失败」或跑旧皮肤
 - 发布后建议：结束 `FastFile` 进程 → 清 `%TEMP%\FastFileIconCache` → 再启动 exe
 - 图标缓存版本：`_v8.png`（HICON → PNG 真透明）；改导出逻辑时升版本并清缓存
-- 安装程序：`powershell -ExecutionPolicy Bypass -File installer\build_installer.ps1 -Version 1.0.6`
+- 安装程序：`powershell -ExecutionPolicy Bypass -File installer\build_installer.ps1 -Version 1.0.7`
   （只用系统自带的 .NET `csc.exe`，不需要 Inno/NSIS/WiX；产物在 `dist\`，`dist/` 已在 .gitignore）
 - 应用图标：`res\FastFile.ico` + `res\FastFile.rc`（资源 id 1）。**换图标后要 touch 一下 .ico**，
   否则 MSBuild 认为 rc 不需要重编（`Copy-Item` 会保留源文件的旧时间戳）
@@ -471,7 +472,7 @@ SHObjectProperties(m_hWnd, SHOP_FILEPATH, path, nullptr);
 - 右侧预览（元数据 + 图/视频帧），窗格宽度可拖拽，面包屑/缩略图按宽度自适应
 - 排序：图标/列表/平铺视图文件夹在前；详细信息视图严格按列排序
 - DPI PerMonitorV2；`UiTokens.h` 设计令牌；应用图标见 `res\`
-- 会话/设置的持久化、每文件夹视图记忆；安装程序见 `installer\`（当前 1.0.6）
+- 会话/设置的持久化、每文件夹视图记忆；安装程序见 `installer\`（当前 1.0.7）
 - 详细信息：名称列 Shell 小图标（`bkimage`，勿用 `CControlUI`+`foreimage`）
 - 图标：PNG alpha；文件夹/盘符/工具栏用 HICON，勿对文件夹用 `SIIGBF_ICONONLY`（会黑框）
 
@@ -591,7 +592,7 @@ dumpbin /DISASM /NOBYTES build\Release\FastFile.exe > disasm.txt
 - 继续对齐资源管理器 / 360 密度与图标风格（自有 Shell 图标）
 - 预览窗格继续打磨（视频首帧质量取决于 Shell 缩略图缓存；可考虑自绘取帧）
 - 设置面板（用户明确推迟：等程序成熟后再做"取代资源管理器"）
-- 安装程序已完成（`installer\`，当前版本 1.0.6）；后续可做自动更新 / 代码签名（现在 exe 无签名，
+- 安装程序已完成（`installer\`，当前版本 1.0.7）；后续可做自动更新 / 代码签名（现在 exe 无签名，
   首次运行可能触发 SmartScreen）
 - 右键菜单的“屏蔽名单”目前是硬编码（PowerShell 动词 + “用 X 打开”），若用户想自定义，
   可放到设置面板里

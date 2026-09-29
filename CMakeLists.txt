@@ -56,6 +56,7 @@ add_executable(FastFile WIN32
   src/MainWnd.Favorites.cpp
   src/MainWnd.FileOps.cpp
   src/MainWnd.Menus.cpp
+  src/MainWnd.Integration.cpp
   src/MainWnd.Views.cpp
   src/MainWnd.Icons.cpp
   src/MainWnd.Preview.cpp

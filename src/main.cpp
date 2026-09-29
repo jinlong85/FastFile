@@ -5,6 +5,7 @@
 #include "MainWnd.h"
 
 #include <ObjBase.h>
+#include <shellapi.h> // CommandLineToArgvW
 #include <shlobj.h>   // SHGetFolderPathW / CSIDL_LOCAL_APPDATA for the crash report
 #include <shlwapi.h>  // PathFindFileNameW (crash-report stack frames)
 
@@ -19,6 +20,7 @@ namespace {
 // Must match CMainWnd::kMsgReactivate / GetWindowClassName()
 constexpr UINT kMsgReactivate = WM_USER + 100;
 constexpr wchar_t kMainWndClass[] = L"FastFile_MainWnd";
+constexpr ULONG_PTR kOpenPathsCopyData = 0x46464F50; // "FFOP"; must match CMainWnd
 // Filled in by wWinMain so a crash report can tell UI crashes from worker-thread ones.
 DWORD g_mainThreadId = 0;
 
@@ -80,11 +82,72 @@ LONG WINAPI FastFileCrashHandler(EXCEPTION_POINTERS* info)
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
-bool ActivateExistingInstance()
+std::vector<std::wstring> ParseOpenPaths()
+{
+    std::vector<std::wstring> paths;
+    int argc = 0;
+    LPWSTR* argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
+    if (!argv)
+        return paths;
+
+    bool expectPath = false;
+    bool literalArgs = false;
+    for (int i = 1; i < argc; ++i) {
+        const std::wstring arg(argv[i] ? argv[i] : L"");
+        if (arg == L"--") {
+            literalArgs = true;
+            expectPath = true;
+            continue;
+        }
+        if (!literalArgs && ::_wcsicmp(arg.c_str(), L"--open") == 0) {
+            expectPath = true;
+            continue;
+        }
+        // Unknown flags are reserved for future invocations.  A normal bare path is still
+        // accepted, so a shortcut can target FastFile.exe and pass a folder directly.
+        if (!literalArgs && arg.size() > 2 && arg[0] == L'-' && arg[1] == L'-') {
+            expectPath = false;
+            continue;
+        }
+        if (expectPath || !arg.empty())
+            paths.push_back(arg);
+        expectPath = false;
+    }
+    ::LocalFree(argv);
+    return paths;
+}
+
+bool ForwardOpenPaths(HWND existing, const std::vector<std::wstring>& paths)
+{
+    if (!existing || paths.empty())
+        return false;
+    std::wstring payload;
+    for (const std::wstring& path : paths) {
+        if (path.empty())
+            continue;
+        if (!payload.empty())
+            payload.push_back(L'\n');
+        payload += path;
+    }
+    if (payload.empty())
+        return false;
+    payload.push_back(L'\0');
+    COPYDATASTRUCT cds = {};
+    cds.dwData = kOpenPathsCopyData;
+    cds.cbData = static_cast<DWORD>(payload.size() * sizeof(wchar_t));
+    cds.lpData = const_cast<wchar_t*>(payload.c_str());
+    DWORD_PTR ignored = 0;
+    return ::SendMessageTimeoutW(existing, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&cds),
+        SMTO_ABORTIFHUNG | SMTO_BLOCK, 2000, &ignored) != 0 && ignored != 0;
+}
+
+bool ActivateExistingInstance(const std::vector<std::wstring>& paths)
 {
     HWND existing = ::FindWindowW(kMainWndClass, nullptr);
     if (!existing)
         return false;
+    if (!paths.empty() && ForwardOpenPaths(existing, paths))
+        return true;
     DWORD pid = 0;
     ::GetWindowThreadProcessId(existing, &pid);
     if (pid)
@@ -133,7 +196,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPWSTR /*lpCmdLi
     ::SetUnhandledExceptionFilter(FastFileCrashHandler);
 
     // Single-instance: tray / second launch should restore the existing main HWND
-    if (ActivateExistingInstance())
+    const std::vector<std::wstring> startupPaths = ParseOpenPaths();
+    if (ActivateExistingInstance(startupPaths))
         return 0;
 
     HRESULT hr = ::OleInitialize(nullptr);
@@ -153,6 +217,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPWSTR /*lpCmdLi
     // (Shell video thumbnails). Letting the object live until the process exits keeps
     // those detached workers from touching freed memory and keeps the close instant.
     CMainWnd* mainWnd = new CMainWnd();
+    mainWnd->SetStartupOpenPaths(startupPaths);
     HWND hWnd = mainWnd->Create(nullptr, _T("FastFile"), UI_WNDSTYLE_FRAME, WS_EX_WINDOWEDGE);
     if (hWnd == nullptr)
     {
