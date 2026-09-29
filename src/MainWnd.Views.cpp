@@ -314,7 +314,7 @@ void CMainWnd::StyleVerticalScrollBar(CContainerUI* host)
     }
     if (!sb) return;
 
-    const int w = (std::max)(DpiScale(UiTokens::ScrollBarW), 10);
+    const int w = (std::max)(DpiScale(UiTokens::ScrollBarW), 6);
     sb->SetFixedWidth(w);
     sb->SetShowButton1(false);
     sb->SetShowButton2(false);
@@ -342,7 +342,7 @@ void CMainWnd::ApplyFileViewScrollBars()
 void CMainWnd::StyleSidePaneScrollBars(CContainerUI* host)
 {
     if (!host) return;
-    const int extent = (std::max)(DpiScale(UiTokens::SidePaneScrollBarW), 10);
+    const int extent = (std::max)(DpiScale(UiTokens::SidePaneScrollBarW), 6);
     const auto style = [extent](CScrollBarUI* sb, bool vertical) {
         if (!sb) return;
         if (vertical) sb->SetFixedWidth(extent);
@@ -371,7 +371,7 @@ void CMainWnd::StylePreviewRail()
 {
     if (!m_pPreviewRail) return;
     if (m_pPreviewBody) m_pPreviewRail->SetOwner(m_pPreviewBody);
-    const int extent = (std::max)(DpiScale(UiTokens::SidePaneScrollBarW), 10);
+    const int extent = (std::max)(DpiScale(UiTokens::SidePaneScrollBarW), 6);
     m_pPreviewRail->SetHorizontal(false);
     m_pPreviewRail->SetFixedWidth(extent);
     m_pPreviewRail->SetShowButton1(false);
@@ -445,7 +445,7 @@ void CMainWnd::StyleHorizontalScrollBar(CContainerUI* host)
     if (!host) return;
     CScrollBarUI* sb = host->GetHorizontalScrollBar();
     if (!sb) return;
-    sb->SetFixedHeight((std::max)(DpiScale(UiTokens::ScrollBarW), 10));
+    sb->SetFixedHeight((std::max)(DpiScale(UiTokens::ScrollBarW), 6));
     sb->SetShowButton1(false);
     sb->SetShowButton2(false);
     sb->SetAttribute(_T("bkcolor"), UiTokens::ColorTransparent);

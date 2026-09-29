@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <!-- FastFile Win11 Explorer-inspired chrome. Original assets only — no 360 trademarks.
      Design sizes are 96-DPI baseline; CMainWnd scales fonts/heights/icons at runtime.
      Phase 3: command-bar groups (Navigation | Clipboard | Organize | View).
@@ -19,8 +19,8 @@
   <!-- A: visible light-theme vertical scrollbar (width/colors; DPI re-applied in code) -->
   <!-- 12 @96dpi everywhere: the file view's bar sits directly beside the preview rail, so all
        scrollbars use the navigation (left function area) thickness. -->
-  <Default name="VScrollBar" value="width=&quot;12&quot; showbutton1=&quot;false&quot; showbutton2=&quot;false&quot; bkcolor=&quot;#FFF7F7F7&quot; thumbcolor=&quot;#FFC4C4C4&quot; button1color=&quot;#FFF7F7F7&quot; button2color=&quot;#FFF7F7F7&quot;" />
-  <Default name="HScrollBar" value="height=&quot;12&quot; showbutton1=&quot;false&quot; showbutton2=&quot;false&quot; bkcolor=&quot;#FFF7F7F7&quot; thumbcolor=&quot;#FFC4C4C4&quot;" />
+  <Default name="VScrollBar" value="width=&quot;4&quot; showbutton1=&quot;false&quot; showbutton2=&quot;false&quot; bkcolor=&quot;transparent&quot; thumbcolor=&quot;#FFC4C4C4&quot; button1color=&quot;#FFF7F7F7&quot; button2color=&quot;#FFF7F7F7&quot;" />
+  <Default name="HScrollBar" value="height=&quot;4&quot; showbutton1=&quot;false&quot; showbutton2=&quot;false&quot; bkcolor=&quot;transparent&quot; thumbcolor=&quot;#FFC4C4C4&quot;" />
   <!-- Outer gutter + rounded chrome (Win11-ish); DWM round corners applied in code -->
   <!-- The shell paints nothing: DWM's Mica Alt (tabbed-window backdrop) shows through the
        title band. Each band below paints its own surface colour. -->
@@ -134,7 +134,7 @@
       <VerticalLayout name="list_host" bkcolor="#FFFFFFFF" padding="0,0,0,0">
         <!-- Empty state: UpdateEmptyStateHint() shows this when the view has no items. -->
         <Label name="list_empty_hint" text="" font="0" textcolor="#FF8A8A8A" height="30" padding="14,10,14,0" valign="vcenter" visible="false" endellipsis="true" />
-        <List name="file_list" bkcolor="#FFFFFFFF" itemtextcolor="#FF1A1A1A" itemselectedbkcolor="#FFCCE8FF" itemhotbkcolor="#FFE8F4FC" itemselectedtextcolor="#FF1A1A1A" vscrollbar="true" vscrollbarstyle="width=&quot;12&quot; showbutton1=&quot;false&quot; showbutton2=&quot;false&quot; bkcolor=&quot;#FFF7F7F7&quot; thumbcolor=&quot;#FFC4C4C4&quot;" itemvalign="vcenter" multiselect="true" bordercolor="#00000000" bordersize="0" headerbkcolor="#FFF3F3F3">
+        <List name="file_list" bkcolor="#FFFFFFFF" itemtextcolor="#FF1A1A1A" itemselectedbkcolor="#FFCCE8FF" itemhotbkcolor="#FFE8F4FC" itemselectedtextcolor="#FF1A1A1A" vscrollbar="true" vscrollbarstyle="width=&quot;4&quot; showbutton1=&quot;false&quot; showbutton2=&quot;false&quot; bkcolor=&quot;transparent&quot; thumbcolor=&quot;#FFC4C4C4&quot;" itemvalign="vcenter" multiselect="true" bordercolor="#00000000" bordersize="0" headerbkcolor="#FFF3F3F3">
           <ListHeader height="32" menu="true" bkcolor="#FFF3F3F3" bordercolor="#FFE5E5E5" bordersize="0,0,0,1">
             <ListHeaderItem name="hdr_name" text="名称" width="360" textcolor="#FF5A5A5A" sepwidth="4" sepcolor="#FFE5E5E5" dragable="true" />
             <ListHeaderItem name="hdr_mtime" text="修改日期" width="140" textcolor="#FF5A5A5A" sepwidth="4" sepcolor="#FFE5E5E5" dragable="true" />
@@ -143,7 +143,7 @@
           </ListHeader>
         </List>
         <VerticalLayout name="icon_scroll" bkcolor="#FFFFFFFF" visible="false" padding="6,6,6,6">
-          <TileLayout name="file_icons" itemsize="190,52" columns="0" columnfirst="false" childpadding="6" childvpadding="6" vscrollbar="true" vscrollbarstyle="width=&quot;12&quot; showbutton1=&quot;false&quot; showbutton2=&quot;false&quot; bkcolor=&quot;#FFF7F7F7&quot; thumbcolor=&quot;#FFC4C4C4&quot;" hscrollbar="true" hscrollbarstyle="height=&quot;12&quot; showbutton1=&quot;false&quot; showbutton2=&quot;false&quot; bkcolor=&quot;#FFF7F7F7&quot; thumbcolor=&quot;#FFC4C4C4&quot;" bordercolor="#00000000" />
+          <TileLayout name="file_icons" itemsize="190,52" columns="0" columnfirst="false" childpadding="6" childvpadding="6" vscrollbar="true" vscrollbarstyle="width=&quot;4&quot; showbutton1=&quot;false&quot; showbutton2=&quot;false&quot; bkcolor=&quot;transparent&quot; thumbcolor=&quot;#FFC4C4C4&quot;" hscrollbar="true" hscrollbarstyle="height=&quot;4&quot; showbutton1=&quot;false&quot; showbutton2=&quot;false&quot; bkcolor=&quot;transparent&quot; thumbcolor=&quot;#FFC4C4C4&quot;" bordercolor="#00000000" />
         </VerticalLayout>
       </VerticalLayout>
 

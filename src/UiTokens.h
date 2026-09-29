@@ -78,8 +78,9 @@ constexpr int SearchChkW = 100;        // ☐ 含子目录
 // preview rail (and the rail sits next to the file list), so a thinner list bar made the
 // two columns at the divider visibly different widths. Everything follows the navigation
 // pane / function-area scrollbar (user-confirmed reference).
-constexpr int ScrollBarW = 12;         // file views (list / tiles)
-constexpr int SidePaneScrollBarW = 12; // navigation + preview rail
+// Fluent pass: thin rail (4 logical = 6 physical at 150%), matching Explorer's overlay bar.
+constexpr int ScrollBarW = 4;          // file views (list / tiles)
+constexpr int SidePaneScrollBarW = 4;  // navigation + preview rail
 
 // ---- Phase 2: left nav / tree (Win11 Explorer density) ----
 constexpr int NavSectionHeaderH = 22;  // hidden legacy section labels; retained for layout compatibility

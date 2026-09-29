@@ -370,7 +370,30 @@ void CMainWnd::UpdateListingStatusTip()
         else
             tip.Format(_T("筛选 \"%s\"  ·  %d 项"), m_searchFilter.c_str(), shown);
     } else if (IsThisPcPath(m_currentPath)) {
-        tip.Format(_T("此电脑  ·  %d 个驱动器"), shown);
+        // Explorer keeps the This PC line, but a selected drive adds its capacity.
+        std::wstring selDrive;
+        {
+            std::vector<ClipboardItem> sel;
+            CollectSelectedItems(sel);
+            if (sel.size() == 1 && sel[0].isDir) {
+                const std::wstring p = NormalizePath(sel[0].path);
+                if (p.size() >= 2 && p[1] == L':' && (p.size() == 2 || p.size() == 3))
+                    selDrive = p;
+            }
+        }
+        if (!selDrive.empty()) {
+            ULARGE_INTEGER freeAvail = {}, total = {}, totalFree = {};
+            if (::GetDiskFreeSpaceExW(selDrive.c_str(), &freeAvail, &total, &totalFree)) {
+                const std::wstring free = FormatFileSize(freeAvail.QuadPart);
+                const std::wstring cap = FormatFileSize(total.QuadPart);
+                tip.Format(_T("%s  ·  %s 可用，共 %s"),
+                    selDrive.c_str(), free.c_str(), cap.c_str());
+            } else {
+                tip.Format(_T("此电脑  ·  %d 个驱动器"), shown);
+            }
+        } else {
+            tip.Format(_T("此电脑  ·  %d 个驱动器"), shown);
+        }
     } else if (m_listingTruncated) {
         tip.Format(_T("%s  ·  显示 %d 项（已截断）"), m_currentPath.c_str(), shown);
     } else {
