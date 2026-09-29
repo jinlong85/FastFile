@@ -250,6 +250,20 @@ Windows 11 样式）：两条 `#FFF7F7F7` 轨道紧挨着会连成一条 36 设�
 `ApplyChromeShellIcons` 的 `applyFav` 和 `RebuildLeftPinnedFavorites` 都调它。
 实测两条行的 rect 都是 `36..327`、图标 ink 都从 x=49 起，选中高亮也等宽。
 
+### 命令栏双色图标
+`main.xml` 里的命令栏按钮不用 Segoe MDL2 单色字形，而是 `GetCommandIconBmp(kind, px, dim)`
+用 GDI+ 在 20×20 网格上自绘成 PNG（缓存进 `m_iconCache`）。两套配色取自资源管理器命令栏：
+
+| 状态 | 轮廓 | 蓝色点缀 | 次级浅色 | 更多按钮圆点 |
+|---|---|---|---|---|
+| 可用（点亮） | `#555555` | `#0078D4` | `#AAAAAA` | `#1B1B1B` |
+| 不可用（熄灭） | `#C2C2C2` | `#A3CEEF` | `#E1E1E1` | `#C2C2C2` |
+
+`ApplyCommandIcon()` 按 `IsEnabled()` 选图（DuiLib 的 disabled 状态不会自动替换 foreimage，
+必须自己换图），图标尺寸沿用 `UiTokens::ToolbarGlyphPx`：纯图标按钮居中、带文字按钮按
+`ToolbarIconPad` 左对齐，`textpadding` 与原来一致。查看图标是资源管理器那种“显示器 + 底座”，
+删除图标的内侧两道竖线用次级浅色。
+
 ### 快速访问区高度 + 可拖动的分隔线
 两个坑叠在一起：
 
@@ -306,13 +320,6 @@ DPI/兼容性节点，没有 `Microsoft.Windows.Common-Controls 6.0.0.0` 依赖�
   「打开 / 从快速访问中取消固定」追加在 Shell 菜单下方（id 取 9340+，远离 Shell 的
   `idCmdFirst..idCmdLast`），`TrackPopupShellMenu` 命中这些 id 时通过 `outExtraCmd` 回传。
 - DPI 变化时 `OnDpiChanged` 会 `RebuildLeftQuickRows()`，因为行是运行时控件、按物理像素排版。
-
-### 命令栏双色图标
-`main.xml` 里的命令栏按钮不再用 Segoe MDL2 单色字形，而是 `GetCommandIconBmp()` 用 GDI+
-在 20×20 网格上自绘成 PNG（缓存进 `m_iconCache`），配色取自 Windows 11 资源管理器命令栏：
-浅灰 `#C2C2C2` 主轮廓 + 浅蓝 `#A3CEEF` 点缀，排序是深灰 `#555555` 上箭头 + `#0078D4`
-下箭头，更多按钮是 `#1B1B1B` 三个点。图标尺寸沿用 `UiTokens::ToolbarGlyphPx`，
-纯图标按钮居中、带文字按钮按 `ToolbarIconPad` 左对齐，`textpadding` 与原来一致。
 
 ### 排序不再强制文件夹在前
 `EntryComesBefore()` 取代了原来"`if (a.isDir != b.isDir) return a.isDir;`"的写法，

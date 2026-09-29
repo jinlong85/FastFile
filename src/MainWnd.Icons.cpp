@@ -1,4 +1,4 @@
-// FastFile - Shell icon and thumbnail extraction, caches, worker thread
+﻿// FastFile - Shell icon and thumbnail extraction, caches, worker thread
 // Implements CMainWnd members moved out of the original monolithic MainWnd.cpp.
 // Behaviour is unchanged; declarations live in MainWnd.h.
 
@@ -856,31 +856,19 @@ enum CommandIcon {
     CmdIconShare, CmdIconDelete, CmdIconSort, CmdIconView, CmdIconMore
 };
 
-// Command-bar palette (sampled from the Windows 11 Explorer command bar): a light grey
-// outline with a light blue accent, a darker grey + strong accent blue for the sort
-// arrows, and near-black dots for the "more" button.
-constexpr Gdiplus::ARGB kCmdGray = 0xFFC2C2C2;
-constexpr Gdiplus::ARGB kCmdBlue = 0xFFA3CEEF;
-constexpr Gdiplus::ARGB kCmdDarkGray = 0xFF555555;
-constexpr Gdiplus::ARGB kCmdAccent = 0xFF0078D4;
-constexpr Gdiplus::ARGB kCmdInk = 0xFF1B1B1B;
-
-// Disabled commands fade towards the toolbar surface, the way Explorer dims the icons that
-// need a selection instead of hiding them.
-Gdiplus::ARGB DimCommandColor(Gdiplus::ARGB c)
-{
-    const Gdiplus::ARGB bg = 0xFFF3F3F3;
-    const float t = 0.62f;
-    auto mix = [t](BYTE v, BYTE b) {
-        return static_cast<BYTE>(v + (static_cast<float>(b) - v) * t);
-    };
-    const BYTE a = static_cast<BYTE>((c >> 24) & 0xFF);
-    const BYTE r = static_cast<BYTE>((c >> 16) & 0xFF);
-    const BYTE g = static_cast<BYTE>((c >> 8) & 0xFF);
-    const BYTE b = static_cast<BYTE>(c & 0xFF);
-    return (a << 24) | (mix(r, (bg >> 16) & 0xFF) << 16)
-        | (mix(g, (bg >> 8) & 0xFF) << 8) | mix(b, bg & 0xFF);
-}
+// Command-bar palettes, sampled from the two Windows 11 Explorer command-bar states:
+//  - enabled / "lit":   dark grey line art (#555555) with a strong blue accent (#0078D4)
+//  - disabled / dimmed: light grey (#C2C2C2) with a pale blue (#A3CEEF)
+// `soft` is the lighter secondary stroke (clipboard sheet, bin slots); `ink` is used for the
+// near-black "more" dots, which Explorer always draws dark.
+struct CmdPalette {
+    Gdiplus::ARGB outline;
+    Gdiplus::ARGB accent;
+    Gdiplus::ARGB soft;
+    Gdiplus::ARGB ink;
+};
+const CmdPalette kCmdLit = { 0xFF555555, 0xFF0078D4, 0xFFAAAAAA, 0xFF1B1B1B };
+const CmdPalette kCmdDim = { 0xFFC2C2C2, 0xFFA3CEEF, 0xFFE1E1E1, 0xFFC2C2C2 };
 
 // Icons are authored on a 20x20 grid and scaled to the requested pixel size.
 void DrawCommandIcon(Gdiplus::Graphics& g, int kind, float px, bool dim)
@@ -890,10 +878,10 @@ void DrawCommandIcon(Gdiplus::Graphics& g, int kind, float px, bool dim)
     auto X = [s](float v) { return v * s; };
     const float w = (std::max)(1.0f, px / 12.0f);   // ~2px on a 24px icon
     const float corner = 2.0f;                      // rounded-rect radius on the grid
-    auto col = [dim](ARGB c) { return dim ? DimCommandColor(c) : c; };
+    const CmdPalette pal = dim ? kCmdDim : kCmdLit;
 
     auto stroke = [&](ARGB color, float x1, float y1, float x2, float y2) {
-        Pen p(Color(col(color)), w);
+        Pen p(Color(color), w);
         p.SetStartCap(LineCapRound);
         p.SetEndCap(LineCapRound);
         g.DrawLine(&p, X(x1), X(y1), X(x2), X(y2));
@@ -902,7 +890,7 @@ void DrawCommandIcon(Gdiplus::Graphics& g, int kind, float px, bool dim)
         PointF pts[8] = {};
         for (int i = 0; i < count && i < 8; ++i)
             pts[i] = PointF(X(xy[i * 2]), X(xy[i * 2 + 1]));
-        Pen p(Color(col(color)), w);
+        Pen p(Color(color), w);
         p.SetStartCap(LineCapRound);
         p.SetEndCap(LineCapRound);
         p.SetLineJoin(LineJoinRound);
@@ -916,7 +904,7 @@ void DrawCommandIcon(Gdiplus::Graphics& g, int kind, float px, bool dim)
         path.AddArc(X(r) - d, X(b) - d, d, d, 0, 90);
         path.AddArc(X(l), X(b) - d, d, d, 90, 90);
         path.CloseFigure();
-        Pen p(Color(col(color)), w);
+        Pen p(Color(color), w);
         p.SetLineJoin(LineJoinRound);
         g.DrawPath(&p, &path);
     };
@@ -925,80 +913,77 @@ void DrawCommandIcon(Gdiplus::Graphics& g, int kind, float px, bool dim)
         const float x = X(cx) - d / 2.0f;
         const float y = X(cy) - d / 2.0f;
         if (filled) {
-            SolidBrush brush{ Color(col(color)) };
+            SolidBrush brush{ Color(color) };
             g.FillEllipse(&brush, (INT)x, (INT)y, (INT)d, (INT)d);
         } else {
-            Pen p(Color(col(color)), w);
+            Pen p(Color(color), w);
             g.DrawEllipse(&p, x, y, d, d);
         }
     };
 
     switch (kind) {
     case CmdIconNew:      // grey ring + blue plus
-        ring(kCmdGray, 10, 10, 8.2f, false);
-        stroke(kCmdBlue, 10, 6.0f, 10, 14.0f);
-        stroke(kCmdBlue, 6.0f, 10, 14.0f, 10);
+        ring(pal.outline, 10, 10, 8.2f, false);
+        stroke(pal.accent, 10, 6.0f, 10, 14.0f);
+        stroke(pal.accent, 6.0f, 10, 14.0f, 10);
         break;
     case CmdIconCut:      // grey blades + blue handles
-        stroke(kCmdGray, 5.2f, 3.4f, 12.3f, 13.0f);
-        stroke(kCmdGray, 14.8f, 3.4f, 7.7f, 13.0f);
-        ring(kCmdBlue, 5.6f, 15.4f, 2.5f, false);
-        ring(kCmdBlue, 14.4f, 15.4f, 2.5f, false);
+        stroke(pal.outline, 5.2f, 3.4f, 12.3f, 13.0f);
+        stroke(pal.outline, 14.8f, 3.4f, 7.7f, 13.0f);
+        ring(pal.accent, 5.6f, 15.4f, 2.5f, false);
+        ring(pal.accent, 14.4f, 15.4f, 2.5f, false);
         break;
     case CmdIconCopy:     // grey sheet behind, blue sheet in front
-        box(kCmdGray, 3.0f, 2.6f, 12.6f, 12.2f);
-        box(kCmdBlue, 7.4f, 7.8f, 17.0f, 17.4f);
+        box(pal.outline, 3.0f, 2.6f, 12.6f, 12.2f);
+        box(pal.accent, 7.4f, 7.8f, 17.0f, 17.4f);
         break;
     case CmdIconPaste:    // grey clipboard + blue sheet
-        box(kCmdGray, 3.8f, 4.4f, 15.6f, 18.0f);
-        box(kCmdGray, 7.4f, 2.4f, 12.0f, 6.2f);
-        box(kCmdBlue, 6.4f, 7.6f, 13.0f, 15.6f);
+        box(pal.outline, 3.8f, 4.4f, 15.6f, 18.0f);
+        box(pal.outline, 7.4f, 2.4f, 12.0f, 6.2f);
+        box(pal.accent, 6.4f, 7.6f, 13.0f, 15.6f);
         break;
     case CmdIconRename:   // grey box + blue "A" and caret
-        box(kCmdGray, 2.6f, 4.4f, 15.0f, 15.6f);
-        stroke(kCmdBlue, 6.4f, 13.4f, 9.0f, 6.6f);
-        stroke(kCmdBlue, 11.6f, 13.4f, 9.0f, 6.6f);
-        stroke(kCmdBlue, 7.5f, 10.9f, 10.5f, 10.9f);
-        stroke(kCmdBlue, 17.2f, 2.6f, 17.2f, 17.4f);
-        stroke(kCmdBlue, 16.0f, 17.4f, 18.4f, 17.4f);
+        box(pal.outline, 2.6f, 4.4f, 15.0f, 15.6f);
+        stroke(pal.accent, 6.4f, 13.4f, 9.0f, 6.6f);
+        stroke(pal.accent, 11.6f, 13.4f, 9.0f, 6.6f);
+        stroke(pal.accent, 7.5f, 10.9f, 10.5f, 10.9f);
+        stroke(pal.accent, 17.2f, 2.6f, 17.2f, 17.4f);
+        stroke(pal.accent, 16.0f, 17.4f, 18.4f, 17.4f);
         break;
     case CmdIconShare: {  // grey box + blue arrow leaving it
-        box(kCmdGray, 3.0f, 6.8f, 13.4f, 17.4f);
+        box(pal.outline, 3.0f, 6.8f, 13.4f, 17.4f);
         const float curve[] = { 7.0f, 12.4f, 10.4f, 9.2f, 13.4f, 6.4f, 16.6f, 4.4f };
-        poly(kCmdBlue, curve, 4);
-        stroke(kCmdBlue, 12.4f, 4.0f, 16.9f, 4.2f);
-        stroke(kCmdBlue, 16.7f, 4.2f, 16.6f, 8.7f);
+        poly(pal.accent, curve, 4);
+        stroke(pal.accent, 12.4f, 4.0f, 16.9f, 4.2f);
+        stroke(pal.accent, 16.7f, 4.2f, 16.6f, 8.7f);
         break; }
     case CmdIconDelete:   // light grey bin
-        stroke(kCmdGray, 3.6f, 6.4f, 16.4f, 6.4f);
-        stroke(kCmdGray, 7.8f, 6.4f, 8.6f, 3.4f);
-        stroke(kCmdGray, 8.6f, 3.4f, 11.4f, 3.4f);
-        stroke(kCmdGray, 11.4f, 3.4f, 12.2f, 6.4f);
-        stroke(kCmdGray, 5.4f, 6.4f, 6.4f, 17.6f);
-        stroke(kCmdGray, 14.6f, 6.4f, 13.6f, 17.6f);
-        stroke(kCmdGray, 6.4f, 17.6f, 13.6f, 17.6f);
-        stroke(kCmdGray, 8.6f, 9.6f, 8.6f, 14.6f);
-        stroke(kCmdGray, 11.4f, 9.6f, 11.4f, 14.6f);
+        stroke(pal.outline, 3.6f, 6.4f, 16.4f, 6.4f);
+        stroke(pal.outline, 7.8f, 6.4f, 8.6f, 3.4f);
+        stroke(pal.outline, 8.6f, 3.4f, 11.4f, 3.4f);
+        stroke(pal.outline, 11.4f, 3.4f, 12.2f, 6.4f);
+        stroke(pal.outline, 5.4f, 6.4f, 6.4f, 17.6f);
+        stroke(pal.outline, 14.6f, 6.4f, 13.6f, 17.6f);
+        stroke(pal.outline, 6.4f, 17.6f, 13.6f, 17.6f);
+        stroke(pal.soft, 8.6f, 9.6f, 8.6f, 14.6f);
+        stroke(pal.soft, 11.4f, 9.6f, 11.4f, 14.6f);
         break;
     case CmdIconSort:     // dark grey up arrow + accent blue down arrow
-        stroke(kCmdDarkGray, 6.4f, 16.6f, 6.4f, 4.6f);
-        stroke(kCmdDarkGray, 3.4f, 7.8f, 6.4f, 4.2f);
-        stroke(kCmdDarkGray, 9.4f, 7.8f, 6.4f, 4.2f);
-        stroke(kCmdAccent, 13.6f, 3.4f, 13.6f, 15.4f);
-        stroke(kCmdAccent, 10.6f, 12.2f, 13.6f, 15.8f);
-        stroke(kCmdAccent, 16.6f, 12.2f, 13.6f, 15.8f);
+        stroke(pal.outline, 6.4f, 16.6f, 6.4f, 4.6f);
+        stroke(pal.outline, 3.4f, 7.8f, 6.4f, 4.2f);
+        stroke(pal.outline, 9.4f, 7.8f, 6.4f, 4.2f);
+        stroke(pal.accent, 13.6f, 3.4f, 13.6f, 15.4f);
+        stroke(pal.accent, 10.6f, 12.2f, 13.6f, 15.8f);
+        stroke(pal.accent, 16.6f, 12.2f, 13.6f, 15.8f);
         break;
-    case CmdIconView:     // grey tile grid
-        box(kCmdGray, 3.2f, 3.2f, 8.4f, 8.4f);
-        stroke(kCmdGray, 10.8f, 4.0f, 16.8f, 4.0f);
-        stroke(kCmdGray, 10.8f, 7.6f, 16.8f, 7.6f);
-        box(kCmdGray, 3.2f, 11.6f, 8.4f, 16.8f);
-        stroke(kCmdGray, 10.8f, 14.2f, 16.8f, 14.2f);
+    case CmdIconView:     // Explorer's 查看 glyph: a screen with a small stand
+        box(pal.outline, 2.6f, 3.4f, 17.4f, 14.6f);
+        stroke(pal.outline, 6.6f, 17.0f, 13.4f, 17.0f);
         break;
     default:                        // more: three ink dots
-        ring(kCmdInk, 4.4f, 10, 1.5f, true);
-        ring(kCmdInk, 10, 10, 1.5f, true);
-        ring(kCmdInk, 15.6f, 10, 1.5f, true);
+        ring(pal.ink, 4.4f, 10, 1.5f, true);
+        ring(pal.ink, 10, 10, 1.5f, true);
+        ring(pal.ink, 15.6f, 10, 1.5f, true);
         break;
     }
 }
