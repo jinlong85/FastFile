@@ -280,6 +280,11 @@ void CMainWnd::ActivateTab(int index)
     RefreshListing();
     if (!m_suspendTreeSync)
         SyncTreeToPath(m_currentPath);
+    // A tab switch changes the source path without going through NavigateToNow().
+    // Refresh the path-derived UI here as well; otherwise the old breadcrumb and preview
+    // can remain on screen while the new tab's file view has already been rendered.
+    RebuildBreadcrumb();
+    ClearPreview();
     UpdateFavoritesHighlight();
     UpdateNavButtons();
 }
