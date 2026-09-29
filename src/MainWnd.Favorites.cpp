@@ -65,7 +65,27 @@ void CMainWnd::ApplyLeftNavSplitterHeight(int designHeight)
     }
 }
 
-// Keep the built-in Quick Access rows visually centred in their resizable region.
+// Grab band for the 快速访问 / 此电脑 divider. DuiLib's sep band only covers the container's
+// last few pixels, so the visible line (the divider host below it) was not draggable at all;
+// this band straddles the boundary like the pane dividers do.
+bool CMainWnd::HitTestLeftNavDivider(int clientX, int clientY) const
+{
+    if (!m_pLeftQuick || !m_pLeftQuick->IsVisible()) return false;
+    const RECT r = m_pLeftQuick->GetPos();
+    if (r.bottom <= r.top || r.right <= r.left) return false;
+    // DuiLib lays the next sibling out below the child's padding (CVerticalLayoutUI::SetPos
+    // advances by height + padding.top + padding.bottom), and UpdateLeftQuickAccessSpacing
+    // centres the rows with half the slack top and bottom. The visible divider therefore sits
+    // padding.bottom below the control rect, not at r.bottom - a band around r.bottom missed
+    // the line completely once the block was taller than its content.
+    const RECT pad = m_pLeftQuick->GetPadding();
+    const int boundary = r.bottom + pad.bottom;
+    const int band = DpiScale(12);
+    if (clientY < boundary - band || clientY > boundary + band) return false;
+    return clientX >= r.left && clientX < r.right;
+}
+
+// Keep the Quick Access rows visually centred in their resizable region.
 // In the old top-aligned layout all spare height accumulated below the last item,
 // so “此电脑” looked glued to the top while the final folder floated far above the
 // section divider. This also adapts when users add their own quick-access folders.
@@ -145,6 +165,8 @@ void CMainWnd::LoadLeftNavSplitter()
                 pos = eol + 1;
                 if (line.compare(0, 16, L"LeftQuickHeight=") == 0)
                     h = _wtoi(line.c_str() + 16);
+                else if (line.compare(0, 14, L"QuickFitRows2=") == 0)
+                    m_quickFitRows = _wtoi(line.c_str() + 14);
                 else if (line.compare(0, 11, L"LeftPanelW=") == 0)
                     leftW = _wtoi(line.c_str() + 11);
                 else if (line.compare(0, 9, L"PreviewW=") == 0)
@@ -172,9 +194,10 @@ void CMainWnd::SaveLeftNavSplitter() const
         return;
     unsigned char bom[2] = { 0xFF, 0xFE };
     fwrite(bom, 1, 2, fp);
-    wchar_t buf[128];
-    swprintf_s(buf, L"[LeftNav]\nLeftQuickHeight=%d\nLeftPanelW=%d\nPreviewW=%d\n",
-        m_leftQuickDesignH, m_leftPanelDesignW, m_previewPaneDesignW);
+    wchar_t buf[160];
+    swprintf_s(buf,
+        L"[LeftNav]\nLeftQuickHeight=%d\nLeftPanelW=%d\nPreviewW=%d\nQuickFitRows2=%d\n",
+        m_leftQuickDesignH, m_leftPanelDesignW, m_previewPaneDesignW, m_quickFitRows);
     fwrite(buf, sizeof(wchar_t), wcslen(buf), fp);
     fclose(fp);
 }
@@ -741,12 +764,28 @@ void CMainWnd::RebuildLeftQuickRows()
         m_pLeftQuickRows->Add(btn);
     }
 
-    const int minimum = UiTokens::LeftQuickMinH
-        + static_cast<int>(m_quickRows.size()) * UiTokens::NavRowH;
+    // DuiLib *adds* a child's padding to the space it consumes in a vertical layout
+    // (CVerticalLayoutUI::SetPos: cyFixed += sz.cy + padding.top + padding.bottom), and
+    // UpdateLeftQuickAccessSpacing puts half the slack above and half below. The height the
+    // 快速访问 block actually occupies is therefore 2 * fixed - content, so the minimum has to
+    // leave just a small inset around the rows instead of one extra row per pin.
+    const int contentH = static_cast<int>(m_quickRows.size()) * UiTokens::NavRowH;
+    const int minimum = (std::max)(UiTokens::LeftQuickMinH, contentH + 2 * UiTokens::SpaceXs);
     if (m_pLeftQuick)
         m_pLeftQuick->SetMinHeight(DpiScale(minimum));
-    if (m_leftQuickDesignH < minimum)
+
+    // Size the block to its content the first time we see a given row set (fresh install, a
+    // new pin, a removed pin). The old code recomputed an inflated minimum every layout pass,
+    // which both looked far too tall and pinned the splitter at that height. After this one
+    // fit the user's own drag is kept across launches.
+    const int rowCount = static_cast<int>(m_quickRows.size());
+    if (m_quickFitRows != rowCount) {
+        m_quickFitRows = rowCount;
+        ApplyLeftNavSplitterHeight(minimum);   // compact: rows plus a small inset
+        SaveLeftNavSplitter();
+    } else if (m_leftQuickDesignH < minimum) {
         ApplyLeftNavSplitterHeight(minimum);
+    }
     UpdateLeftQuickAccessSpacing();
     UpdateQuickRowHighlight();
     m_pLeftQuickRows->NeedUpdate();

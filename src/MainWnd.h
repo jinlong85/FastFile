@@ -299,7 +299,12 @@ private:
     // Command-bar icons: two-tone line art (grey outline + light blue accent) drawn with
     // GDI+ so the toolbar matches the Explorer command bar without shipping icon assets.
     // The icon ids live in MainWnd.Icons.cpp.
-    std::wstring GetCommandIconBmp(int kind, int px);
+    std::wstring GetCommandIconBmp(int kind, int px, bool dim);
+    // Applies the command-bar bitmap for a button, picking the dimmed variant while the
+    // button is disabled (Explorer greys out the commands that need a selection).
+    void ApplyCommandIcon(CControlUI* btn, int kind, bool withLabel);
+    // Enables/disables + repaints the selection-dependent command-bar buttons.
+    void UpdateCommandBarState();
     // Content thumbs only; never SIIGBF_ICONONLY (folders/drives use HICON).
     static bool ExtractShellItemImage(const std::wstring& path, int cx, int cy, const std::wstring& pngPath);
     static bool ExtractShellIconSized(const std::wstring& path, bool isDir, int cx, const std::wstring& bmpPath);
@@ -511,6 +516,9 @@ private:
     void SaveLeftNavSplitter() const;
     void ApplyLeftNavSplitterHeight(int designHeight);
     void CaptureLeftNavSplitterIfChanged();
+    // Generous grab band around the 快速访问 / 此电脑 boundary (DuiLib's own sep band is only
+    // the last few pixels of the container, so the visible divider line was not draggable).
+    bool HitTestLeftNavDivider(int clientX, int clientY) const;
     void UpdateLeftQuickAccessSpacing();
     // Sidebar / preview pane widths (design units, persisted in left_nav.ini)
     void ApplyPaneWidths(int leftDesignW, int previewDesignW);
@@ -602,6 +610,10 @@ private:
     CVerticalLayoutUI* m_pIconScroll = nullptr;
     CTileLayoutUI* m_pIconTiles = nullptr;
     int m_leftQuickDesignH = UiTokens::LeftQuickDefaultH; // @96 DPI, persisted
+    int m_quickFitRows = -1;                              // rows the block was auto-fitted for
+    bool m_leftNavDragging = false;
+    int m_leftNavDragStartY = 0;
+    int m_leftNavDragStartH = 0;
     int m_leftPanelDesignW = 220;                         // sidebar width @96 DPI
     int m_previewPaneDesignW = UiTokens::PreviewPaneW;    // preview width @96 DPI
     int m_thisPcTilesLayoutW = 0;                         // physical central viewport width

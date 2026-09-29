@@ -250,6 +250,32 @@ Windows 11 样式）：两条 `#FFF7F7F7` 轨道紧挨着会连成一条 36 设�
 `ApplyChromeShellIcons` 的 `applyFav` 和 `RebuildLeftPinnedFavorites` 都调它。
 实测两条行的 rect 都是 `36..327`、图标 ink 都从 x=49 起，选中高亮也等宽。
 
+### 快速访问区高度 + 可拖动的分隔线
+两个坑叠在一起：
+
+1. `CVerticalLayoutUI::SetPos` 把**子控件自己的 padding 也算进占位空间**
+   （`cyFixed += sz.cy + padding.top + padding.bottom`），而 `UpdateLeftQuickAccessSpacing`
+   又把剩余空间对半分到上下 padding。于是快速访问块实际占的高度是
+   `2 * 固定高度 - 内容高度`：固定高度 208 设计像素 → 实际占 256。旧代码的
+   `LeftQuickMinH + 行数 * NavRowH`（内置四项被算了两遍）又把最小高度推到 320，块被撑得很高，
+   而且**已经等于最小高度，往上拖也缩不动**——所以看起来“太高又调不了”。
+   现在最小/自动高度都用 `max(LeftQuickMinH, 行数 * NavRowH + 2 * SpaceXs)`，
+   并且只在**行数变化时**做一次自动收缩（`QuickFitRows2` 记在 left_nav.ini 里，
+   换了键名是为了让旧文件重新适配一次），之后保留用户拖动的高度。
+2. DuiLib 自带的 sep 热区只有容器最后几个像素，而可见的分隔线（`left_nav_divider_host`）
+   在**控件矩形之下 `padding.bottom`** 处，所以那条线根本抓不到。现在自己做命中测试
+   （`HitTestLeftNavDivider`，边界 = `rect.bottom + padding.bottom` 上下各 12 设计像素），
+   拖动时高度按 `Δy / 2` 变化，保证分隔线 1:1 跟手；光标为 `IDC_SIZENS`。
+
+### 命令栏按钮的可用/不可用两态
+`UpdateCommandBarState()`（在 `UpdateListingStatusTip()` 与 `ApplyCopyUiState()` 里调用）按当前
+选择设置 `SetEnabled`：剪切/复制/共享/删除需要选中、重命名需要只选中一个、粘贴需要剪贴板
+非空且没有复制任务；新建/排序/查看/更多 始终可用。
+图标用 `GetCommandIconBmp(kind, px, dim)` 出两套位图（dim = 把原色向工具栏底色
+`#F3F3F3` 混合 62%），`ApplyCommandIcon()` 按 `IsEnabled()` 选图，所以按钮禁用时图标变灰暗、
+可用时立刻点亮——和资源管理器一致（DuiLib 的 disabled 状态本来不会替换 foreimage，
+必须自己换图）。
+
 ### 关闭多个标签页时的确认框
 `WM_CLOSE` 里先判 `m_tabs.size() > 1`，走 `ConfirmCloseWithMultipleTabs()`，用户选“取消”
 就 `return 0` 把消息吃掉（窗口与标签页都保留），选“关闭”才 `m_closeConfirmed = true`

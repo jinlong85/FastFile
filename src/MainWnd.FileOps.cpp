@@ -467,14 +467,13 @@ bool CMainWnd::PromptText(HWND owner, const wchar_t* title, const wchar_t* promp
 void CMainWnd::ApplyCopyUiState()
 {
     const bool running = m_copyRunning.load();
-    if (m_pBtnPaste)
-        m_pBtnPaste->SetEnabled(!running && !m_clipboard.empty());
-    if (m_pBtnCopy)
-        m_pBtnCopy->SetEnabled(true);
     if (m_pBtnCancelCopy) {
         m_pBtnCancelCopy->SetVisible(running);
         m_pBtnCancelCopy->SetEnabled(running);
     }
+    // The command bar buttons (cut/copy/paste/rename/share/delete) follow the selection and
+    // clipboard state instead of being hard-wired here.
+    UpdateCommandBarState();
 }
 
 void CMainWnd::StopCopyThread(bool wait)

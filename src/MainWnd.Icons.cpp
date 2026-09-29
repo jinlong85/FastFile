@@ -865,17 +865,35 @@ constexpr Gdiplus::ARGB kCmdDarkGray = 0xFF555555;
 constexpr Gdiplus::ARGB kCmdAccent = 0xFF0078D4;
 constexpr Gdiplus::ARGB kCmdInk = 0xFF1B1B1B;
 
+// Disabled commands fade towards the toolbar surface, the way Explorer dims the icons that
+// need a selection instead of hiding them.
+Gdiplus::ARGB DimCommandColor(Gdiplus::ARGB c)
+{
+    const Gdiplus::ARGB bg = 0xFFF3F3F3;
+    const float t = 0.62f;
+    auto mix = [t](BYTE v, BYTE b) {
+        return static_cast<BYTE>(v + (static_cast<float>(b) - v) * t);
+    };
+    const BYTE a = static_cast<BYTE>((c >> 24) & 0xFF);
+    const BYTE r = static_cast<BYTE>((c >> 16) & 0xFF);
+    const BYTE g = static_cast<BYTE>((c >> 8) & 0xFF);
+    const BYTE b = static_cast<BYTE>(c & 0xFF);
+    return (a << 24) | (mix(r, (bg >> 16) & 0xFF) << 16)
+        | (mix(g, (bg >> 8) & 0xFF) << 8) | mix(b, bg & 0xFF);
+}
+
 // Icons are authored on a 20x20 grid and scaled to the requested pixel size.
-void DrawCommandIcon(Gdiplus::Graphics& g, int kind, float px)
+void DrawCommandIcon(Gdiplus::Graphics& g, int kind, float px, bool dim)
 {
     using namespace Gdiplus;
     const float s = px / 20.0f;
     auto X = [s](float v) { return v * s; };
     const float w = (std::max)(1.0f, px / 12.0f);   // ~2px on a 24px icon
     const float corner = 2.0f;                      // rounded-rect radius on the grid
+    auto col = [dim](ARGB c) { return dim ? DimCommandColor(c) : c; };
 
     auto stroke = [&](ARGB color, float x1, float y1, float x2, float y2) {
-        Pen p(Color(color), w);
+        Pen p(Color(col(color)), w);
         p.SetStartCap(LineCapRound);
         p.SetEndCap(LineCapRound);
         g.DrawLine(&p, X(x1), X(y1), X(x2), X(y2));
@@ -884,7 +902,7 @@ void DrawCommandIcon(Gdiplus::Graphics& g, int kind, float px)
         PointF pts[8] = {};
         for (int i = 0; i < count && i < 8; ++i)
             pts[i] = PointF(X(xy[i * 2]), X(xy[i * 2 + 1]));
-        Pen p(Color(color), w);
+        Pen p(Color(col(color)), w);
         p.SetStartCap(LineCapRound);
         p.SetEndCap(LineCapRound);
         p.SetLineJoin(LineJoinRound);
@@ -898,7 +916,7 @@ void DrawCommandIcon(Gdiplus::Graphics& g, int kind, float px)
         path.AddArc(X(r) - d, X(b) - d, d, d, 0, 90);
         path.AddArc(X(l), X(b) - d, d, d, 90, 90);
         path.CloseFigure();
-        Pen p(Color(color), w);
+        Pen p(Color(col(color)), w);
         p.SetLineJoin(LineJoinRound);
         g.DrawPath(&p, &path);
     };
@@ -907,10 +925,10 @@ void DrawCommandIcon(Gdiplus::Graphics& g, int kind, float px)
         const float x = X(cx) - d / 2.0f;
         const float y = X(cy) - d / 2.0f;
         if (filled) {
-            SolidBrush brush{ Color(color) };
+            SolidBrush brush{ Color(col(color)) };
             g.FillEllipse(&brush, (INT)x, (INT)y, (INT)d, (INT)d);
         } else {
-            Pen p(Color(color), w);
+            Pen p(Color(col(color)), w);
             g.DrawEllipse(&p, x, y, d, d);
         }
     };
@@ -987,12 +1005,12 @@ void DrawCommandIcon(Gdiplus::Graphics& g, int kind, float px)
 
 } // namespace
 
-std::wstring CMainWnd::GetCommandIconBmp(int kind, int px)
+std::wstring CMainWnd::GetCommandIconBmp(int kind, int px, bool dim)
 {
     if (px < 8) px = 8;
     if (px > 128) px = 128;
     wchar_t keybuf[64] = {};
-    swprintf_s(keybuf, L"cmdi:%d@%d", kind, px);
+    swprintf_s(keybuf, L"cmdi:%d@%d%s", kind, px, dim ? L"#dim" : L"");
     const std::wstring key = keybuf;
     {
         std::lock_guard<std::mutex> lock(m_iconCacheMutex);
@@ -1005,7 +1023,8 @@ std::wstring CMainWnd::GetCommandIconBmp(int kind, int px)
 
     size_t h = std::hash<std::wstring>{}(key);
     wchar_t name[96] = {};
-    swprintf_s(name, L"cmd_%08X_%d_%d_v1.png", static_cast<unsigned>(h & 0xFFFFFFFFu), kind, px);
+    swprintf_s(name, L"cmd_%08X_%d_%d_%d_v1.png", static_cast<unsigned>(h & 0xFFFFFFFFu),
+        kind, px, dim ? 1 : 0);
     const std::wstring pngPath = m_iconCacheDir + name;
     if (::PathFileExistsW(pngPath.c_str())) {
         std::lock_guard<std::mutex> lock(m_iconCacheMutex);
@@ -1021,7 +1040,7 @@ std::wstring CMainWnd::GetCommandIconBmp(int kind, int px)
             Graphics g(&bmp);
             g.SetSmoothingMode(SmoothingModeAntiAlias);
             g.SetPixelOffsetMode(PixelOffsetModeHalf);
-            DrawCommandIcon(g, kind, static_cast<float>(px));
+            DrawCommandIcon(g, kind, static_cast<float>(px), dim);
             CLSID clsidPng = {};
             ok = GetPngEncoderClsid(&clsidPng)
                 && bmp.Save(pngPath.c_str(), &clsidPng, nullptr) == Ok;
@@ -1033,6 +1052,60 @@ std::wstring CMainWnd::GetCommandIconBmp(int kind, int px)
         m_iconCache[key] = pngPath;
     }
     return pngPath;
+}
+
+// Places a command-bar bitmap on a button. Icon-only buttons centre the bitmap; label
+// buttons keep the icon left of the text. While the button is disabled the dimmed variant is
+// used, so the bar reads like Explorer (commands light up once they apply).
+void CMainWnd::ApplyCommandIcon(CControlUI* c, int kind, bool withLabel)
+{
+    if (!c) return;
+    const int px = DpiScale(UiTokens::ToolbarGlyphPx);
+    const std::wstring bmp = GetCommandIconBmp(kind, px, !c->IsEnabled());
+    if (bmp.empty()) return;
+    const int bw = c->GetFixedWidth();
+    int bh = c->GetFixedHeight();
+    if (bh <= 0) bh = DpiScale(UiTokens::CmdBtnH);
+    const int padL = DpiScale(UiTokens::ToolbarIconPad);
+    int x = withLabel ? padL : (bw > 0 ? (bw - px) / 2 : padL);
+    if (x < 0) x = 0;
+    int y = (bh - px) / 2;
+    if (y < 0) y = 0;
+    ApplyControlForeIcon(c, bmp, px, x, y, false);
+    if (withLabel) {
+        CDuiString tp;
+        tp.Format(_T("%d,0,%d,0"),
+            padL + px + DpiScale(UiTokens::SpaceXs), DpiScale(UiTokens::SpaceSm));
+        c->SetAttribute(_T("textpadding"), tp.GetData());
+    } else {
+        c->SetAttribute(_T("textpadding"), _T("0,0,0,0"));
+    }
+    c->Invalidate();
+}
+
+// Explorer-style command bar: 剪切 / 复制 / 粘贴 / 重命名 / 共享 / 删除 are enabled only when
+// the action applies (a selection, exactly one item for 重命名, clipboard content for 粘贴)
+// and are drawn dimmed while they are not. 新建 / 排序 / 查看 / 更多 stay available.
+void CMainWnd::UpdateCommandBarState()
+{
+    std::vector<ClipboardItem> sel;
+    CollectSelectedItems(sel);
+    const bool hasSel = !sel.empty();
+    const bool single = sel.size() == 1;
+    const bool running = m_copyRunning.load();
+
+    auto state = [&](LPCTSTR name, int kind, bool enabled) {
+        CControlUI* c = m_PaintManager.FindControl(name);
+        if (!c) return;
+        c->SetEnabled(enabled);
+        ApplyCommandIcon(c, kind, false);
+    };
+    state(_T("btn_cut"), CmdIconCut, hasSel && !running);
+    state(_T("btn_copy"), CmdIconCopy, hasSel && !running);
+    state(_T("btn_paste"), CmdIconPaste, !running && !m_clipboard.empty());
+    state(_T("btn_rename"), CmdIconRename, single && !running);
+    state(_T("btn_share"), CmdIconShare, hasSel && !running);
+    state(_T("btn_delete"), CmdIconDelete, hasSel && !running);
 }
 
 void CMainWnd::ApplyChromeShellIcons()
@@ -1071,33 +1144,10 @@ void CMainWnd::ApplyChromeShellIcons()
 
     // Command bar (新建 / 剪切 / … / 更多): two-tone line icons - a light grey outline with a
     // light blue accent - drawn by GetCommandIconBmp so the bar matches the Explorer command
-    // bar. Icon-only buttons centre the bitmap; label buttons keep the icon left of the text.
+    // bar. ApplyCommandIcon also picks the dimmed variant while a button is disabled.
     auto applyCmdIcon = [&](LPCTSTR name, int kind, bool withLabel) {
-        CControlUI* c = m_PaintManager.FindControl(name);
-        if (!c) return;
-        const int px = DpiScale(UiTokens::ToolbarGlyphPx);
-        const std::wstring bmp = GetCommandIconBmp(kind, px);
-        if (bmp.empty()) return;
-        const int bw = c->GetFixedWidth();
-        int bh = c->GetFixedHeight();
-        if (bh <= 0) bh = DpiScale(UiTokens::CmdBtnH);
-        const int padL = DpiScale(UiTokens::ToolbarIconPad);
-        int x = withLabel ? padL : (bw > 0 ? (bw - px) / 2 : padL);
-        if (x < 0) x = 0;
-        int y = (bh - px) / 2;
-        if (y < 0) y = 0;
-        ApplyControlForeIcon(c, bmp, px, x, y, false);
-        if (withLabel) {
-            CDuiString tp;
-            tp.Format(_T("%d,0,%d,0"),
-                padL + px + DpiScale(UiTokens::SpaceXs), DpiScale(UiTokens::SpaceSm));
-            c->SetAttribute(_T("textpadding"), tp.GetData());
-        } else {
-            c->SetAttribute(_T("textpadding"), _T("0,0,0,0"));
-        }
-        c->Invalidate();
+        ApplyCommandIcon(m_PaintManager.FindControl(name), kind, withLabel);
     };
-
     // Windows built-in Segoe MDL2 glyphs keep the command bar visually aligned
     // with Explorer without copying icons or using legacy coloured shell32 art.
     applyFluent(_T("btn_back"), 0xE0A6);

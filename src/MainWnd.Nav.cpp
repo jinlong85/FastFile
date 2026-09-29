@@ -356,6 +356,9 @@ void CMainWnd::StoreListingCache(std::vector<DirEntry> dirs, std::vector<DirEntr
 
 void CMainWnd::UpdateListingStatusTip()
 {
+    // Selection changed: keep the Explorer-style command bar in sync (icons dim when the
+    // action does not apply yet).
+    UpdateCommandBarState();
     if (m_copyRunning.load())
         return;
     const int shown = static_cast<int>(m_listingDirs.size() + m_listingFiles.size());

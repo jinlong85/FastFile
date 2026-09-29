@@ -526,6 +526,24 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         // cursor turns into a left/right arrow there and the press starts a drag.
         const int px = (short)LOWORD(lParam);
         const int py = (short)HIWORD(lParam);
+        // Rows first: a press on a row is a click / reorder, never a divider drag.
+        const POINT quickPt = { px, py };
+        const int quickIdx = HitTestQuickRow(quickPt);
+        if (quickIdx >= 0) {
+            m_quickDragIndex = quickIdx;
+            m_quickDragActive = false;
+            m_quickDragStartY = py;
+            ::SetCapture(m_hWnd);
+            return 0;
+        }
+        // 快速访问 / 此电脑 divider: resizes the quick-access block (persisted).
+        if (HitTestLeftNavDivider(px, py) && m_pLeftQuick) {
+            m_leftNavDragging = true;
+            m_leftNavDragStartY = py;
+            m_leftNavDragStartH = m_pLeftQuick->GetFixedHeight();
+            ::SetCapture(m_hWnd);
+            return 0;
+        }
         const int pane = HitTestPaneDivider(px, py);
         if (pane != 0) {
             m_paneDragKind = pane;
@@ -545,17 +563,6 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             m_previewRailLastY = py;
             m_dragTracking = true;
             m_dragStartPt = { px, py };
-            ::SetCapture(m_hWnd);
-            return 0;
-        }
-        // Quick-access rows own their press: releasing without moving activates the row,
-        // dragging vertically reorders it (built-ins and pinned folders share one list).
-        const POINT quickPt = { px, py };
-        const int quickIdx = HitTestQuickRow(quickPt);
-        if (quickIdx >= 0) {
-            m_quickDragIndex = quickIdx;
-            m_quickDragActive = false;
-            m_quickDragStartY = py;
             ::SetCapture(m_hWnd);
             return 0;
         }
@@ -595,6 +602,21 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         }
         return 0;
     }
+    if (uMsg == WM_MOUSEMOVE && m_leftNavDragging && m_pLeftQuick) {
+        const int y = (short)HIWORD(lParam);
+        // The block's *occupied* height is 2 * fixed - contentHeight (DuiLib adds the padding
+        // on top of the fixed height), so half the cursor delta keeps the divider under the
+        // pointer instead of running away at double speed.
+        int h = m_leftNavDragStartH + (y - m_leftNavDragStartY) / 2;
+        const int minH = m_pLeftQuick->GetMinHeight();
+        const int maxH = m_pLeftQuick->GetMaxHeight();
+        if (minH > 0 && h < minH) h = minH;
+        if (maxH > 0 && h > maxH) h = maxH;
+        m_pLeftQuick->SetFixedHeight(h);
+        UpdateLeftQuickAccessSpacing();
+        m_pLeftQuick->NeedParentUpdate();
+        return 0;
+    }
     if (uMsg == WM_LBUTTONUP && m_quickDragIndex >= 0) {
         const int idx = m_quickDragIndex;
         const bool reordered = m_quickDragActive;
@@ -605,6 +627,12 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             SaveQuickAccess();      // keep the dragged order for the next launch
         else
             ActivateQuickRow(idx);  // plain click: open the folder / This PC
+        return 0;
+    }
+    if (uMsg == WM_LBUTTONUP && m_leftNavDragging) {
+        m_leftNavDragging = false;
+        ::ReleaseCapture();
+        CaptureLeftNavSplitterIfChanged();
         return 0;
     }
     if (uMsg == WM_MOUSEMOVE && m_previewRailGesture != 0
@@ -648,6 +676,10 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             ::SetCursor(::LoadCursor(nullptr, IDC_SIZEWE));
             return TRUE;
         }
+        if (m_leftNavDragging || HitTestLeftNavDivider(pt.x, pt.y)) {
+            ::SetCursor(::LoadCursor(nullptr, IDC_SIZENS));
+            return TRUE;
+        }
         if (HitTestPaneDivider(pt.x, pt.y) != 0) {
             ::SetCursor(::LoadCursor(nullptr, IDC_SIZEWE));
             return TRUE;
@@ -686,6 +718,7 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         m_previewRailGesture = 0;
         m_quickDragIndex = -1;
         m_quickDragActive = false;
+        m_leftNavDragging = false;
     }
     if (uMsg == WM_LBUTTONUP || uMsg == WM_RBUTTONDOWN) {
         m_dragTracking = false;
