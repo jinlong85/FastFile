@@ -184,7 +184,10 @@ void CMainWnd::ApplyPaneWidths(int leftDesignW, int previewDesignW)
 {
     if (leftDesignW < 150) leftDesignW = 150;
     if (leftDesignW > 520) leftDesignW = 520;
-    if (previewDesignW < 180) previewDesignW = 180;
+    // Keep saved pane widths consistent with the preview's XML minimum.  Older
+    // left_nav.ini files may contain the former 180px minimum, which is too narrow
+    // for the two-column metadata table.
+    if (previewDesignW < 260) previewDesignW = 260;
     if (previewDesignW > 760) previewDesignW = 760;
     m_leftPanelDesignW = leftDesignW;
     m_previewPaneDesignW = previewDesignW;
@@ -194,7 +197,7 @@ void CMainWnd::ApplyPaneWidths(int leftDesignW, int previewDesignW)
         m_pLeftPanel->SetFixedWidth(DpiScale(leftDesignW));
     }
     if (m_pPreviewPane) {
-        m_pPreviewPane->SetMinWidth(DpiScale(180));
+        m_pPreviewPane->SetMinWidth(DpiScale(260));
         m_pPreviewPane->SetMaxWidth(DpiScale(760));
         m_pPreviewPane->SetFixedWidth(DpiScale(previewDesignW));
     }
