@@ -400,19 +400,31 @@ void CMainWnd::UpdatePreviewForCurrentFolder()
     if (m_pPreviewTitle) m_pPreviewTitle->SetText(title.c_str());
 
     if (IsThisPcPath(m_currentPath)) {
-        SetPreviewMeta(L"此电脑", sizeSummary, L"—", L"—");
+        // Explorer's This PC details: the machine icon, 类型 = 此电脑, 包含 = N 个驱动器.
+        // No "7 个文件夹 · 0 个文件" and no folder icon here.
+        wchar_t drives[64] = {};
+        swprintf_s(drives, L"%d 个驱动器", static_cast<int>(m_listingDirs.size()));
+        if (CControlUI* lbl = m_PaintManager.FindControl(_T("preview_lbl_size")))
+            lbl->SetText(_T("包含"));
+        SetPreviewMeta(L"此电脑", drives, L"—", L"—");
     } else {
+        if (CControlUI* lbl = m_PaintManager.FindControl(_T("preview_lbl_size")))
+            lbl->SetText(_T("大小"));
         FillPreviewMetaFromPath(m_currentPath, true);
         if (m_pPreviewSize) m_pPreviewSize->SetText(sizeSummary.c_str());
     }
     if (m_pPreviewText)
-        m_pPreviewText->SetText(_T("当前目录概览\n未选择项目"));
+        m_pPreviewText->SetText(_T(""));
 
     bool showImage = false;
     if (m_pPreviewImage) {
         m_pPreviewImage->SetBkImage(_T(""));
-        showImage = LoadPreviewShellIcon(m_currentPath, true,
-            DpiScale(UiTokens::PreviewIconPx));
+        if (IsThisPcPath(m_currentPath)) {
+            showImage = LoadPreviewStockIcon(SIID_DESKTOPPC, DpiScale(UiTokens::PreviewIconPx));
+        } else {
+            showImage = LoadPreviewShellIcon(m_currentPath, true,
+                DpiScale(UiTokens::PreviewIconPx));
+        }
     }
     ShowPreviewDetails(true, showImage, false);
 }
@@ -738,6 +750,40 @@ bool CMainWnd::LoadPreviewImage(const std::wstring& path)
 
     const int frameDesignH = (std::max)(48, ::MulDiv(boxH, 96, (int)m_dpi));
     ApplyPreviewImageBk(m_previewBmp, boxW, boxH, frameDesignH);
+    return true;
+}
+
+// Preview slot filled from a SHGetStockIconInfo id (SIID_DESKTOPPC / SIID_DRIVEFIXED ...):
+// special shell objects ("This PC") have no file path to extract an icon from.
+bool CMainWnd::LoadPreviewStockIcon(int siid, int iconPx)
+{
+    if (!m_pPreviewImage) return false;
+    if (!m_previewBmp.empty()) {
+        m_PaintManager.RemoveImage(m_previewBmp.c_str());
+        ::DeleteFileW(m_previewBmp.c_str());
+        m_previewBmp.clear();
+    }
+    m_pPreviewImage->SetBkImage(_T(""));
+
+    const int boxH = DpiScale(UiTokens::PreviewIconCompactH);
+    int ctrlW = m_pPreviewImage->GetWidth();
+    if (ctrlW <= 8) ctrlW = DpiScale(UiTokens::PreviewThumbW);
+    int ip = (std::min)(ctrlW, boxH);
+    if (ip < iconPx) ip = iconPx;
+    if (ip < 16) ip = 16;
+    if (ip > 384) ip = 384;
+
+    ++m_previewSerial;
+    wchar_t leaf[64] = {};
+    swprintf_s(leaf, L"preview_stock_%u.png", m_previewSerial);
+    m_previewBmp = m_iconCacheDir + leaf;
+    const std::wstring stock = GetStockIconBmp(static_cast<SHSTOCKICONID>(siid), ip);
+    if (stock.empty() || !::CopyFileW(stock.c_str(), m_previewBmp.c_str(), FALSE)) {
+        m_previewBmp.clear();
+        return false;
+    }
+    m_pPreviewImage->SetBkImage(m_previewBmp.c_str());
+    m_pPreviewImage->Invalidate();
     return true;
 }
 

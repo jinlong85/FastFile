@@ -56,6 +56,7 @@ public:
 
     // DPI (96 baseline design units → physical pixels)
     int DpiScale(int px) const;
+    int DpiScaleHairline(int px) const;   // rounds up: 1 design px -> 2 physical at 150%
     float DpiScaleF(float v) const;
     void RefreshDpiFromWindow();
     void ApplyDpiScaledFonts();
@@ -208,6 +209,7 @@ private:
     // Search / filter
     void ApplySearchFilter();
     void ClearSearchFilter();
+    void UpdateSearchOptionVisibility();   // "含子目录" follows the search box
     void SetSearchPlaceholder(bool show);
     void SyncRecursiveCheckLabel();
     bool EntryMatchesFilter(const DirEntry& e) const;
@@ -402,6 +404,8 @@ private:
     bool LoadPreviewShellThumbnail(const std::wstring& path, int cx, int cy);
     // Folder/generic: HICON -> PNG true alpha (never SIIGBF black pocket)
     bool LoadPreviewShellIcon(const std::wstring& path, bool isDir, int iconPx);
+    bool LoadPreviewStockIcon(int siid, int iconPx);   // "This PC" / drive previews
+    std::wstring GetShellDisplayName(const std::wstring& path) const;   // localized (图片/下载)
     // Adaptive frame + centered Fit bkimage (folders: compact icon area)
     void ApplyPreviewImageBk(const std::wstring& pngPath, int imgPxW, int imgPxH, int frameDesignH);
     // Live thumb box for the preview pane (follows the splitter width)
@@ -794,6 +798,9 @@ private:
     static constexpr const wchar_t* kFavoritePinPath = L"::FavoritePin";
     static constexpr UINT_PTR kCmdFavUnpin = 9101;
     static constexpr UINT_PTR kCmdFavOpen = 9102;
+    static constexpr UINT_PTR kCmdFavOpenNewTab = 9103;
+    static constexpr UINT_PTR kCmdFavOpenNewWindow = 9104;
+    static constexpr UINT_PTR kCmdFavCopyPath = 9105;
     static constexpr int kMaxListItems = 8000;
     static constexpr int kMaxDetailsItems = 100000;   // details view virtualizes; icons do not
     static constexpr int kMaxIconThumbs = 400;

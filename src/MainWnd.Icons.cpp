@@ -502,6 +502,25 @@ bool CMainWnd::LetterboxHBitmapToPng(HBITMAP hbm, int cx, int cy, const std::wst
     return dst.Save(pngPath.c_str(), &clsidPng, nullptr) == Ok;
 }
 
+// Localized shell display name for a path (SIGDN_NORMALDISPLAY). Known folders come back in
+// the UI language - "D:\Users\...\Pictures" shows as "图片" - which is what Explorer's
+// navigation pane does. Empty result means "fall back to the leaf name".
+std::wstring CMainWnd::GetShellDisplayName(const std::wstring& path) const
+{
+    if (path.empty()) return std::wstring();
+    IShellItem* psi = nullptr;
+    if (FAILED(::SHCreateItemFromParsingName(path.c_str(), nullptr, IID_PPV_ARGS(&psi))) || !psi)
+        return std::wstring();
+    std::wstring name;
+    PWSTR psz = nullptr;
+    if (SUCCEEDED(psi->GetDisplayName(SIGDN_NORMALDISPLAY, &psz)) && psz) {
+        name = psz;
+        ::CoTaskMemFree(psz);
+    }
+    psi->Release();
+    return name;
+}
+
 bool CMainWnd::ExtractShellItemImage(const std::wstring& path, int cx, int cy, const std::wstring& pngPath)
 {
     // Content thumbs only (image/video). Never SIIGBF_ICONONLY — folders/drives use HICON.

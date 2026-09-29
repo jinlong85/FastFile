@@ -120,6 +120,7 @@ void CMainWnd::InitWindow()
     LoadFavorites();
     LoadQuickAccess();
     RebuildFavoritesBar();
+    UpdateSearchOptionVisibility();
     InitDragDrop();
     ApplyFileViewScrollBars();
     ApplyColumnWidths();
@@ -172,6 +173,11 @@ void CMainWnd::Notify(TNotifyUI& msg)
     else if (msg.sType == DUI_MSGTYPE_SETFOCUS) {
         if (msg.pSender == m_pSearchEdit && m_searchPlaceholder) {
             SetSearchPlaceholder(false);
+            UpdateSearchOptionVisibility();
+            return;
+        }
+        if (msg.pSender == m_pSearchEdit) {
+            UpdateSearchOptionVisibility();
             return;
         }
     }
@@ -183,6 +189,7 @@ void CMainWnd::Notify(TNotifyUI& msg)
         if (msg.pSender == m_pSearchEdit) {
             if (m_pSearchEdit && m_pSearchEdit->GetText().IsEmpty())
                 SetSearchPlaceholder(true);
+            UpdateSearchOptionVisibility();
             return;
         }
     }
@@ -190,6 +197,7 @@ void CMainWnd::Notify(TNotifyUI& msg)
         if (msg.pSender == m_pSearchEdit) {
             if (m_searchPlaceholder)
                 return;
+            UpdateSearchOptionVisibility();
             if (!IsRecursiveSearch())
                 ApplySearchFilter();
             return;
@@ -603,6 +611,14 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             const CTabStripUI::HitInfo h = m_pTabStrip->HitTest(mp);
             if (h.part == CTabStripUI::Part::Body || h.part == CTabStripUI::Part::Close) {
                 CloseTab(h.index);
+                return 0;
+            }
+        }
+        // Middle click on a favourite chip opens it in a new tab (Explorer behaviour).
+        for (CControlUI* p = m_PaintManager.FindControl(mp); p; p = p->GetParent()) {
+            const CDuiString nm = p->GetName();
+            if (nm.Find(_T("fav_pin_")) == 0 && !p->GetUserData().IsEmpty()) {
+                AddTab(p->GetUserData().GetData(), true, true);
                 return 0;
             }
         }

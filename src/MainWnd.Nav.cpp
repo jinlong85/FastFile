@@ -565,12 +565,35 @@ void CMainWnd::ApplySearchFilter()
     RefreshListing();
 }
 
+// "含子目录" only makes sense while the user is searching, so it follows the search box:
+// visible while the box has focus / text (or the option is already on), hidden otherwise.
+void CMainWnd::UpdateSearchOptionVisibility()
+{
+    CControlUI* chk = m_PaintManager.FindControl(_T("chk_recursive"));
+    if (!chk) return;
+    bool show = false;
+    if (m_pSearchEdit) {
+        const bool focused = m_PaintManager.GetFocus() == m_pSearchEdit;
+        const bool hasText = !m_searchPlaceholder && !m_pSearchEdit->GetText().IsEmpty();
+        show = focused || hasText || IsRecursiveSearch();
+    }
+    if (chk->IsVisible() != show) {
+        chk->SetVisible(show);
+        // The address row is a horizontal layout: hiding the check releases its width back to
+        // the breadcrumb, so the parent has to re-run its layout.
+        chk->NeedParentUpdate();
+        if (CControlUI* bar = m_PaintManager.FindControl(_T("address_bar")))
+            bar->NeedUpdate();
+    }
+}
+
 void CMainWnd::ClearSearchFilter()
 {
     m_searchFilter.clear();
     if (m_activeTab >= 0 && m_activeTab < static_cast<int>(m_tabs.size()))
         m_tabs[m_activeTab].searchFilter.clear();
     SetSearchPlaceholder(true);
+    UpdateSearchOptionVisibility();
     RefreshListing();
 }
 
@@ -751,6 +774,8 @@ void CMainWnd::RebuildBreadcrumb()
             if (labelSize.cx <= 0)
                 labelSize.cx = DpiScale(static_cast<int>(c.first.size()) * 8);
             int w = labelSize.cx + padX * 2 + DpiScale(6);
+            if (c.second == kThisPcPath)      // "此电脑" carries the machine stock icon
+                w += DpiScale(UiTokens::FavIconPx) + DpiScale(6);
             if (w < DpiScale(28)) w = DpiScale(28);
             segs.push_back({ c.first, c.second, w });
         }
@@ -818,6 +843,17 @@ void CMainWnd::RebuildBreadcrumb()
         btn->SetAttribute(_T("pushedbkcolor"), UiTokens::ColorPressed);
         btn->SetAttribute(_T("textcolor"),
             isLast ? UiTokens::ColorTextPrimary : UiTokens::ColorTextTabIdle);
+        if (shown[i].path == kThisPcPath) {
+            // Explorer's first breadcrumb segment: machine icon + "此电脑".
+            const int iconPx = DpiScale(UiTokens::FavIconPx);
+            const std::wstring bmp = GetStockIconBmp(SIID_DESKTOPPC, iconPx);
+            if (!bmp.empty()) {
+                CDuiString tp;
+                tp.Format(_T("%d,0,%d,0"), padX + iconPx + DpiScale(6), padX);
+                btn->SetAttribute(_T("textpadding"), tp.GetData());
+                ApplyControlForeIcon(btn, bmp, iconPx, padX, (segH - iconPx) / 2, false);
+            }
+        }
         m_pBreadcrumb->Add(btn);
         if (!isLast) {
             auto* sep = new CLabelUI;

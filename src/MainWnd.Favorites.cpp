@@ -4,6 +4,27 @@
 
 #include "MainWndInternal.h"
 
+namespace {
+
+// CF_UNICODETEXT copy used by the favourites / quick-access context menus.
+void CopyTextToClipboard(HWND owner, const std::wstring& text)
+{
+    if (!::OpenClipboard(owner))
+        return;
+    ::EmptyClipboard();
+    const size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+    if (HGLOBAL mem = ::GlobalAlloc(GMEM_MOVEABLE, bytes)) {
+        if (void* dst = ::GlobalLock(mem)) {
+            memcpy(dst, text.c_str(), bytes);
+            ::GlobalUnlock(mem);
+            ::SetClipboardData(CF_UNICODETEXT, mem);
+        }
+    }
+    ::CloseClipboard();
+}
+
+} // namespace
+
 void CMainWnd::UpdateFavoritesHighlight()
 {
     auto stylePin = [&](CContainerUI* host) {
@@ -524,7 +545,9 @@ void CMainWnd::LoadFavorites()
         if (IsFavoritePinned(path)) continue;
         FavoriteItem it;
         it.path = path;
-        it.displayName = GetLeafName(path);
+        it.displayName = GetShellDisplayName(path);
+        if (it.displayName.empty())
+            it.displayName = GetLeafName(path);
         if (it.displayName.empty()) it.displayName = path;
         m_favorites.push_back(std::move(it));
     }
@@ -618,9 +641,32 @@ void CMainWnd::RebuildFavoritesBar()
     m_pFavoritesStrip->SetVisible(!empty);
     int stripW = 0;
 
-    // Match fav_bar_label: font 0 (FontBody), vertically centered icon+text (no clip).
+    // Explorer chip metrics (96-DPI design -> physical): 28 tall, 4 radius, 8 padding,
+    // 8 icon->label gap, 8 between chips, <=168 wide, DT_END_ELLIPSIS beyond that.
     const int iconPx = DpiScale(UiTokens::FavIconPx);
     const int btnH = DpiScale(UiTokens::FavChipH);
+    const int padX = DpiScale(UiTokens::FavChipPadX);
+    const int iconGap = DpiScale(UiTokens::FavChipIconGap);
+    const int chipGap = DpiScale(UiTokens::FavChipGap);
+    const int maxChipW = DpiScale(UiTokens::FavChipMaxW);
+    const int minChipW = DpiScale(72);
+    {
+        CDuiString cp;
+        cp.Format(_T("%d"), chipGap);
+        m_pFavoritesStrip->SetAttribute(_T("childpadding"), cp);
+    }
+    std::vector<int> widths;
+    widths.reserve(m_favorites.size());
+
+    // Available width for the chips: favourites row minus its insets, the "收藏" mark and the
+    // trailing flexible spacer. Overflowing chips are squeezed (down to minChipW) before the
+    // row clips its tail, so a long list never grows the row or wraps.
+    int availW = 0;
+    if (m_pFavoritesBar) {
+        const RECT bar = m_pFavoritesBar->GetPos();
+        availW = bar.right - bar.left - DpiScale(8) * 2 - DpiScale(UiTokens::FavLabelW);
+        if (availW < minChipW) availW = minChipW;
+    }
 
     for (size_t i = 0; i < m_favorites.size(); ++i) {
         const auto& fav = m_favorites[i];
@@ -635,27 +681,24 @@ void CMainWnd::RebuildFavoritesBar()
         btn->SetAttribute(_T("valign"), _T("vcenter"));
         btn->SetAttribute(_T("font"), _T("0"));
         btn->SetAttribute(_T("bkcolor"), _T("#00FFFFFF"));
-        btn->SetAttribute(_T("hotbkcolor"), _T("#FFE8E8E8"));
-        btn->SetAttribute(_T("pushedbkcolor"), _T("#FFDADADA"));
+        btn->SetAttribute(_T("hotbkcolor"), _T("#14000000"));
+        btn->SetAttribute(_T("pushedbkcolor"), _T("#22000000"));
         btn->SetAttribute(_T("textcolor"), UiTokens::ColorTextPrimary);
         btn->SetAttribute(_T("bordercolor"), _T("#00FFFFFF"));
         btn->SetAttribute(_T("bordersize"), _T("0"));
         btn->SetAttribute(_T("endellipsis"), _T("true"));
-        const int textPadL = DpiScale(UiTokens::FavIconPx + 8);   // icon inset + icon + gap
-        const int textPadR = DpiScale(10);
         btn->SetBorderRound({ DpiScale(UiTokens::RadiusControl), DpiScale(UiTokens::RadiusControl) });
         {
             CDuiString tp;
-            // left room for the icon + gap, small right pad; no vertical pad (valign centers)
-            tp.Format(_T("%d,0,%d,0"), textPadL, textPadR);
+            // left room for the icon + gap, then the right pad; valign centres the text
+            tp.Format(_T("%d,0,%d,0"), padX + iconPx + iconGap, padX);
             btn->SetAttribute(_T("textpadding"), tp);
         }
-        // Size the chip to its actual label rather than estimating from the character count:
-        // the old "length * 13 + 36, clamped to 240" gave every short name a 240px box, which
-        // is what left all that empty space around the text.
-        int w = textPadL + MeasureTextWidth(fav.displayName) + textPadR;
-        if (w < DpiScale(56)) w = DpiScale(56);
-        if (w > DpiScale(320)) w = DpiScale(320);
+        // Size the chip to its actual label rather than estimating from the character count.
+        int w = padX + iconPx + iconGap + MeasureTextWidth(fav.displayName) + padX;
+        if (w < minChipW) w = minChipW;
+        if (w > maxChipW) w = maxChipW;
+        widths.push_back(w);
         btn->SetFixedWidth(w);
         btn->SetToolTip(fav.path.c_str());
 
@@ -663,10 +706,30 @@ void CMainWnd::RebuildFavoritesBar()
         if (bmp.empty()) bmp = GetStockIconBmp(SIID_FOLDER, iconPx);
         if (!bmp.empty()) {
             const int y = (btnH - iconPx) / 2; // vertical center with label
-            ApplyControlForeIcon(btn, bmp, iconPx, DpiScale(4), y, false);
+            ApplyControlForeIcon(btn, bmp, iconPx, padX, y, false);
         }
         m_pFavoritesStrip->Add(btn);
         stripW += w;
+    }
+
+    // Shrink-to-fit pass: every chip gets an equal share of the row, so nothing is clipped
+    // until even the minimum width stops fitting (the trailing chips clip at that point).
+    if (availW > 0 && !widths.empty()) {
+        const int gaps = chipGap * (static_cast<int>(widths.size()) - 1);
+        int per = (availW - gaps) / static_cast<int>(widths.size());
+        if (per < minChipW) per = minChipW;
+        bool shrunk = false;
+        for (auto& w : widths) {
+            if (w > per) { w = per; shrunk = true; }
+        }
+        if (shrunk) {
+            stripW = 0;
+            for (size_t i = 0; i < widths.size(); ++i) {
+                if (CControlUI* c = m_pFavoritesStrip->GetItemAt(static_cast<int>(i)))
+                    c->SetFixedWidth(widths[i]);
+                stripW += widths[i];
+            }
+        }
     }
 
     if (!empty)
@@ -738,7 +801,14 @@ void CMainWnd::RebuildLeftQuickRows()
         CDuiString name;
         name.Format(_T("fav_row_%d"), static_cast<int>(i));
         btn->SetName(name);
-        btn->SetText(row.label.c_str());
+        // Navigation-pane labels follow the shell's localized name so a pinned
+        // "D:\...\Pictures" reads "图片" instead of the raw folder name.
+        std::wstring label = row.label;
+        if (!row.isThisPc) {
+            const std::wstring localized = GetShellDisplayName(row.path);
+            if (!localized.empty()) label = localized;
+        }
+        btn->SetText(label.c_str());
         btn->SetUserData(row.path.c_str());
         btn->SetFixedHeight(rowH);
         btn->SetAttribute(_T("align"), _T("left"));
@@ -891,6 +961,12 @@ void CMainWnd::OnPinnedFavoriteClick(CControlUI* btn)
     if (!btn) return;
     CDuiString ud = btn->GetUserData();
     if (ud.IsEmpty()) return;
+    // Ctrl+click opens a second tab on the same folder (Explorer does this in the favourites
+    // strip); a plain click reuses the tab that already shows it.
+    if ((::GetKeyState(VK_CONTROL) & 0x8000) != 0) {
+        AddTab(ud.GetData(), true, true);
+        return;
+    }
     OpenQuickAccessTab(ud.GetData());
 }
 
@@ -915,6 +991,10 @@ void CMainWnd::ShowFavoriteContextMenu(CControlUI* btn, POINT ptScreen)
     HMENU hMenu = ::CreatePopupMenu();
     if (!hMenu) return;
     ::AppendMenuW(hMenu, MF_STRING, kCmdFavOpen, L"\u6253\u5f00");
+    ::AppendMenuW(hMenu, MF_STRING, kCmdFavOpenNewTab, L"\u5728\u65b0\u6807\u7b7e\u9875\u4e2d\u6253\u5f00");
+    ::AppendMenuW(hMenu, MF_STRING, kCmdFavOpenNewWindow, L"\u5728\u65b0\u7a97\u53e3\u4e2d\u6253\u5f00");
+    ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+    ::AppendMenuW(hMenu, MF_STRING, kCmdFavCopyPath, L"\u590d\u5236\u8def\u5f84");
     ::AppendMenuW(hMenu, MF_STRING, kCmdFavUnpin,
         quickAccess ? L"\u4ece\u5feb\u901f\u8bbf\u95ee\u53d6\u6d88\u56fa\u5b9a" : L"\u4ece\u6536\u85cf\u680f\u53d6\u6d88\u56fa\u5b9a");
     UINT cmd = ::TrackPopupMenuEx(hMenu,
@@ -923,6 +1003,14 @@ void CMainWnd::ShowFavoriteContextMenu(CControlUI* btn, POINT ptScreen)
     ::DestroyMenu(hMenu);
     if (cmd == kCmdFavOpen) {
         AddTab(path, true);
+    } else if (cmd == kCmdFavOpenNewTab) {
+        AddTab(path, true, /*allowDuplicate*/ true);
+    } else if (cmd == kCmdFavOpenNewWindow) {
+        POINT pt = ptScreen;
+        OpenPathInNewWindow(path, pt);
+    } else if (cmd == kCmdFavCopyPath) {
+        CopyTextToClipboard(m_hWnd, path.empty() ? L"\u6b64\u7535\u8111" : path);
+        UpdateStatus(_T("\u5df2\u590d\u5236\u8def\u5f84"));
     } else if (cmd == kCmdFavUnpin) {
         if ((quickAccess ? UnpinQuickAccess(path) : UnpinFavorite(path)))
             UpdateStatus(quickAccess ? _T("已从快速访问取消固定") : _T("已从收藏栏取消固定"));

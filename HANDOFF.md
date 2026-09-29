@@ -29,6 +29,7 @@
 | 第十二批 | `b01e569` `707ee98` | 标签切换状态同步；“此电脑”磁盘卡片响应式分列；预览栏最小宽度与元数据列优化；滚动条统一宽度 + 预览导轨并入调宽手柄 |
 | 第十三批 | `065fde1` `ea6f6bd` `4d73a16` `30056a5` `d650e91` `32ade3d` `69637df` | 关闭确认框、快速访问原生右键菜单 + 拖动排序、双色命令图标、顶部功能区整体改版（标题栏并入标签行、地址栏在命令栏之上）、收藏栏位置与路径框缩放 |
 | 第十四批 | 待提交 | 标签栏改为自绘 `CTabStripUI`；DuiLib XML 骨架按规范重排（32/26/28/28）；窗口按钮改 Shell 字形；`Ctrl+Tab` 修复；拖出标签按源窗口尺寸开窗 |
+| 第十五批 | 待提交 | Fluent 密度（36/36/36/40）+ `inset` 消除栏间空隙；收藏栏 Explorer 化并搬走「配置文件」；面包屑首段带此电脑图标；导航名本地化；「含子目录」按需显示；此电脑详情页修正 |
 
 ## 目标
 
@@ -771,6 +772,71 @@ if (uMsg == WM_NCLBUTTONDOWN || uMsg == WM_NCLBUTTONUP) {
 DWM 就按**客户区像素的 alpha** 合成，而 DuiLib 的 GDI 绘制（标签文字、窗口按钮字形、
 列表文字）在重定向表面上的 alpha 是 0 —— 深色文字会整片消失。要真正开启 Mica，得先把
 标题行整条改成 GDI+/`AlphaBlend` 的 32bpp 绘制，再打开 `kShowMicaBackdrop`。
+
+## 第十五批：Fluent 化（顶栏 / 收藏 / 地址 / 左侧 / 此电脑详情）
+
+目标从"360 紧凑档"改为"只对齐 Win11 资源管理器"，尺寸全部写 96-DPI 逻辑像素，
+运行时 `MulDiv(x, dpi, 96)`：
+
+| 行 | 逻辑 | 150% 物理 |
+|---|---|---|
+| 标题 + 标签（`titlebar`） | 36 | 54 |
+| 收藏（`favorites_bar`） | 36 | 54 |
+| 地址 + 搜索（`address_bar`） | 36 | 54 |
+| 命令栏（`toolbar`） | 40 | 60 |
+| 导航 / 目录树一行（`NavRowH` / `TreeRowH`） | 36 | 54 |
+| 详细列表行（`DetailsRowH`） | 30 | 45 |
+| 状态栏（`StatusBarH`） | 28 | 42 |
+| 控件圆角（`RadiusControl`） | 4 | 6 |
+| 分割线（`Hairline`，`DpiScaleHairline`） | 1 | **2**（向上取整，避免 1.5px 发虚） |
+
+### 栏间空白（老问题的真凶）
+
+改高之后发现标题 / 收藏 / 地址 / 命令四行之间夹着 6–12 物理像素的空白。原因是 DuiLib
+把容器的 **`padding` 计入它在父布局里占用的空间**（`CVerticalLayoutUI::SetPos`:
+`cyFixed += sz.cy + padding.top + padding.bottom`），而 `inset` 只缩进子区域、不占位。
+所以顶栏这些横向条一律用 `inset`（`ApplyUiChromeTokens` 里的 `setInset`），
+**不要再对它们用 `padding`**，否则又会出现缝隙并把整条顶栏撑高。
+
+### 收藏栏（Explorer 规格）
+
+- 尺寸：芯片 28 逻辑高、圆角 4、左右内边距 8、图标→文字 8、芯片间 8、最大宽 168
+  （`FavChipH / RadiusControl / FavChipPadX / FavChipIconGap / FavChipGap / FavChipMaxW`）。
+- 宽度：先按文字实测宽，再用行宽均分压缩（下限 72 逻辑），不换行、不撑高行；
+  水平间距由 `favorites_strip` 的 `childpadding` 提供。
+- 图标：`GetShellIconBmp(路径, true, DpiScale(16))` → 150% 下真实 24×24 Shell 图标。
+- 空列表：显示 `fav_bar_hint`「拖入文件夹到此处以收藏」，芯片列表隐藏。
+- 交互：左键导航、中键/Ctrl+左键新标签、右键菜单（打开/新标签/新窗口/复制路径/取消固定），
+  拖入文件夹收藏走 `MainWnd.DragDrop.cpp` 的 `IsOverFavoritesBar`。
+- 「配置文件」不再是收藏：删掉了那条 pin（备份 `favorites.txt.bak-20260929`），
+  改到命令栏「…」菜单第一项「打开配置文件目录」（`%APPDATA%\FastFile`）。
+- TODO：芯片的拖拽排序（快捷访问区已有，收藏栏还没接）。
+
+### 面包屑 / 搜索
+
+- 第一段固定是「此电脑」+ `SIID_DESKTOPPC` 图标（量宽时给图标留位，否则会被裁）。
+- 「含子目录」由 `UpdateSearchOptionVisibility()` 控制：搜索框聚焦 / 有词 / 已勾选才显示，
+  隐藏时把宽度还给面包屑。
+
+### 左侧导航
+
+- 名称走 `GetShellDisplayName()`（`IShellItem::GetDisplayName(SIGDN_NORMALDISPLAY)`），
+  `D:\...\Pictures` 显示为「图片」。收藏芯片的显示名也用它。
+- 目录树第一层是盘符（`InitDirectoryTree`），不是 `C:\` 的子目录。
+
+### 此电脑详情
+
+`UpdatePreviewForCurrentFolder()`：This PC 用 `LoadPreviewStockIcon(SIID_DESKTOPPC, px)`，
+「类型」= 此电脑，「大小」标签改成「包含」+「N 个驱动器」，时间显示「—」，
+不再输出「当前目录概览 / 未选择项目」。磁盘卡片最多三列（`MainWnd.Views.cpp`）。
+
+### 未做 / 待办
+
+- **DWM Mica Alt 仍未开启**（原因见「DWM / Mica 现状」，需要先把标题行改成
+  GDI+/AlphaBlend 的 32bpp 绘制，否则文字会被 alpha 合成吃掉）。
+- 收藏芯片的拖拽排序 / Delete 移除。
+- 滚动条仍是之前确认过的统一 12 设计像素（新规格提到的"6 物理细轨道"没有采纳，
+  因为那是用户上一轮明确要求统一宽度的）。
 
 ## 当前顶部结构（自上而下）
 

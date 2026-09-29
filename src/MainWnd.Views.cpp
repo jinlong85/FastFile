@@ -480,11 +480,11 @@ void CMainWnd::GetViewMetrics(int& tileW, int& tileH, int& iconPx, int& childPad
     if (IsThisPcPath(m_currentPath) && m_viewMode == ViewMode::Tiles && m_pIconTiles) {
         const int viewportW = static_cast<int>(m_pIconTiles->GetWidth());
         const int gap = DpiScale(18);
-        const int minCardW = DpiScale(250);
+        const int minCardW = DpiScale(240);
         if (viewportW >= minCardW) {
             int columns = viewportW / (minCardW + gap);
             if (columns < 1) columns = 1;
-            if (columns > 4) columns = 4;
+            if (columns > 3) columns = 3;   // Fluent pass: never more than three drive cards
             tileW = (viewportW - (columns - 1) * gap) / columns;
             if (tileW < minCardW) tileW = minCardW;
             childPad = gap;

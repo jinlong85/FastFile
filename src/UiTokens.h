@@ -24,39 +24,49 @@ constexpr int ChromeRound = 8;      // window/chrome container (was 10)
 constexpr int RadiusControl = 4;    // command-bar buttons, input boxes, list rows, chips
 constexpr int GapGroup = SpaceSm;   // toolbar group gaps
 constexpr int SepH = 20;            // command-bar separators (bar is 40, buttons 32)
-constexpr int HitTabH = 24;
+constexpr int HitTabH = 32;           // "+" / caption hit boxes never below 32 design px
 constexpr int TabIconPx = 16;
 constexpr int TabMinW = 120;          // equal-width first, compress later
 constexpr int TabMaxW = 190;
 constexpr int TabCloseW = 20;
 constexpr int HitBreadcrumbH = 30;      // address text stays vertically centered
 constexpr int CmdBtnH = 32;
+constexpr int Hairline = 1;           // 1 design px; DpiScaleHairline() rounds *up* so a
+                                      // divider lands on 2 physical px at 150% instead of
+                                      // blurring across 1.5
 // Phase 6: Explorer-style chrome - a taller tab strip with tab "cards", a roomier address
 // row whose path/search fields are white rounded boxes, and the command bar sitting on the
 // white content surface instead of the grey chrome.
-constexpr int TabBarH = 32;
-constexpr int TabCardH = 30;          // chip inside the strip (2px inset above, merges below)
+// Phase 7 (Fluent pass): every chrome row follows Win11 Explorer, not the 360 density:
+// title 36 / favourites 36 / address 36 / command bar 40, nav + tree rows 36.
+constexpr int TabBarH = 36;
+constexpr int TabCardH = 34;          // chip inside the strip (2px inset above, merges below)
 constexpr int TabCardGap = 4;         // gap between chips
 constexpr int TabCardRound = 6;       // chip corner radius (Explorer-like)
-constexpr int ToolbarH = 28;
-constexpr int BreadcrumbBarH = 28;     // legacy; path merged into address_bar
+constexpr int ToolbarH = 40;
+constexpr int BreadcrumbBarH = 36;     // legacy; path merged into address_bar
 constexpr int BreadcrumbSegPadX = 3;   // compact Explorer-style segment gap
 constexpr int BreadcrumbSepW = 12;
-constexpr int TitleBarH = 32;
-constexpr int FavoritesBarH = 26;
+constexpr int TitleBarH = 36;
+constexpr int FavoritesBarH = 36;      // same height as the address row (Explorer)
 constexpr int FavBarPadY = 2;          // legacy; kept for compatibility
-constexpr int FavBarPadTop = 12;       // favourite chips sit below the tab strip, not glued to it
-constexpr int FavBarPadBottom = 0;     // the address row's own top inset balances the rest
-constexpr int FavChipH = 22;
+constexpr int FavBarPadTop = 4;        // chips are 28 tall inside the 36 row
+constexpr int FavBarPadBottom = 4;
+constexpr int FavChipH = 28;
 constexpr int FavIconPx = 16;
-constexpr int FavLabelW = 56;          // star + fav left mark (tight, so the first chip starts early)
+constexpr int FavLabelW = 48;          // weak "收藏" mark, not a button
+constexpr int FavChipPadX = 8;         // chip inner left/right padding
+constexpr int FavChipIconGap = 8;      // icon -> label gap
+constexpr int FavChipGap = 8;          // between chips
+constexpr int FavChipMaxW = 168;       // DT_END_ELLIPSIS beyond this
 constexpr int FavLabelBaselineLift = 4; // design px to raise the CJK "★ 收藏" label onto the
                                         // Latin baseline of the chips beside it
-constexpr int AddressBarH = 28;       // 360-density address row
-constexpr int FieldRound = 8;         // path / search field corner radius
-constexpr int FieldH = 24;             // path / search field height (centred in the address row)
-constexpr int AddressBarPadY = 2;
-constexpr int SearchBoxH = 24;   // matches the path field
+constexpr int AddressBarH = 36;       // Explorer address row
+constexpr int FieldRound = 4;         // path / search field corner radius (Explorer)
+constexpr int FieldH = 28;             // path / search field height (centred in the address row)
+constexpr int AddressBarPadY = 4;
+constexpr int SearchBoxH = 28;   // matches the path field
+constexpr int SearchBoxW = 220;        // search box width (design)
 constexpr int SearchChkW = 100;        // ☐ 含子目录
 // One scrollbar thickness for the whole window: the file views sit right next to the
 // preview rail (and the rail sits next to the file list), so a thinner list bar made the
@@ -67,8 +77,8 @@ constexpr int SidePaneScrollBarW = 12; // navigation + preview rail
 
 // ---- Phase 2: left nav / tree (Win11 Explorer density) ----
 constexpr int NavSectionHeaderH = 22;  // hidden legacy section labels; retained for layout compatibility
-constexpr int NavRowH = 26;           // Quick Access rows + pinned favs
-constexpr int TreeRowH = 26;           // dense drive / folder rows
+constexpr int NavRowH = 36;           // Quick Access rows + pinned favs (Explorer)
+constexpr int TreeRowH = 36;           // drive / folder rows
 constexpr int TreeIndent = 14;         // per-level tree indent
 constexpr int NavIconPx = 18;
 constexpr int NavIconPad = SpaceSm;    // icon left inset
@@ -82,8 +92,8 @@ constexpr int LeftQuickMinH = 160;     // four built-in rows plus breathing room
 constexpr int LeftQuickDefaultH = 160;
 
 // ---- Phase 2: details list ----
-constexpr int DetailsHeaderH = 24;
-constexpr int DetailsRowH = 24;        // 360-ish density; fits SHIL_SMALL 16
+constexpr int DetailsHeaderH = 32;
+constexpr int DetailsRowH = 30;        // Win11 Explorer details row
 constexpr int DetailsCellPadL = SpaceSm;
 constexpr int DetailsIconPx = 16;       // Shell small icon beside Name
 constexpr int DetailsIconPadL = SpaceXs; // left inset before icon
@@ -97,8 +107,8 @@ constexpr int ToolbarBtnH = 32;
 constexpr int ToolbarTextBtnMinW = 76;  // New/Sort/View: icon + label + chevron
 constexpr int ToolbarIconPad = 8;       // left/right pad around toolbar glyphs
 constexpr int ToolbarChevronPad = 16;   // room for dropdown chevron
-constexpr int ToolbarNavBtnW = 24;     // address-row navigation buttons
-constexpr int NavGlyphPx = 16;         // address-row glyph
+constexpr int ToolbarNavBtnW = 32;     // address-row navigation buttons (Explorer 32x32)
+constexpr int NavGlyphPx = 20;         // address-row glyph
 constexpr int ToolbarGroupGap = SpaceSm;
 constexpr int ToolbarSepPad = SpaceSm;
 
@@ -171,7 +181,7 @@ constexpr int PreviewTextGap = SpaceMd;   // before text body
 constexpr int PreviewThumbW = PreviewPaneW - 2 * PreviewPad; // 248 @ pad 16
 constexpr int PreviewThumbH = 170;
 
-constexpr int StatusBarH = 22;            // 360 density
+constexpr int StatusBarH = 28;            // Win11 Explorer status row
 constexpr int StatusPadX = InnerPadX;     // 12
 constexpr int StatusPadY = InnerPadY;     // 4
 constexpr int StatusCancelW = 80;

@@ -136,6 +136,14 @@ void CMainWnd::OnMoreMenuClicked()
 {
     HMENU hMenu = ::CreatePopupMenu();
     if (!hMenu) return;
+    // Explorer-style "…": the app's own settings/config folder lives here instead of taking a
+    // chip in the favourites strip.
+    std::wstring cfgDir = GetFavoritesFilePath();
+    const size_t slash = cfgDir.find_last_of(L"\\/");
+    if (slash != std::wstring::npos)
+        cfgDir.erase(slash);
+    ::AppendMenuW(hMenu, MF_STRING, 6, L"\u6253\u5f00\u914d\u7f6e\u6587\u4ef6\u76ee\u5f55");
+    ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     ::AppendMenuW(hMenu, MF_STRING, 1, L"刷新");
     ::AppendMenuW(hMenu, m_previewVisible ? (MF_STRING | MF_CHECKED) : MF_STRING,
         2, L"预览窗格");
@@ -171,6 +179,9 @@ void CMainWnd::OnMoreMenuClicked()
         OnUndo();
     } else if (cmd == 5) {
         OnFolderOpenHandlerMenuClicked();
+    } else if (cmd == 6) {
+        if (!cfgDir.empty())
+            AddTab(cfgDir, true, /*allowDuplicate*/ false);
     }
 }
 

@@ -91,6 +91,18 @@ int CMainWnd::DpiScale(int px) const
     return ::MulDiv(px, static_cast<int>(m_dpi), 96);
 }
 
+// Hairlines (1 design px borders / separators) round *up*: at 150% MulDiv would give 1, which
+// lands the line on a half pixel and renders blurry - Windows 11 Explorer draws them 2px there.
+int CMainWnd::DpiScaleHairline(int px) const
+{
+    if (px <= 0) return 0;
+    const int dpi = static_cast<int>(m_dpi);
+    const int scaled = ::MulDiv(px, dpi, 96);
+    if (scaled * 96 < px * dpi)                       // not exact -> round up
+        return scaled + 1;
+    return scaled < 1 ? 1 : scaled;
+}
+
 float CMainWnd::DpiScaleF(float v) const
 {
     return v * (static_cast<float>(m_dpi) / 96.0f);
@@ -232,7 +244,7 @@ void CMainWnd::ApplyDpiScaledChrome()
         { _T("btn_view_menu"), 76 },
         { _T("btn_more"), UiTokens::ToolbarBtnW },
         { _T("btn_toggle_preview"), UiTokens::ToolbarBtnW },
-        { _T("btn_tab_add"), 28 },
+        { _T("btn_tab_add"), 32 },
         { _T("chk_recursive"), UiTokens::SearchChkW },
     };
     for (const auto& bw : widths) {
@@ -264,7 +276,7 @@ void CMainWnd::ApplyDpiScaledChrome()
         CControlUI* c = m_PaintManager.FindControl(name);
         if (!c) continue;
         c->SetFixedWidth(DpiScale(46));
-        c->SetFixedHeight(DpiScale(32));
+        c->SetFixedHeight(DpiScale(UiTokens::TitleBarH));   // 36: fills the tab row, >= 32 hit box
     }
     // XML attributes are design values. Keep all non-client hit areas in the same DPI space.
     RECT sizeBox = { DpiScale(4), DpiScale(4), DpiScale(4), DpiScale(4) };

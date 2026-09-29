@@ -205,6 +205,16 @@ void CMainWnd::ApplyUiChromeTokens()
             DpiScale(l), DpiScale(t), DpiScale(r), DpiScale(b));
         c->SetAttribute(_T("padding"), pad);
     };
+    // Chrome bands must use `inset`, not `padding`: a container's padding is added to the space
+    // it occupies in its parent, so padding here left visible gaps between the stacked rows.
+    auto setInset = [&](LPCTSTR name, int l, int t, int r, int b) {
+        CControlUI* c = m_PaintManager.FindControl(name);
+        if (!c) return;
+        CDuiString pad;
+        pad.Format(_T("%d,%d,%d,%d"),
+            DpiScale(l), DpiScale(t), DpiScale(r), DpiScale(b));
+        c->SetAttribute(_T("inset"), pad);
+    };
     auto setBk = [&](LPCTSTR name, LPCWSTR color) {
         if (CControlUI* c = m_PaintManager.FindControl(name))
             c->SetAttribute(_T("bkcolor"), color);
@@ -221,12 +231,15 @@ void CMainWnd::ApplyUiChromeTokens()
 
     // Title row = caption: no vertical inset, so the 32px band is fully usable by the tab cards
     // and the caption buttons (an inset here squashed both).
-    setPad(_T("titlebar"), 8, 0, 0, 0);
-    setPad(_T("toolbar"), px, py, px, py);
+    setInset(_T("titlebar"), 8, 0, 0, 0);
+    // Fluent pass: every chrome row shares the same 8px left inset as the tab strip, so the
+    // tab card, the back button and 新建 all line up on one vertical guide (Explorer does this).
+    setInset(_T("toolbar"), 8, 4, 8, 4);
     // Favourite chips hang below the tab strip: the top inset keeps them off the strip and
     // lets the address row's own inset make the gaps above/below look even.
-    setPad(_T("favorites_bar"), px, UiTokens::FavBarPadTop, px, UiTokens::FavBarPadBottom);
-    setPad(_T("address_bar"), px, UiTokens::AddressBarPadY, px, UiTokens::AddressBarPadY);
+    setInset(_T("favorites_bar"), 8, UiTokens::FavBarPadTop, 8, UiTokens::FavBarPadBottom);
+    setInset(_T("address_bar"), 8, UiTokens::AddressBarPadY, 8, UiTokens::AddressBarPadY);
+    setInset(_T("status_bar"), 12, 4, 12, 4);
     setPad(_T("left_panel"), UiTokens::SpaceSm, UiTokens::SpaceSm, UiTokens::SpaceSm, UiTokens::SpaceSm);
     setPad(_T("icon_scroll"), px, px, px, px);
     // Preview pane: the wrapper stays unpadded - the merged scroll rail sits flush along
@@ -241,18 +254,21 @@ void CMainWnd::ApplyUiChromeTokens()
     // bar sits on the white content surface with a divider above and below it.
     const LPCWSTR surf = UiTokens::ColorSurface;
     const LPCWSTR border = UiTokens::ColorChromeDivider;
+    // 1 design px dividers must land on 2 physical px at 150% (a 1.5px line renders blurry).
+    CDuiString hair;
+    hair.Format(_T("0,0,0,%d"), DpiScaleHairline(UiTokens::Hairline));
     for (LPCTSTR band : {
         _T("titlebar"), _T("toolbar"),
         _T("address_bar"),
         _T("status_bar"), _T("left_panel")
     }) {
         setBk(band, surf);
-        setBorder(band, border, _T("0,0,0,1"));
+        setBorder(band, border, hair.GetData());
     }
     // One white surface from the favourites row down to the command bar, so the active tab's
     // white card merges into it (Mica / flat grey band above).
     setBk(_T("favorites_bar"), UiTokens::ColorContent);
-    setBorder(_T("favorites_bar"), border, _T("0,0,0,1"));
+    setBorder(_T("favorites_bar"), border, hair.GetData());
     setBk(_T("toolbar"), UiTokens::ColorContent);
     // Path / search fields: white rounded boxes on the chrome surface.
     for (LPCTSTR field : { _T("path_host"), _T("search_box") }) {
@@ -266,8 +282,14 @@ void CMainWnd::ApplyUiChromeTokens()
         }
     }
     // status_bar top border only
-    setBorder(_T("status_bar"), UiTokens::ColorBorderStrong, _T("0,1,0,0"));
-    setBorder(_T("left_panel"), border, _T("0,0,1,0"));
+    {
+        CDuiString top;
+        top.Format(_T("0,%d,0,0"), DpiScaleHairline(UiTokens::Hairline));
+        setBorder(_T("status_bar"), UiTokens::ColorBorderStrong, top.GetData());
+        CDuiString right;
+        right.Format(_T("0,0,%d,0"), DpiScaleHairline(UiTokens::Hairline));
+        setBorder(_T("left_panel"), border, right.GetData());
+    }
     setBorder(_T("preview_pane"), _T("#00000000"), _T("0"));
     setBk(_T("preview_pane"), UiTokens::ColorContent);
     // breadcrumb_bar removed (merged into address_bar)
