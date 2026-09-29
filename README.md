@@ -24,7 +24,8 @@ powershell -ExecutionPolicy Bypass -File installer\build_installer.ps1 -Version 
 
 **浏览与导航**
 
-- 多标签页（新建/关闭/路径记忆）、前进后退、上级、刷新
+- 多标签页（新建/关闭/路径记忆）、前进后退、上级、刷新；新建标签会优先打开选中的
+  文件夹，或选中文件所在的目录；同一路径自动复用已有标签
 - 地址栏与面包屑合一：默认面包屑，点击进入编辑，Enter 导航，Esc/失焦回到面包屑
 - 启动固定进入「此电脑」；视图模式 / 预览开关 / 收藏栏 / 列宽等设置照旧恢复
 - 每文件夹独立视图记忆（同一目录下次打开仍是上次的视图）
@@ -54,7 +55,7 @@ powershell -ExecutionPolicy Bypass -File installer\build_installer.ps1 -Version 
 
 - 可选「使用 FastFile 打开系统文件夹」：在「更多选项」中由用户确认后，接管当前用户的
   文件夹 / 目录 / 磁盘的默认**打开**动作；外部双击会直接打开目标目录，已有 FastFile
-  窗口则新建标签。关闭开关或卸载会恢复此前动作；**不替换** Windows 桌面、任务栏、
+  窗口则新建或切换至对应标签。关闭开关或卸载会恢复此前动作；**不替换** Windows 桌面、任务栏、
   开始菜单、`Win+E` 或系统文件选择窗口
 - 右键菜单全部走 **Windows 原生 Shell 接口**（`IShellFolder::CreateViewObject` /
   `IShellFolder::GetUIObjectOf` + `IContextMenu(2/3)`）：选中项菜单、文件夹背景菜单、

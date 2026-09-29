@@ -215,6 +215,8 @@ private:
     void InitTabs();
     void RebuildTabStrip();
     void AddTab(const std::wstring& path, bool activate);
+    void OnNewTabRequested();
+    std::wstring NewTabTargetForSelection() const;
     void CloseTab(int index);
     void ActivateTab(int index);
     void UpdateActiveTabPath(const std::wstring& path);

@@ -122,13 +122,97 @@ void CMainWnd::RebuildTabStrip()
 
 void CMainWnd::AddTab(const std::wstring& path, bool activate)
 {
+    std::wstring target = path.empty() ? GetDefaultStartPath() : path;
+    if (target == L"此电脑")
+        target = kThisPcPath;
+    else if (!IsThisPcPath(target)) {
+        const std::wstring normalized = NormalizePath(target);
+        if (!normalized.empty())
+            target = normalized;
+    }
+
+    // One directory has one tab.  This also applies to folders opened by another process,
+    // so repeated clicks in Explorer simply bring the existing FastFile tab forward.
+    for (int i = 0; i < static_cast<int>(m_tabs.size()); ++i) {
+        if (PathEquals(m_tabs[i].path, target)) {
+            if (activate)
+                ActivateTab(i);
+            return;
+        }
+    }
+
     TabInfo tab;
-    tab.path = path.empty() ? GetDefaultStartPath() : path;
+    tab.path = target;
     m_tabs.push_back(tab);
     if (activate)
         ActivateTab(static_cast<int>(m_tabs.size()) - 1);
     else
         RebuildTabStrip();
+}
+
+std::wstring CMainWnd::NewTabTargetForSelection() const
+{
+    ClipboardItem selected;
+    bool haveSelected = false;
+
+    // The virtual details view owns its own selection/cursor.  Prefer its cursor only while
+    // it remains selected: Ctrl-click can deliberately remove the cursor item from a range.
+    if (m_viewMode == ViewMode::Details
+        && m_detailsCur >= 0 && m_detailsCur < static_cast<int>(m_detailsEntries.size())
+        && m_detailsCur < static_cast<int>(m_detailsSel.size()) && m_detailsSel[m_detailsCur]) {
+        selected.path = m_detailsEntries[m_detailsCur].fullPath;
+        selected.isDir = m_detailsEntries[m_detailsCur].isDir;
+        haveSelected = true;
+    }
+
+    // Icon/list focus is the most recently clicked item, which is the intended target when
+    // a multi-selection exists.  Fall back to the selected collection only if focus is gone.
+    if (!haveSelected && IsTileViewMode() && m_pIconTiles) {
+        CControlUI* focus = m_PaintManager.GetFocus();
+        while (focus && focus->GetParent() != m_pIconTiles)
+            focus = focus->GetParent();
+        if (focus && (focus->GetTag() & 0x100) != 0 && !focus->GetUserData().IsEmpty()) {
+            selected.path = focus->GetUserData().GetData();
+            selected.isDir = (focus->GetTag() & 1) != 0;
+            haveSelected = true;
+        }
+    }
+    if (!haveSelected && m_viewMode != ViewMode::Details && m_pFileList) {
+        const int current = m_pFileList->GetCurSel();
+        CControlUI* row = current >= 0 ? m_pFileList->GetItemAt(current) : nullptr;
+        IListItemUI* item = row ? static_cast<IListItemUI*>(row->GetInterface(DUI_CTR_ILISTITEM)) : nullptr;
+        if (row && item && item->IsSelected() && !row->GetUserData().IsEmpty()) {
+            selected.path = row->GetUserData().GetData();
+            selected.isDir = row->GetTag() != 0;
+            haveSelected = true;
+        }
+    }
+    if (!haveSelected) {
+        std::vector<ClipboardItem> items;
+        CollectSelectedItems(items);
+        if (!items.empty()) {
+            selected = items.front();
+            haveSelected = true;
+        }
+    }
+
+    if (haveSelected) {
+        if (selected.isDir) {
+            const std::wstring folder = NormalizePath(selected.path);
+            if (!folder.empty())
+                return folder;
+        } else {
+            const std::wstring parent = ParentPath(selected.path);
+            if (!parent.empty())
+                return parent;
+        }
+    }
+    return m_currentPath.empty() ? GetDefaultStartPath() : m_currentPath;
+}
+
+void CMainWnd::OnNewTabRequested()
+{
+    AddTab(NewTabTargetForSelection(), true);
 }
 
 void CMainWnd::CloseTab(int index)

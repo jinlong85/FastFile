@@ -365,7 +365,7 @@ void CMainWnd::OnClick(TNotifyUI& msg)
         return;
     }
     if (name == _T("btn_tab_add")) {
-        AddTab(m_currentPath.empty() ? GetDefaultStartPath() : m_currentPath, true);
+        OnNewTabRequested();
         return;
     }
     if (name.Find(_T("tab_btn_")) == 0) {
@@ -751,7 +751,7 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             }
             // ---- tabs ----
             if (ctrl && wParam == 'T') {
-                AddTab(m_currentPath, true);
+                OnNewTabRequested();
                 return 0;
             }
             if (ctrl && wParam == 'W') {
