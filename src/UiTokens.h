@@ -48,8 +48,12 @@ constexpr int AddressBarH = 32;
 constexpr int AddressBarPadY = 2;
 constexpr int SearchBoxH = 28;
 constexpr int SearchChkW = 100;        // ☐ 含子目录
-constexpr int ScrollBarW = 8;        // thin, low-weight Win11-like scrollbar
-constexpr int SidePaneScrollBarW = 12; // roomier track and thumb for navigation / preview panes
+// One scrollbar thickness for the whole window: the file views sit right next to the
+// preview rail (and the rail sits next to the file list), so a thinner list bar made the
+// two columns at the divider visibly different widths. Everything follows the navigation
+// pane / function-area scrollbar (user-confirmed reference).
+constexpr int ScrollBarW = 12;         // file views (list / tiles)
+constexpr int SidePaneScrollBarW = 12; // navigation + preview rail
 
 // ---- Phase 2: left nav / tree (Win11 Explorer density) ----
 constexpr int NavSectionHeaderH = 22;  // hidden legacy section labels; retained for layout compatibility

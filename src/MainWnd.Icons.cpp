@@ -873,16 +873,9 @@ void CMainWnd::ApplyChromeShellIcons()
     auto applyFav = [&](LPCTSTR name, const std::wstring& bmp) {
         CControlUI* c = m_PaintManager.FindControl(name);
         if (!c || bmp.empty()) return;
-        const int pad = DpiScale(UiTokens::NavIconPad);
-        int bh = c->GetFixedHeight();
-        if (bh <= 0) bh = DpiScale(UiTokens::NavRowH);
-        int y = (bh - navIconPx) / 2;
-        if (y < 0) y = 0;
-        ApplyControlForeIcon(c, bmp, navIconPx, pad, y, false);
-        CDuiString tp;
-        tp.Format(_T("%d,0,%d,0"), pad + navIconPx + DpiScale(UiTokens::NavIconTextGap), DpiScale(UiTokens::NavTextPadR));
-        c->SetAttribute(_T("textpadding"), tp.GetData());
-        c->Invalidate();
+        // Row padding, icon offset and text padding live in ApplyQuickAccessRow so the
+        // pinned favorites below the built-in rows land on the same pixels.
+        ApplyQuickAccessRow(c, bmp);
     };
 
     auto applyFluent = [&](LPCTSTR name, wchar_t glyph) {

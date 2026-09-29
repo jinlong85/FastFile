@@ -296,14 +296,17 @@ void CMainWnd::StyleVerticalScrollBar(CContainerUI* host)
     }
     if (!sb) return;
 
-    const int w = (std::max)(DpiScale(UiTokens::ScrollBarW), 8);
+    const int w = (std::max)(DpiScale(UiTokens::ScrollBarW), 10);
     sb->SetFixedWidth(w);
     sb->SetShowButton1(false);
     sb->SetShowButton2(false);
-    sb->SetAttribute(_T("bkcolor"), UiTokens::ColorScrollTrack);
+    // Track-free (thumb only) like Windows 11: the file view's bar sits directly beside the
+    // preview rail, and two light tracks of the same colour merged into a band twice as wide
+    // as the thumb, which still read as a width mismatch at the divider.
+    sb->SetAttribute(_T("bkcolor"), UiTokens::ColorTransparent);
     sb->SetThumbColor(0xFFC4C4C4); // ColorScrollThumb #FFC4C4C4
-    sb->SetAttribute(_T("button1color"), UiTokens::ColorScrollTrack);
-    sb->SetAttribute(_T("button2color"), UiTokens::ColorScrollTrack);
+    sb->SetAttribute(_T("button1color"), UiTokens::ColorTransparent);
+    sb->SetAttribute(_T("button2color"), UiTokens::ColorTransparent);
 }
 
 void CMainWnd::ApplyFileViewScrollBars()
@@ -424,13 +427,13 @@ void CMainWnd::StyleHorizontalScrollBar(CContainerUI* host)
     if (!host) return;
     CScrollBarUI* sb = host->GetHorizontalScrollBar();
     if (!sb) return;
-    sb->SetFixedHeight((std::max)(DpiScale(UiTokens::ScrollBarW), 8));
+    sb->SetFixedHeight((std::max)(DpiScale(UiTokens::ScrollBarW), 10));
     sb->SetShowButton1(false);
     sb->SetShowButton2(false);
-    sb->SetAttribute(_T("bkcolor"), UiTokens::ColorScrollTrack);
+    sb->SetAttribute(_T("bkcolor"), UiTokens::ColorTransparent);
     sb->SetThumbColor(0xFFC4C4C4);
-    sb->SetAttribute(_T("button1color"), UiTokens::ColorScrollTrack);
-    sb->SetAttribute(_T("button2color"), UiTokens::ColorScrollTrack);
+    sb->SetAttribute(_T("button1color"), UiTokens::ColorTransparent);
+    sb->SetAttribute(_T("button2color"), UiTokens::ColorTransparent);
 }
 
 // ---- View modes ----------------------------------------------------------

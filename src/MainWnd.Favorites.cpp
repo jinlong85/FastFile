@@ -146,6 +146,38 @@ void CMainWnd::UpdateLeftQuickAccessSpacing()
     m_pLeftQuick->NeedParentUpdate();
 }
 
+// One place for the Quick Access row metrics. The four built-in rows come from the XML and
+// the pinned favorites are created at runtime, but both end up in the same list, so they
+// have to share the row padding, the icon offset and the text padding. DuiLib offsets a
+// laid-out child by its own padding (CVerticalLayoutUI::SetPos), which is why the built-in
+// rows sit 12px inside the list: a pinned row without that padding was 12px wider on each
+// side and its icon/label drifted left of the rows above it.
+void CMainWnd::ApplyQuickAccessRow(CControlUI* row, const std::wstring& iconBmp)
+{
+    if (!row) return;
+    const int pad = DpiScale(UiTokens::NavIconPad);
+    const int iconPx = DpiScale(UiTokens::NavIconPx);
+    row->SetAttribute(_T("font"), _T("4"));   // Microsoft YaHei UI 12, matches the XML rows
+    CDuiString rowPad;
+    rowPad.Format(_T("%d,0,%d,0"), pad, pad);
+    row->SetAttribute(_T("padding"), rowPad.GetData());
+
+    if (!iconBmp.empty()) {
+        int bh = row->GetFixedHeight();
+        if (bh <= 0) bh = DpiScale(UiTokens::NavRowH);
+        int y = (bh - iconPx) / 2;
+        if (y < 0) y = 0;
+        ApplyControlForeIcon(row, iconBmp, iconPx, pad, y, false);
+    }
+
+    CDuiString textPad;
+    // icon inset + icon + gap, measured from the row's padded box
+    textPad.Format(_T("%d,0,%d,0"),
+        pad + iconPx + DpiScale(UiTokens::NavIconTextGap), DpiScale(UiTokens::NavTextPadR));
+    row->SetAttribute(_T("textpadding"), textPad.GetData());
+    row->Invalidate();
+}
+
 void CMainWnd::LoadLeftNavSplitter()
 {
     int h = m_leftQuickDesignH;
@@ -655,20 +687,15 @@ void CMainWnd::RebuildLeftPinnedFavorites()
         btn->SetFixedHeight(rowH);
         btn->SetAttribute(_T("align"), _T("left"));
         btn->SetAttribute(_T("valign"), _T("vcenter"));
-        btn->SetAttribute(_T("font"), _T("4"));
         btn->SetAttribute(_T("endellipsis"), _T("true"));
         btn->SetAttribute(_T("bkcolor"), UiTokens::ColorSurface);
         btn->SetAttribute(_T("hotbkcolor"), UiTokens::ColorNavHover);
         btn->SetAttribute(_T("pushedbkcolor"), UiTokens::ColorNavSelected);
         btn->SetAttribute(_T("textcolor"), UiTokens::ColorTextPrimary);
-        CDuiString textPad;
-        textPad.Format(_T("%d,0,%d,0"), DpiScale(UiTokens::NavIconPad + UiTokens::NavIconPx + UiTokens::NavIconTextGap + 4), DpiScale(UiTokens::NavTextPadR));
-        btn->SetAttribute(_T("textpadding"), textPad.GetData());
         btn->SetBorderRound({ DpiScale(UiTokens::RadiusControl), DpiScale(UiTokens::RadiusControl) });
         std::wstring icon = GetShellIconBmp(entry.path, true, iconPx);
         if (icon.empty()) icon = GetStockIconBmp(SIID_FOLDER, iconPx);
-        if (!icon.empty())
-            ApplyControlForeIcon(btn, icon, iconPx, DpiScale(UiTokens::NavIconPad + 4), (rowH - iconPx) / 2, false);
+        ApplyQuickAccessRow(btn, icon);
         m_pLeftFavPins->Add(btn);
     }
     const int minimum = UiTokens::LeftQuickMinH + static_cast<int>(m_quickAccess.size()) * UiTokens::NavRowH;

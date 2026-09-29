@@ -475,6 +475,9 @@ private:
     void StylePreviewRail();
     void SyncPreviewRail();
     bool PreviewRailThumbRect(RECT& out) const;
+    // Shared row metrics for the Quick Access list: the four built-in rows (XML) and the
+    // runtime-pinned favorites must land on exactly the same pixels.
+    void ApplyQuickAccessRow(CControlUI* row, const std::wstring& iconBmp);
     int MeasureListColumnWidth(const std::vector<DirEntry>& all, int iconPx);
     int MeasureTextWidthPx(const std::wstring& text);
 

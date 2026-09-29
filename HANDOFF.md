@@ -227,6 +227,29 @@ DuiLib 的 `CTileLayoutUI` 增加 `columnfirst` 属性（本项目对 third_part
 （左内缩 = 轨道宽度，其余 24），分隔线位置就等于预览栏真正的左边缘，预览文字与分隔线的
 距离、内容宽度都保持原样。
 
+### 分隔线两侧的滚动条宽度
+预览导轨刚好贴着文件列表的竖直滚动条，两条一起看就是同一根“柱”。之前列表用
+`UiTokens::ScrollBarW = 8`、导航与预览用 `SidePaneScrollBarW = 12`，列表滑块明显更窄。
+现在两个 token 都是 12（`ScrollBarW` 是文件视图用、`SidePaneScrollBarW` 给导航 / 预览），
+`main.xml` 里的 `Default VScrollBar/HScrollBar` 与 `vscrollbarstyle/hscrollbarstyle` 也同步
+改成 12，免得以后又被 Default 属性的 8 覆盖。
+另外 `StyleVerticalScrollBar/StyleHorizontalScrollBar` 把轨道底色改成透明（只画滑块，
+Windows 11 样式）：两条 `#FFF7F7F7` 轨道紧挨着会连成一条 36 设计像素的浅色带，看上去
+比滑块宽一倍，仍然像“宽度不一致”。
+
+### 快速访问：内置行与运行时收藏行对齐
+右侧收藏行（`RebuildLeftPinnedFavorites` 里 `new CButtonUI` 的那些）比上面四行偏左 12 物理
+像素、行矩形也宽 24 像素。根因是 **DuiLib 的布局会用子控件自己的 padding 内缩它的矩形**：
+`CVerticalLayoutUI::SetPos` 里左对齐分支是 `rcCtrl.left = rc.left + rcPadding.left`，
+宽度是 `szAvailable.cx - padding.left - padding.right`。内置四行在 `main.xml` 里带
+`padding="4,0,4,0"`、主题里又设成 `8,0,8,0`（12 物理像素），而运行时新建的按钮 padding
+是 0，于是两边矩形和图标 / 文字基准全都不一样。
+
+现在两边都走 `CMainWnd::ApplyQuickAccessRow()`：行 padding、图标偏移（`NavIconPad`）、
+文字 padding（`NavIconPad + NavIconPx + NavIconTextGap`）只写一份，
+`ApplyChromeShellIcons` 的 `applyFav` 和 `RebuildLeftPinnedFavorites` 都调它。
+实测两条行的 rect 都是 `36..327`、图标 ink 都从 x=49 起，选中高亮也等宽。
+
 ### 排序不再强制文件夹在前
 `EntryComesBefore()` 取代了原来"`if (a.isDir != b.isDir) return a.isDir;`"的写法，
 `BuildDisplayOrder()` 把文件夹和文件合并后 `stable_sort`。资源管理器本来就只按当前列
