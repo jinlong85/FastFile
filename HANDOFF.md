@@ -264,6 +264,27 @@ Windows 11 样式）：两条 `#FFF7F7F7` 轨道紧挨着会连成一条 36 设�
 `ToolbarIconPad` 左对齐，`textpadding` 与原来一致。查看图标是资源管理器那种“显示器 + 底座”，
 删除图标的内侧两道竖线用次级浅色。
 
+### 顶部功能区改版（标签卡片 / 地址栏在命令栏之上 / 命令栏白底）
+按资源管理器参考重排了 `main.xml` 里的顶部顺序：`tab_bar` → `favorites_bar` →
+`address_bar` → `toolbar`。**顺序很重要**：参考里地址栏在命令栏*上方*，命令栏与文件区同为
+白底（`#FFFFFF`）并用 1px `#DCDCDC` 分隔，所以 `ApplyUiChromeTokens()` 里原来“所有 band
+都用 surface + #E5E5E5”的循环被拆开单独覆盖：
+
+- `tab_bar`：底色 `#FFDBDBDB`（比 chrome surface 深一档的带）+ 底部 1px `#FFCECECE`。
+- `toolbar`：底色改成 `ColorContent`（白），其余 band 仍是 surface。
+- `path_host` / `search_box`：白底 + 1px `#FFD6D6D6` + 圆角 `FieldRound`(8 @96dpi)。
+  **坑**：`MainWnd.Dpi.cpp` 里有个统一把一批控件设成 4px 圆角的循环，原来包含
+  `path_host`/`search_box`，会把 XML 里的 8px 静默改回 4px——现在这两个控件从那个循环里
+  移出，单独设 `FieldRound`。
+
+标签卡片由 `RebuildTabStrip()` 生成：`TabCardH`(30) 高的按钮，`TabCardRound`(6) 圆角、
+1px 边框，未选中 `ColorTabIdleBg #D2D2D2` / `ColorTabIdleBorder #C8C8C8`，当前页
+`ColorTabActive #F3F3F3`（= chrome surface，所以和下面一行连成一体）/
+`ColorTabActiveBorder #E5E5E5`；卡片之间的间距用包裹层的右 padding（`TabCardGap` 5）。
+行高与其它 band 一起走 `ScaleNamedFixed()`：`TabBarH` 36、`AddressBarH` 44、`ToolbarH` 44；
+地址栏的前进/后退/上级/刷新改成 `NavGlyphPx`(20) 的位图图标（原来是 16 号 MDL2 字形），
+按钮 40×32；命令栏的图标按钮加宽到 40、分隔线加高到 24，整体更接近参考的疏密。
+
 ### 快速访问区高度 + 可拖动的分隔线
 两个坑叠在一起：
 

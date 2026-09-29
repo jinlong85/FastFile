@@ -26,13 +26,19 @@ constexpr int GapGroup = SpaceSm;   // toolbar group gaps
 constexpr int SepH = 20;            // command-bar separators (bar is 40, buttons 32)
 constexpr int HitTabH = 24;
 constexpr int TabIconPx = 16;
-constexpr int TabMinW = 96;
-constexpr int TabMaxW = 240;
+constexpr int TabMinW = 132;          // Explorer-style tab cards are roomy
+constexpr int TabMaxW = 280;
 constexpr int TabCloseW = 20;
 constexpr int HitBreadcrumbH = 30;      // address text stays vertically centered
 constexpr int CmdBtnH = 32;
-constexpr int TabBarH = 28;
-constexpr int ToolbarH = 40;
+// Phase 6: Explorer-style chrome - a taller tab strip with tab "cards", a roomier address
+// row whose path/search fields are white rounded boxes, and the command bar sitting on the
+// white content surface instead of the grey chrome.
+constexpr int TabBarH = 36;
+constexpr int TabCardH = 30;          // chip inside the strip
+constexpr int TabCardGap = 5;         // gap between chips
+constexpr int TabCardRound = 6;       // chip corner radius
+constexpr int ToolbarH = 44;
 constexpr int BreadcrumbBarH = 28;     // legacy; path merged into address_bar
 constexpr int BreadcrumbSegPadX = 3;   // compact Explorer-style segment gap
 constexpr int BreadcrumbSepW = 12;
@@ -44,7 +50,8 @@ constexpr int FavIconPx = 16;
 constexpr int FavLabelW = 72;          // star + fav left mark
 constexpr int FavLabelBaselineLift = 4; // design px to raise the CJK "★ 收藏" label onto the
                                         // Latin baseline of the chips beside it
-constexpr int AddressBarH = 32;
+constexpr int AddressBarH = 44;       // roomier row; the path/search fields stay 32 and centre
+constexpr int FieldRound = 8;         // path / search field corner radius
 constexpr int AddressBarPadY = 2;
 constexpr int SearchBoxH = 28;
 constexpr int SearchChkW = 100;        // ☐ 含子目录
@@ -88,6 +95,7 @@ constexpr int ToolbarTextBtnMinW = 76;  // New/Sort/View: icon + label + chevron
 constexpr int ToolbarIconPad = 8;       // left/right pad around toolbar glyphs
 constexpr int ToolbarChevronPad = 16;   // room for dropdown chevron
 constexpr int ToolbarNavBtnW = 28;      // address-row navigation buttons
+constexpr int NavGlyphPx = 20;          // address-row glyph size (roomier row)
 constexpr int ToolbarGroupGap = SpaceSm;
 constexpr int ToolbarSepPad = SpaceSm;
 
@@ -121,8 +129,16 @@ inline constexpr const wchar_t* ColorHover         = L"#FFE5E5E5";
 inline constexpr const wchar_t* ColorPressed       = L"#FFD4D4D4";
 inline constexpr const wchar_t* ColorActiveFill    = L"#FFFFFFFF";  // active tab / selected chip
 inline constexpr const wchar_t* ColorActiveHot     = L"#FFF0F0F0";
-inline constexpr const wchar_t* ColorTabActive     = L"#FFE5EEF8";
-inline constexpr const wchar_t* ColorTabActiveHot  = L"#FFD9E8F7";
+// Phase 6 chrome palette (sampled from the Explorer-style reference)
+inline constexpr const wchar_t* ColorTabStripBg    = L"#FFDBDBDB";  // tab band behind the cards
+inline constexpr const wchar_t* ColorTabIdleBg     = L"#FFD2D2D2";  // inactive tab card
+inline constexpr const wchar_t* ColorTabIdleBorder = L"#FFC8C8C8";
+inline constexpr const wchar_t* ColorTabActive     = L"#FFF3F3F3";  // active card = chrome surface
+inline constexpr const wchar_t* ColorTabActiveHot  = L"#FFF7F7F7";
+inline constexpr const wchar_t* ColorTabActiveBorder = L"#FFE5E5E5";
+inline constexpr const wchar_t* ColorChromeDivider = L"#FFDCDCDC";  // band separators
+inline constexpr const wchar_t* ColorFieldBg       = L"#FFFFFFFF";  // path / search field
+inline constexpr const wchar_t* ColorFieldBorder   = L"#FFD6D6D6";
 inline constexpr const wchar_t* ColorTransparent   = L"#00FFFFFF";
 inline constexpr const wchar_t* ColorDanger        = L"#FFB91C1C";
 inline constexpr const wchar_t* ColorDangerHover   = L"#FFFEE2E2";

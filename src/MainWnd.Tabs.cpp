@@ -41,12 +41,17 @@ void CMainWnd::RebuildTabStrip()
     const int tabIconPad = DpiScale(UiTokens::SpaceSm);
     const int tabTextGap = DpiScale(UiTokens::SpaceXs);
     const int tabTextPadR = DpiScale(UiTokens::SpaceSm);
-    const int tabH = DpiScale(UiTokens::HitTabH);
+    // Explorer-style tab "cards": a bordered rounded chip inside the darker tab strip, with
+    // the active tab painted in the chrome surface colour so it merges with the row below.
+    const int tabH = DpiScale(UiTokens::TabCardH);
+    const int tabGap = DpiScale(UiTokens::TabCardGap);
 
     for (int i = 0; i < static_cast<int>(m_tabs.size()); ++i) {
         auto* host = new CHorizontalLayoutUI;
         host->SetFixedHeight(tabH);
-        host->SetAttribute(_T("padding"), _T("0,0,2,0"));
+        CDuiString hostPad;
+        hostPad.Format(_T("0,0,%d,0"), tabGap);
+        host->SetAttribute(_T("padding"), hostPad.GetData());
 
         CDuiString btnName, closeName;
         btnName.Format(_T("tab_btn_%d"), i);
@@ -59,11 +64,11 @@ void CMainWnd::RebuildTabStrip()
         btn->SetAttribute(_T("align"), _T("center"));
         btn->SetAttribute(_T("valign"), _T("vcenter"));
         btn->SetAttribute(_T("endellipsis"), _T("true"));
-        btn->SetAttribute(_T("bkcolor"), UiTokens::ColorTransparent);
-        btn->SetAttribute(_T("bordercolor"), UiTokens::ColorTransparent);
-        btn->SetAttribute(_T("bordersize"), _T("0"));
-        btn->SetAttribute(_T("hotbkcolor"), UiTokens::ColorHover);
-        btn->SetAttribute(_T("pushedbkcolor"), UiTokens::ColorPressed);
+        btn->SetAttribute(_T("bkcolor"), UiTokens::ColorTabIdleBg);
+        btn->SetAttribute(_T("bordercolor"), UiTokens::ColorTabIdleBorder);
+        btn->SetAttribute(_T("bordersize"), _T("1"));
+        btn->SetAttribute(_T("hotbkcolor"), UiTokens::ColorTabActiveHot);
+        btn->SetAttribute(_T("pushedbkcolor"), UiTokens::ColorTabActiveHot);
         {
             CDuiString tp;
             tp.Format(_T("%d,0,%d,0"),
@@ -75,8 +80,9 @@ void CMainWnd::RebuildTabStrip()
             btn->SetAttribute(_T("textcolor"), UiTokens::ColorTextPrimary);
             btn->SetAttribute(_T("font"), _T("0"));
             btn->SetAttribute(_T("hotbkcolor"), UiTokens::ColorTabActiveHot);
+            btn->SetAttribute(_T("bordercolor"), UiTokens::ColorTabActiveBorder);
         } else {
-            btn->SetAttribute(_T("textcolor"), UiTokens::ColorTextTabIdle);
+            btn->SetAttribute(_T("textcolor"), UiTokens::ColorTextPrimary);
         }
         int textW = MeasureTextWidth(title);
         if (textW <= 0)
@@ -85,7 +91,7 @@ void CMainWnd::RebuildTabStrip()
         if (w < DpiScale(UiTokens::TabMinW)) w = DpiScale(UiTokens::TabMinW);
         if (w > DpiScale(UiTokens::TabMaxW)) w = DpiScale(UiTokens::TabMaxW);
         btn->SetFixedWidth(w);
-        SIZE tabRound = { DpiScale(UiTokens::RadiusControl), DpiScale(UiTokens::RadiusControl) };
+        SIZE tabRound = { DpiScale(UiTokens::TabCardRound), DpiScale(UiTokens::TabCardRound) };
         btn->SetBorderRound(tabRound);
         std::wstring tabIcon = IsThisPcPath(m_tabs[i].path)
             ? GetStockIconBmp(SIID_DESKTOPPC, tabIconPx)

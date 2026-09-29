@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <!-- FastFile Win11 Explorer-inspired chrome. Original assets only — no 360 trademarks.
      Design sizes are 96-DPI baseline; CMainWnd scales fonts/heights/icons at runtime.
      Phase 3: command-bar groups (Navigation | Clipboard | Organize | View).
@@ -32,9 +32,9 @@
     </HorizontalLayout>
 
     <!-- B: Tabs below the caption; the trailing spacer keeps + next to the last tab. -->
-    <HorizontalLayout name="tab_bar" height="28" bkcolor="#FFF3F3F3" padding="12,4,12,0" bordercolor="#FFE5E5E5" bordersize="0,0,0,1">
+    <HorizontalLayout name="tab_bar" height="36" bkcolor="#FFDBDBDB" padding="12,3,12,3" bordercolor="#FFCECECE" bordersize="0,0,0,1">
       <HorizontalLayout name="tab_strip" />
-      <Button name="btn_tab_add" text="+" width="28" height="22" textcolor="#FF4A4A4A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" bordersize="0" padding="4,0,0,0" tooltip="新建标签" />
+      <Button name="btn_tab_add" text="+" width="30" height="30" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#FFCFCFCF" pushedbkcolor="#FFC4C4C4" bordersize="0" padding="4,0,0,0" tooltip="新建标签" />
       <!-- Flexible trailing area; tab_strip is resized to its actual tab content in code. -->
       <Control />
     </HorizontalLayout>
@@ -47,27 +47,47 @@
       <Control />
     </HorizontalLayout>
 
+    <!-- Path + search: Explorer-style breadcrumb/address merge (favorites stay above) -->
+    <HorizontalLayout name="address_bar" height="44" bkcolor="#FFF3F3F3" padding="12,6,12,6" childvalign="vcenter" bordercolor="#FFDCDCDC" bordersize="0,0,0,1">
+      <Button name="btn_back" text="←" width="40" height="32" tooltip="后退" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
+      <Button name="btn_forward" text="→" width="40" height="32" tooltip="前进" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
+      <Button name="btn_up" text="" width="40" height="32" tooltip="上级" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
+      <Button name="btn_refresh" text="" width="40" height="32" tooltip="刷新" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
+      <Control name="gap_address_nav" width="6" />
+      <HorizontalLayout name="path_host" height="32" bkcolor="#FFFFFFFF" bordercolor="#FFD6D6D6" bordersize="1" borderround="8,8" padding="6,0,6,0" childvalign="vcenter">
+        <HorizontalLayout name="breadcrumb" childpadding="0" childvalign="vcenter" />
+        <HorizontalLayout name="address_edit_host" visible="false" padding="4,0,4,0" childvalign="vcenter">
+          <Edit name="edit_address" text="" textcolor="#FF1A1A1A" nativebkcolor="#FFFFFFFF" bkcolor="#FFFFFFFF" tipvalue="地址栏 · 输入路径后回车跳转" padding="0,0,0,0" />
+        </HorizontalLayout>
+      </HorizontalLayout>
+      <Control width="6" />
+      <HorizontalLayout name="search_box" width="210" height="32" bkcolor="#FFFFFFFF" bordercolor="#FFD6D6D6" bordersize="1" borderround="8,8" padding="8,0,8,0" childvalign="vcenter" tooltip="输入即筛选；勾选「含子目录」后按回车开始递归搜索">
+        <Edit name="edit_search" text="" textcolor="#FFB0B0B0" nativebkcolor="#FFFFFFFF" bkcolor="#FFFFFFFF" tipvalue="搜索" padding="0,0,0,0" />
+      </HorizontalLayout>
+      <Option name="chk_recursive" text="☐ 含子目录" width="100" height="28" font="0" textcolor="#FF5A5A5A" selected="false" align="left" valign="vcenter" textpadding="4,0,4,0" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" selectedbkcolor="#00FFFFFF" padding="6,0,0,0" tooltip="在当前文件夹及子文件夹中搜索" />
+    </HorizontalLayout>
+
     <!-- Windows 11 command bar: New | edit commands | Sort / View | More. -->
-    <HorizontalLayout name="toolbar" height="40" bkcolor="#FFF3F3F3" padding="12,4,12,4" childvalign="vcenter" bordercolor="#FFE5E5E5" bordersize="0,0,0,1">
+    <HorizontalLayout name="toolbar" height="44" bkcolor="#FFFFFFFF" padding="12,6,12,6" childvalign="vcenter" bordercolor="#FFDCDCDC" bordersize="0,0,0,1">
       <!-- Icon + label + chevron in one button: the glyph is applied as an image in code so the
            label keeps the UI font, and the whole button highlights as a unit on hover. -->
       <Button name="btn_new" text="新建  ⌄" width="76" height="32" tooltip="新建" align="left" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
       <Control name="gap_new" width="6" height="1" />
-      <Control name="sep_new" width="1" height="20" bkcolor="#FFD0D0D0" />
+      <Control name="sep_new" width="1" height="24" bkcolor="#FFD0D0D0" />
       <Control name="gap_new2" width="8" height="1" />
-      <Button name="btn_cut" text="" width="32" height="32" tooltip="剪切" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
-      <Button name="btn_copy" text="" width="32" height="32" tooltip="复制" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" padding="2,0,0,0" />
-      <Button name="btn_paste" text="" width="32" height="32" tooltip="粘贴" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" padding="2,0,0,0" />
-      <Button name="btn_rename" text="" width="32" height="32" tooltip="重命名" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" padding="2,0,0,0" />
-      <Button name="btn_share" text="" width="32" height="32" tooltip="共享" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" padding="2,0,0,0" />
-      <Button name="btn_delete" text="" width="32" height="32" tooltip="删除" textcolor="#FFB91C1C" bkcolor="#00FFFFFF" hotbkcolor="#FFFEE2E2" pushedbkcolor="#FFFECACA" padding="2,0,0,0" />
+      <Button name="btn_cut" text="" width="40" height="32" tooltip="剪切" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
+      <Button name="btn_copy" text="" width="40" height="32" tooltip="复制" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
+      <Button name="btn_paste" text="" width="40" height="32" tooltip="粘贴" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
+      <Button name="btn_rename" text="" width="40" height="32" tooltip="重命名" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
+      <Button name="btn_share" text="" width="40" height="32" tooltip="共享" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
+      <Button name="btn_delete" text="" width="40" height="32" tooltip="删除" textcolor="#FFB91C1C" bkcolor="#00FFFFFF" hotbkcolor="#FFFEE2E2" pushedbkcolor="#FFFECACA" />
       <Control name="gap_org" width="8" height="1" />
-      <Control name="sep_organize" width="1" height="20" bkcolor="#FFD0D0D0" />
+      <Control name="sep_organize" width="1" height="24" bkcolor="#FFD0D0D0" />
       <Control name="gap_org2" width="8" height="1" />
       <Button name="btn_sort" text="排序  ⌄" width="76" height="32" tooltip="排序" align="left" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
       <Button name="btn_view_menu" text="查看  ⌄" width="76" height="32" tooltip="查看" align="left" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
       <Control name="gap_more" width="8" height="1" />
-      <Control name="sep_more" width="1" height="20" bkcolor="#FFD0D0D0" />
+      <Control name="sep_more" width="1" height="24" bkcolor="#FFD0D0D0" />
       <Control name="gap_more2" width="8" height="1" />
       <Button name="btn_more" text="•••" width="32" height="32" tooltip="更多选项" font="1" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
       <Button name="btn_toggle_preview" text="" width="0" height="0" visible="false" tooltip="显示/隐藏预览窗格" />
@@ -86,25 +106,6 @@
       <Label name="toolbar_hint" text="" font="3" textcolor="#FF8A8A8A" width="0" visible="false" />
     </HorizontalLayout>
 
-    <!-- Path + search: Explorer-style breadcrumb/address merge (favorites stay above) -->
-    <HorizontalLayout name="address_bar" height="32" bkcolor="#FFF3F3F3" padding="12,2,12,2" childvalign="vcenter" bordercolor="#FFE5E5E5" bordersize="0,0,0,1">
-      <Button name="btn_back" text="←" width="28" height="26" tooltip="后退" textcolor="#FF4A4A4A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
-      <Button name="btn_forward" text="→" width="28" height="26" tooltip="前进" textcolor="#FF4A4A4A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" padding="2,0,0,0" />
-      <Button name="btn_up" text="" width="28" height="26" tooltip="上级" textcolor="#FF4A4A4A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
-      <Button name="btn_refresh" text="" width="28" height="26" tooltip="刷新" textcolor="#FF4A4A4A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
-      <Control name="gap_address_nav" width="4" />
-      <HorizontalLayout name="path_host" bkcolor="#FFFFFFFF" bordercolor="#FFD0D0D0" bordersize="1" padding="4,0,4,0" childvalign="vcenter">
-        <HorizontalLayout name="breadcrumb" childpadding="0" childvalign="vcenter" />
-        <HorizontalLayout name="address_edit_host" visible="false" padding="4,0,4,0" childvalign="vcenter">
-          <Edit name="edit_address" text="" textcolor="#FF1A1A1A" nativebkcolor="#FFFFFFFF" bkcolor="#FFFFFFFF" tipvalue="地址栏 · 输入路径后回车跳转" padding="0,0,0,0" />
-        </HorizontalLayout>
-      </HorizontalLayout>
-      <Control width="6" />
-      <HorizontalLayout name="search_box" width="210" bkcolor="#FFFFFFFF" bordercolor="#FFD0D0D0" bordersize="1" padding="8,0,8,0" childvalign="vcenter" tooltip="输入即筛选；勾选「含子目录」后按回车开始递归搜索">
-        <Edit name="edit_search" text="" textcolor="#FFB0B0B0" nativebkcolor="#FFFFFFFF" bkcolor="#FFFFFFFF" tipvalue="搜索" padding="0,0,0,0" />
-      </HorizontalLayout>
-      <Option name="chk_recursive" text="☐ 含子目录" width="100" height="28" font="0" textcolor="#FF5A5A5A" selected="false" align="left" valign="vcenter" textpadding="4,0,4,0" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" selectedbkcolor="#00FFFFFF" padding="6,0,0,0" tooltip="在当前文件夹及子文件夹中搜索" />
-    </HorizontalLayout>
 
 <HorizontalLayout name="body_host" bkcolor="#FFFFFFFF">
       <!-- left_panel / preview_pane are HorizontalLayouts so the app can resize their

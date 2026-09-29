@@ -287,10 +287,16 @@ void CMainWnd::ApplyDpiScaledChrome()
         _T("btn_new"), _T("btn_cut"), _T("btn_copy"), _T("btn_paste"), _T("btn_rename"),
         _T("btn_share"), _T("btn_delete"), _T("btn_sort"), _T("btn_view_menu"), _T("btn_more"),
         _T("btn_back"), _T("btn_forward"), _T("btn_up"), _T("btn_refresh"),
-        _T("btn_tab_add"), _T("path_host"), _T("search_box")
+        _T("btn_tab_add")
     }) {
         if (CControlUI* c = m_PaintManager.FindControl(nm))
             c->SetBorderRound(ctlRound);
+    }
+    // Path / search fields use the roomier Explorer radius (8 @96dpi).
+    const SIZE fieldRound = { DpiScale(UiTokens::FieldRound), DpiScale(UiTokens::FieldRound) };
+    for (LPCTSTR nm : { _T("path_host"), _T("search_box") }) {
+        if (CControlUI* c = m_PaintManager.FindControl(nm))
+            c->SetBorderRound(fieldRound);
     }
 
     // Grow client area to design*scale on first apply so 150%/200% feels premium

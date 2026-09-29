@@ -146,9 +146,11 @@ void CMainWnd::ApplyUiChromeTokens()
     setPad(_T("preview_body"), UiTokens::SidePaneScrollBarW, UiTokens::PreviewPad,
         UiTokens::PreviewPad, UiTokens::PreviewPad);
 
-    // Unified Win11 light surface for command bar / tabs / breadcrumb / address / favorites
+    // Chrome bands. Phase 6 (Explorer-style reference): the tab strip is a slightly darker
+    // band carrying tab "cards", the address row keeps the chrome surface, and the command
+    // bar sits on the white content surface with a divider above and below it.
     const LPCWSTR surf = UiTokens::ColorSurface;
-    const LPCWSTR border = UiTokens::ColorBorder;
+    const LPCWSTR border = UiTokens::ColorChromeDivider;
     for (LPCTSTR band : {
         _T("title_bar"), _T("tab_bar"), _T("favorites_bar"), _T("toolbar"),
         _T("address_bar"),
@@ -156,6 +158,20 @@ void CMainWnd::ApplyUiChromeTokens()
     }) {
         setBk(band, surf);
         setBorder(band, border, _T("0,0,0,1"));
+    }
+    setBk(_T("tab_bar"), UiTokens::ColorTabStripBg);
+    setBorder(_T("tab_bar"), _T("#FFCECECE"), _T("0,0,0,1"));
+    setBk(_T("toolbar"), UiTokens::ColorContent);
+    // Path / search fields: white rounded boxes on the chrome surface.
+    for (LPCTSTR field : { _T("path_host"), _T("search_box") }) {
+        if (CControlUI* c = m_PaintManager.FindControl(field)) {
+            c->SetAttribute(_T("bkcolor"), UiTokens::ColorFieldBg);
+            c->SetAttribute(_T("bordercolor"), UiTokens::ColorFieldBorder);
+            c->SetAttribute(_T("bordersize"), _T("1"));
+            CDuiString round;
+            round.Format(_T("%d,%d"), DpiScale(UiTokens::FieldRound), DpiScale(UiTokens::FieldRound));
+            c->SetAttribute(_T("borderround"), round.GetData());
+        }
     }
     // status_bar top border only
     setBorder(_T("status_bar"), UiTokens::ColorBorderStrong, _T("0,1,0,0"));

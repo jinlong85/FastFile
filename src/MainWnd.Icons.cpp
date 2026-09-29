@@ -1135,10 +1135,26 @@ void CMainWnd::ApplyChromeShellIcons()
     };
     // Windows built-in Segoe MDL2 glyphs keep the command bar visually aligned
     // with Explorer without copying icons or using legacy coloured shell32 art.
-    applyFluent(_T("btn_back"), 0xE0A6);
-    applyFluent(_T("btn_forward"), 0xE0AB);
-    applyFluent(_T("btn_up"), 0xE74A);
-    applyFluent(_T("btn_refresh"), 0xE72C);
+    // Address-row navigation: the same glyphs, rendered as bitmaps so they scale with the
+    // roomier row instead of relying on the MDL2 font size.
+    auto applyNavIcon = [&](LPCTSTR name, wchar_t glyph) {
+        CControlUI* c = m_PaintManager.FindControl(name);
+        if (!c) return;
+        const int px = DpiScale(UiTokens::NavGlyphPx);
+        const std::wstring bmp = GetGlyphIconBmp(glyph, px, RGB(0x3A, 0x3A, 0x3A));
+        if (bmp.empty()) return;
+        int bw = c->GetFixedWidth();
+        int bh = c->GetFixedHeight();
+        if (bw <= 0) bw = DpiScale(UiTokens::ToolbarNavBtnW + 12);
+        if (bh <= 0) bh = DpiScale(UiTokens::CmdBtnH);
+        ApplyControlForeIcon(c, bmp, px, (bw - px) / 2, (bh - px) / 2, false);
+        c->SetAttribute(_T("textpadding"), _T("0,0,0,0"));
+        c->Invalidate();
+    };
+    applyNavIcon(_T("btn_back"), 0xE0A6);
+    applyNavIcon(_T("btn_forward"), 0xE0AB);
+    applyNavIcon(_T("btn_up"), 0xE74A);
+    applyNavIcon(_T("btn_refresh"), 0xE72C);
     applyFluent(_T("btn_toggle_preview"), 0xE7F4);
     applyFluent(_T("btn_newfolder"), 0xE710);
 
