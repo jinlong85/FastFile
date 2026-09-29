@@ -139,7 +139,12 @@ void CMainWnd::ApplyUiChromeTokens()
     setPad(_T("address_bar"), px, UiTokens::AddressBarPadY, px, UiTokens::AddressBarPadY);
     setPad(_T("left_panel"), UiTokens::SpaceSm, UiTokens::SpaceSm, UiTokens::SpaceSm, UiTokens::SpaceSm);
     setPad(_T("icon_scroll"), px, px, px, px);
-    setPad(_T("preview_pane"), UiTokens::PreviewPad, UiTokens::PreviewPad, UiTokens::PreviewPad, UiTokens::PreviewPad);
+    // Preview pane: the wrapper stays unpadded - the merged scroll rail sits flush along
+    // the divider and preview_body carries the content inset (its left inset equals the
+    // rail width, so the preview text keeps its original distance from the divider).
+    setPad(_T("preview_pane"), 0, 0, 0, 0);
+    setPad(_T("preview_body"), UiTokens::SidePaneScrollBarW, UiTokens::PreviewPad,
+        UiTokens::PreviewPad, UiTokens::PreviewPad);
 
     // Unified Win11 light surface for command bar / tabs / breadcrumb / address / favorites
     const LPCWSTR surf = UiTokens::ColorSurface;
@@ -247,7 +252,9 @@ void CMainWnd::ApplyUiChromeTokens()
     }
 
     // Phase 3: preview pane density + Surface header chrome; status bar density
-    setPad(_T("preview_pane"), UiTokens::PreviewPad, UiTokens::PreviewPad,
+    // (the rail owns the pane's left edge; preview_body holds the content inset)
+    setPad(_T("preview_pane"), 0, 0, 0, 0);
+    setPad(_T("preview_body"), UiTokens::SidePaneScrollBarW, UiTokens::PreviewPad,
         UiTokens::PreviewPad, UiTokens::PreviewPad);
     setPad(_T("status_bar"), UiTokens::StatusPadX, UiTokens::StatusPadY,
         UiTokens::StatusPadX, UiTokens::StatusPadY);

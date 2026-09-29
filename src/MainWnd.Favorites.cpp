@@ -264,13 +264,11 @@ int CMainWnd::HitTestPaneDivider(int clientX, int clientY) const
             && clientX >= r.right - band && clientX <= r.right + band)
             return 1;
     }
-    if (m_pPreviewPane && m_pPreviewPane->IsVisible()) {
-        const RECT r = m_pPreviewPane->GetPos();
-        if (r.right > r.left && r.bottom > r.top
-            && clientY >= r.top && clientY < r.bottom
-            && clientX >= r.left - band && clientX <= r.left + band)
-            return 2;
-    }
+    // The preview pane has no band of its own: its width grip is merged into the
+    // preview scroll rail (IsPreviewScrollBarHit), which hugs the divider on the
+    // pane's side.  A +/- band here used to swallow the file list's own scrollbar,
+    // which sits immediately left of the divider, so dragging that bar resized the
+    // preview instead of scrolling the list.
     return 0;
 }
 
@@ -290,25 +288,15 @@ bool CMainWnd::IsPaneScrollBarHit(int clientX, int clientY) const
 
 bool CMainWnd::IsPreviewScrollBarHit(int clientX, int clientY) const
 {
-    if (!m_pPreviewBody) return false;
-    const auto contains = [clientX, clientY](CScrollBarUI* bar) {
-        if (!bar || !bar->IsVisible()) return false;
-        const RECT r = bar->GetPos();
-        return clientX >= r.left && clientX < r.right
-            && clientY >= r.top && clientY < r.bottom;
-    };
-    if (contains(m_pPreviewBody->GetVerticalScrollBar())
-        || contains(m_pPreviewBody->GetHorizontalScrollBar()))
-        return true;
-
-    // When no content overflows, Preview.cpp reserves a pale rail of the same
-    // width. Treat that reserved rail as the same gesture surface so adjusting
-    // the preview never depends on whether a scrollbar happens to be visible.
-    const RECT body = m_pPreviewBody->GetPos();
-    const int railW = DpiScale(UiTokens::SidePaneScrollBarW);
-    return body.right > body.left && body.bottom > body.top
-        && clientX >= body.right - railW && clientX < body.right
-        && clientY >= body.top && clientY < body.bottom;
+    // Single merged surface: the rail column that doubles as the preview scrollbar.
+    // Vertical drags scroll the preview, horizontal drags resize the pane, and the
+    // cursor turns into the resize arrow here (WM_SETCURSOR).
+    if (!m_pPreviewRail || !m_pPreviewRail->IsVisible()) return false;
+    if (m_pPreviewPane && !m_pPreviewPane->IsVisible()) return false;
+    const RECT r = m_pPreviewRail->GetPos();
+    if (r.right <= r.left || r.bottom <= r.top) return false;
+    return clientX >= r.left && clientX < r.right
+        && clientY >= r.top && clientY < r.bottom;
 }
 
 void CMainWnd::ApplyPaneDragWidth(int kind, int physicalWidth)

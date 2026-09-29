@@ -337,6 +337,86 @@ void CMainWnd::StyleSidePaneScrollBars(CContainerUI* host)
     style(host->GetHorizontalScrollBar(), false);
 }
 
+// The preview rail is the scrollbar of the preview pane AND the grip that adjusts the
+// pane width (see IsPreviewScrollBarHit / HitTestPaneDivider). It is a real
+// CScrollBarUI placed along the divider, so it gets the same width, track and thumb as
+// the navigation scrollbar inside left_panel instead of DuiLib's thin default.
+//
+// preview_body keeps its own DuiLib scrollbar: that one still owns the layout math
+// (scroll range, wheel, keyboard, child shifting) but is collapsed to zero width and
+// fully transparent, so the rail is the only bar the user ever sees. SyncPreviewRail()
+// mirrors range/position onto the rail and drives the body when the rail is dragged.
+void CMainWnd::StylePreviewRail()
+{
+    if (!m_pPreviewRail) return;
+    if (m_pPreviewBody) m_pPreviewRail->SetOwner(m_pPreviewBody);
+    const int extent = (std::max)(DpiScale(UiTokens::SidePaneScrollBarW), 10);
+    m_pPreviewRail->SetHorizontal(false);
+    m_pPreviewRail->SetFixedWidth(extent);
+    m_pPreviewRail->SetShowButton1(false);
+    m_pPreviewRail->SetShowButton2(false);
+    m_pPreviewRail->SetAttribute(_T("bkcolor"), UiTokens::ColorScrollTrack);
+    m_pPreviewRail->SetAttribute(_T("button1color"), UiTokens::ColorScrollTrack);
+    m_pPreviewRail->SetAttribute(_T("button2color"), UiTokens::ColorScrollTrack);
+    m_pPreviewRail->SetThumbColor(0xFFB5B5B5);
+    m_pPreviewRail->SetVisible(true);
+
+    if (m_pPreviewBody) {
+        if (CScrollBarUI* bodyBar = m_pPreviewBody->GetVerticalScrollBar()) {
+            bodyBar->SetFixedWidth(0);
+            bodyBar->SetShowButton1(false);
+            bodyBar->SetShowButton2(false);
+            bodyBar->SetAttribute(_T("bkcolor"), UiTokens::ColorTransparent);
+            bodyBar->SetAttribute(_T("button1color"), UiTokens::ColorTransparent);
+            bodyBar->SetAttribute(_T("button2color"), UiTokens::ColorTransparent);
+            bodyBar->SetThumbColor(0);
+        }
+    }
+    SyncPreviewRail();
+}
+
+void CMainWnd::SyncPreviewRail()
+{
+    if (!m_pPreviewRail || !m_pPreviewBody) return;
+    CScrollBarUI* bodyBar = m_pPreviewBody->GetVerticalScrollBar();
+    const bool scrollable = bodyBar && bodyBar->IsVisible() && bodyBar->GetScrollRange() > 0;
+    if (!scrollable) {
+        // Nothing to scroll: keep the rail (it is also the width grip and the pane
+        // boundary) but drop the thumb instead of letting DuiLib paint a full-height
+        // block for range 0.
+        if (m_pPreviewRail->GetScrollRange() != 0) m_pPreviewRail->SetScrollRange(0);
+        if (m_pPreviewRail->GetScrollPos() != 0) m_pPreviewRail->SetScrollPos(0, false);
+        if (m_pPreviewRail->GetThumbColor() != 0) m_pPreviewRail->SetThumbColor(0);
+        return;
+    }
+    const int range = bodyBar->GetScrollRange();
+    const int pos = bodyBar->GetScrollPos();
+    if (m_pPreviewRail->GetScrollRange() != range) m_pPreviewRail->SetScrollRange(range);
+    if (m_pPreviewRail->GetScrollPos() != pos) m_pPreviewRail->SetScrollPos(pos, false);
+    if (m_pPreviewRail->GetThumbColor() != 0xFFB5B5B5) m_pPreviewRail->SetThumbColor(0xFFB5B5B5);
+}
+
+// Thumb rectangle of the rail, using DuiLib's own sizing formula (CScrollBarUI::SetPos,
+// vertical, buttons hidden) so clicking the track pages the way the drawn thumb implies.
+bool CMainWnd::PreviewRailThumbRect(RECT& out) const
+{
+    out = RECT{};
+    if (!m_pPreviewRail || !m_pPreviewRail->IsVisible()) return false;
+    const int range = m_pPreviewRail->GetScrollRange();
+    if (range <= 0) return false;
+    const RECT rc = m_pPreviewRail->GetPos();
+    const int cy = rc.bottom - rc.top;
+    const int width = rc.right - rc.left;
+    if (cy <= 0 || width <= 0) return false;
+    int cyThumb = cy * cy / (range + cy);
+    if (cyThumb < width) cyThumb = width;
+    out.left = rc.left;
+    out.right = rc.right;
+    out.top = m_pPreviewRail->GetScrollPos() * (cy - cyThumb) / range + rc.top;
+    out.bottom = out.top + cyThumb;
+    return true;
+}
+
 // Horizontal twin of StyleVerticalScrollBar (list view needs it when the columns
 // grow past the right edge). The bar itself is created by EnableScrollBar().
 void CMainWnd::StyleHorizontalScrollBar(CContainerUI* host)

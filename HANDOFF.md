@@ -197,6 +197,36 @@ DuiLib 的 `CTileLayoutUI` 增加 `columnfirst` 属性（本项目对 third_part
 调试提示：`WM_SETCURSOR` 的 `lParam` 低字要判 `HTCLIENT`；`GetCursorPos`+`ScreenToClient`
 取的是物理坐标（进程需 PerMonitorV2 感知，否则坐标会被 /1.5 虚拟化而对不上）。
 
+### 预览滚动条 / 调宽热区合并成同一条轨道
+左侧功能区的滚动条（`dir_tree` 的竖直条）本来就贴着分隔线，所以预览区改成同样的做法：
+`preview_pane` 里第一个子控件是真正的 `CScrollBarUI`（`preview_rail`），宽度、轨道色
+（`#FFF7F7F7`）和滑块色（`#FFB5B5B5`）都由 `StylePreviewRail()` 按
+`UiTokens::SidePaneScrollBarW`（12 @96dpi）设置，和导航滚动条一致；它既是滚动条，也是
+“左右调宽”的那条热区——一套命中测试同时管两种手势。
+
+- `IsPreviewScrollBarHit()` 只认这条轨道的矩形；`HitTestPaneDivider()` 不再为预览区返回
+  2，于是压在分隔线上的 ±8 设计像素热区取消了。**顺带修掉一个老 bug**：那条热区横跨
+  分隔线，把紧贴左侧的文件列表竖直滚动条整条吞掉，`WM_SETCURSOR` 和按下事件都变成调宽。
+- `preview_body` 仍保留 DuiLib 自己的竖向滚动条（滚动范围 / 滚轮 / `SetScrollPos` 移子控件
+  都靠它），但被 `StylePreviewRail()` 收成 0 宽 + 全透明，所以画面里只有轨道；
+  `SyncPreviewRail()` 每次布局（200ms `kTimerLayoutSync`）把 range/pos 镜像到轨道上，
+  范围 0 时把轨道滑块色设成 0（否则 DuiLib 会画一条满高的灰色块）。
+- 轨道保持 `mouse` 开启，只为把鼠标滚轮透传给 `preview_body`（`CScrollBarUI::DoEvent`
+  末尾会 `m_pOwner->DoEvent(event)`）。**别写成 `mouse="false"`**：命中测试里
+  `CControlUI::FindControl` 会跳过 `IsMouseEnabled()==false` 的控件，
+  `WM_MOUSEWHEEL` 于是落到外层 pane 上，滚轮在轨道上失效。
+  按下 / 拖动仍由 `CMainWnd::HandleMessage` 在控件分发之前接管：`m_previewRailGesture` 先待定方向，
+  横向拖动 → `ApplyPaneDragWidth(2, …)`，纵向拖动 → 手动 `SetScrollPos`，原地松开
+  （没拖动）→ 按滑块上下位置翻页（`PreviewRailThumbRect()` 用 DuiLib 同一套公式算滑块）。
+  顺带补上 `::ReleaseCapture()`，之前纵向滚完不释放捕获。
+
+**坑**：`CHorizontalLayoutUI::SetPos` 里 `cxFixed += sz.cx + padding.left + padding.right`，
+即包裹层的 padding 会**额外占宽**（`m_cxyFixed.cx` 是控件矩形，padding 不计入其中）。
+以前 `preview_pane` 有 24 设计像素 padding，于是预览栏右侧白留了一条 48 设计像素的空档，
+分隔线也比实际内容靠左。现在 padding 全部下放到 `preview_body`
+（左内缩 = 轨道宽度，其余 24），分隔线位置就等于预览栏真正的左边缘，预览文字与分隔线的
+距离、内容宽度都保持原样。
+
 ### 排序不再强制文件夹在前
 `EntryComesBefore()` 取代了原来"`if (a.isDir != b.isDir) return a.isDir;`"的写法，
 `BuildDisplayOrder()` 把文件夹和文件合并后 `stable_sort`。资源管理器本来就只按当前列

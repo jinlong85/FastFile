@@ -470,6 +470,11 @@ private:
     void StyleHorizontalScrollBar(CContainerUI* host);
     void ApplyFileViewScrollBars();
     void StyleSidePaneScrollBars(CContainerUI* host);
+    // Merged preview rail: the sidebar-width scrollbar strip that also owns the
+    // left/right pane resize gesture (see IsPreviewScrollBarHit / WM_LBUTTONDOWN).
+    void StylePreviewRail();
+    void SyncPreviewRail();
+    bool PreviewRailThumbRect(RECT& out) const;
     int MeasureListColumnWidth(const std::vector<DirEntry>& all, int iconPx);
     int MeasureTextWidthPx(const std::wstring& text);
 
@@ -583,10 +588,12 @@ private:
     std::vector<FavoriteItem> m_favorites;
     std::vector<FavoriteItem> m_quickAccess;
     std::vector<std::wstring> m_shellMenuPaths;
-    // preview_pane is a CHorizontalLayoutUI wrapper (its negative sepwidth is the drag
-    // grip on the left edge); the stacked content lives in preview_body.
+    // preview_pane is a CHorizontalLayoutUI wrapper holding the merged scroll rail
+    // (preview_rail, width grip + scrollbar along the divider) and preview_body, which
+    // carries the content inset and DuiLib's own (hidden) scroll range.
     CContainerUI* m_pPreviewPane = nullptr;
     CVerticalLayoutUI* m_pPreviewBody = nullptr;
+    CScrollBarUI* m_pPreviewRail = nullptr;  // scrollbar + width grip along the divider
     CContainerUI* m_pLeftPanel = nullptr;   // left_panel wrapper (right-edge drag grip)
     CLabelUI* m_pPreviewTitle = nullptr;
     CControlUI* m_pPreviewImage = nullptr;

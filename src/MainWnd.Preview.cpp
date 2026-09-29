@@ -549,28 +549,11 @@ void CMainWnd::SyncLayoutDependents()
         }
     }
     if (m_pPreviewPane && m_previewVisible && m_pPreviewPane->IsVisible()) {
-        // Reapply the shared side-pane rail after DuiLib lays out the preview body.
-        // This keeps its track and thumb exactly as wide as the navigation scrollbar.
-        StyleSidePaneScrollBars(m_pPreviewBody);
-        // When content does not need to scroll, retain a quiet hairline precisely where
-        // preview_body's vertical scrollbar would appear (inside the pane padding).
-        // A visible scrollbar already provides that edge.
-        const bool hasScrollBar = m_pPreviewBody && m_pPreviewBody->GetVerticalScrollBar()
-            && m_pPreviewBody->GetVerticalScrollBar()->IsVisible();
-        if (m_pPreviewBody) {
-            if (hasScrollBar) {
-                m_pPreviewBody->SetAttribute(_T("bordercolor"), _T("#00000000"));
-                m_pPreviewBody->SetAttribute(_T("bordersize"), _T("0"));
-            } else {
-                // Reserve a full-width pale rail rather than a one-pixel line. It
-                // is intentionally the same width as the left navigation scrollbar,
-                // so the preview edge does not visually jump when a thumb appears.
-                CDuiString rail;
-                rail.Format(_T("0,0,%d,0"), DpiScale(UiTokens::SidePaneScrollBarW));
-                m_pPreviewBody->SetAttribute(_T("bordercolor"), UiTokens::ColorScrollTrack);
-                m_pPreviewBody->SetAttribute(_T("bordersize"), rail.GetData());
-            }
-        }
+        // Reapply the merged preview rail after DuiLib lays out the preview body, then
+        // mirror the body's scroll range/position onto it. The rail keeps the sidebar
+        // scrollbar's width and colors (StylePreviewRail) and doubles as the pane-width
+        // grip, so no separate divider band or reserved border is needed any more.
+        StylePreviewRail();
 
         const int w = static_cast<int>(m_pPreviewPane->GetWidth());
         if (w > 8 && w != m_previewPaneW) {

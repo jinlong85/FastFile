@@ -57,6 +57,7 @@ void CMainWnd::InitWindow()
     m_pLeftThisPc = static_cast<CVerticalLayoutUI*>(m_PaintManager.FindControl(_T("left_thispc")));
     m_pPreviewPane = static_cast<CContainerUI*>(m_PaintManager.FindControl(_T("preview_pane")));
     m_pPreviewBody = static_cast<CVerticalLayoutUI*>(m_PaintManager.FindControl(_T("preview_body")));
+    m_pPreviewRail = static_cast<CScrollBarUI*>(m_PaintManager.FindControl(_T("preview_rail")));
     m_pLeftPanel = static_cast<CContainerUI*>(m_PaintManager.FindControl(_T("left_panel")));
     m_pPreviewTitle = static_cast<CLabelUI*>(m_PaintManager.FindControl(_T("preview_title")));
     m_pPreviewImage = m_PaintManager.FindControl(_T("preview_image"));
@@ -96,7 +97,7 @@ void CMainWnd::InitWindow()
     }
     if (m_pPreviewBody) {
         m_pPreviewBody->EnableScrollBar(true, false);
-        StyleSidePaneScrollBars(m_pPreviewBody);
+        StylePreviewRail();
     }
 
     wchar_t tmp[MAX_PATH] = {};
@@ -578,6 +579,9 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             scroll.cy += y - m_previewRailLastY;
             m_pPreviewBody->SetScrollPos(scroll);
             m_previewRailLastY = y;
+            // Keep the rail's own thumb under the cursor while dragging (the periodic
+            // layout sync would otherwise catch up 200 ms later).
+            SyncPreviewRail();
             return 0;
         }
     }
@@ -598,9 +602,29 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             return TRUE;
         }
     }
-    if (uMsg == WM_LBUTTONUP && m_paneDragKind != 0) {
+    if (uMsg == WM_LBUTTONUP && (m_paneDragKind != 0 || m_previewRailGesture != 0)) {
+        // A click on the merged preview rail that never turned into a drag scrolls one
+        // page towards the click, the way a normal scrollbar track behaves.
+        if (m_previewRailGesture == 1 && m_paneDragKind == 0 && m_pPreviewBody) {
+            RECT thumb = {};
+            if (PreviewRailThumbRect(thumb)) {
+                const int y = (short)HIWORD(lParam);
+                if (y < thumb.top || y >= thumb.bottom) {
+                    const RECT rail = m_pPreviewRail->GetPos();
+                    const int thumbH = static_cast<int>(thumb.bottom - thumb.top);
+                    const int railH = static_cast<int>(rail.bottom - rail.top);
+                    const int page = (std::max)(railH - thumbH,
+                        DpiScale(UiTokens::PreviewMetaRowH));
+                    SIZE scroll = m_pPreviewBody->GetScrollPos();
+                    scroll.cy += (y < thumb.top) ? -page : page;
+                    m_pPreviewBody->SetScrollPos(scroll);
+                    SyncPreviewRail();
+                }
+            }
+        }
         m_paneDragKind = 0;
         m_previewRailGesture = 0;
+        m_dragTracking = false;
         ::ReleaseCapture();
         CapturePaneWidthsIfChanged();
         return 0;
