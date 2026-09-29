@@ -768,10 +768,9 @@ if (uMsg == WM_NCLBUTTONDOWN || uMsg == WM_NCLBUTTONUP) {
   `constexpr bool kShowMicaBackdrop = true` 时才真正启用**，目前是 `false`，
   标题行填 `#FFEDEDED` 平色。
 
-原因：要让 Mica 透出来必须 `DwmExtendFrameIntoClientArea` 把边框延伸到客户区，一旦这么做
-DWM 就按**客户区像素的 alpha** 合成，而 DuiLib 的 GDI 绘制（标签文字、窗口按钮字形、
-列表文字）在重定向表面上的 alpha 是 0 —— 深色文字会整片消失。要真正开启 Mica，得先把
-标题行整条改成 GDI+/`AlphaBlend` 的 32bpp 绘制，再打开 `kShowMicaBackdrop`。
+第十五批起 `kShowMicaBackdrop = true`（标题行透出 Mica Alt，其余行自己画实色），
+实测文字/图标正常；当初"必须先把标题行改成 32bpp 绘制"的结论已作废，
+但仍要注意：不要给标题行设置不透明的 `bkcolor`，否则 Mica 会被盖住。
 
 ## 第十五批：Fluent 化（顶栏 / 收藏 / 地址 / 左侧 / 此电脑详情）
 
@@ -830,10 +829,16 @@ DWM 就按**客户区像素的 alpha** 合成，而 DuiLib 的 GDI 绘制（标�
 「类型」= 此电脑，「大小」标签改成「包含」+「N 个驱动器」，时间显示「—」，
 不再输出「当前目录概览 / 未选择项目」。磁盘卡片最多三列（`MainWnd.Views.cpp`）。
 
+### DWM Mica Alt（本批开启）
+
+`kShowMicaBackdrop` 改成 `true`：标题行不再铺色，DWM 的 `DWMSBT_TABBEDWINDOW` 背板直接透出，
+其余各行照旧自己画实色。**14 批时"extends frame 会让 GDI 文字消失"的判断在本机不成立**——
+用真实屏幕截图（`CopyFromScreen`，不是 `PrintWindow`）核对过：标签文字、图标、窗口按钮
+字形全部正常。标签条区域由 `CTabStripUI::DoPaint` 画一层 7% 黑的淡色带
+（宽度只覆盖标签 + “+”），这样白色选中卡片在浅色背板上仍然分得清，和 Explorer 一致。
+
 ### 未做 / 待办
 
-- **DWM Mica Alt 仍未开启**（原因见「DWM / Mica 现状」，需要先把标题行改成
-  GDI+/AlphaBlend 的 32bpp 绘制，否则文字会被 alpha 合成吃掉）。
 - 收藏芯片的拖拽排序 / Delete 移除。
 - 滚动条仍是之前确认过的统一 12 设计像素（新规格提到的"6 物理细轨道"没有采纳，
   因为那是用户上一轮明确要求统一宽度的）。

@@ -138,7 +138,7 @@ void CMainWnd::ApplyDwmChrome()
     // Until the whole title band is painted with GDI+/AlphaBlend (see TabStripUI, which
     // already does), the backdrop stays off and the title row keeps the chrome surface so the
     // UI stays readable. Flip kShowMicaBackdrop once the band paints alpha-correct pixels.
-    constexpr bool kShowMicaBackdrop = false;
+    constexpr bool kShowMicaBackdrop = true;
     int backdrop = DWMSBT_TABBEDWINDOW;
     const HRESULT hr = ::DwmSetWindowAttribute(m_hWnd, DWMWA_SYSTEMBACKDROP_TYPE,
         &backdrop, sizeof(backdrop));

@@ -541,6 +541,25 @@ bool CTabStripUI::DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopControl
     g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
     g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
 
+    // The title band is left unpainted so the DWM backdrop (Mica Alt) shows through. A very
+    // light wash over the tab area keeps the white "active card" readable on top of it - the
+    // same trick Explorer uses for its slightly darker tab strip.
+    {
+        Gdiplus::SolidBrush wash(Gdiplus::Color(m_dark ? 0x18FFFFFF : 0x12000000));
+        // Only the strip's own content (tabs + "+") is tinted, like Explorer's tab band; the
+        // caption area to its right stays pure Mica.
+        int washRight = m_rcItem.left + Scaled(1, m_dpi);
+        if (!m_tabs.empty()) washRight = (std::max)(washRight, (int)m_tabs.back().body.right);
+        washRight = (std::max)(washRight, (int)m_plus.right + Scaled(4, m_dpi));
+        if (washRight > m_rcItem.right) washRight = m_rcItem.right;
+        const int wl = (std::max)((int)rcClip.left, (int)m_rcItem.left);
+        const int wr = (std::min)((int)rcClip.right, washRight);
+        if (wr > wl) {
+            g.FillRectangle(&wash, Gdiplus::Rect(wl, rcClip.top, wr - wl,
+                rcClip.bottom - rcClip.top));
+        }
+    }
+
     const DWORD now = ::GetTickCount();
     for (int i = 0; i < (int)m_tabs.size(); ++i) {
         RECT rc = m_tabs[i].body;
