@@ -43,7 +43,13 @@ public:
     void SetDarkMode(bool dark);
     void SetMetrics(int dpi);            // icon px / radii / max tab width
     void SetMaxTabWidth(int px) { m_maxTabW = px; }
+    void SetTabWidthRange(int minW, int selMinW, int maxW)
+    {
+        m_minTabW = minW; m_selMinTabW = selMinW; m_maxTabW = maxW;
+    }
     void AnimateAppear(int index);       // short slide-in for a new tab
+    // Bring a tab into the visible window (a selected tab that was scrolled out must come back).
+    void EnsureTabVisible(int index);
 
     // ---- hit testing (mouse gestures + WM_NCHITTEST) ----------------------
     HitInfo HitTest(POINT ptClient) const;
@@ -86,6 +92,9 @@ private:
     void  DrawCloseGlyph(Gdiplus::Graphics& g, const RECT& rc, bool hot);
     void  DrawPlusGlyph(Gdiplus::Graphics& g, const RECT& rc);
     void  StartAnimTimer();
+    int   MeasureTabWidth(int index) const;   // natural width from the measured title
+    int   TabWidth(int index) const;          // clamped to [min|selMin, max]
+    void  ClampScroll();
 
     std::vector<Tab> m_tabs;
     int   m_active = -1;
@@ -99,8 +108,11 @@ private:
     bool  m_dragging = false;
     bool  m_dark = false;
     int   m_dpi = 96;
-    int   m_maxTabW = 190;
-    int   m_minTabW = 60;
+    int   m_maxTabW = 200;
+    int   m_minTabW = 120;
+    int   m_selMinTabW = 148;
+    int   m_scrollX = 0;         // horizontal offset when the tabs do not fit
+    int   m_contentW = 0;        // total width of the tab cells
     RECT  m_plus = {};
     bool  m_animating = false;
     Gdiplus::Font* m_font = nullptr;

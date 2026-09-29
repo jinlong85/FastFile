@@ -175,6 +175,7 @@ private:
     void LoadFavorites();
     void SaveFavorites() const;
     void RebuildFavoritesBar();
+    void RefitFavoritesChips();          // squeeze chips into the favourites row width
     bool PinFavorite(const std::wstring& path);
     bool UnpinFavorite(const std::wstring& path);
     bool IsFavoritePinned(const std::wstring& path) const;
@@ -627,6 +628,8 @@ private:
     CTabStripUI* m_pTabStrip = nullptr;       // self-drawn tab strip
     CHorizontalLayoutUI* m_pBreadcrumb = nullptr;
     CHorizontalLayoutUI* m_pFavoritesBar = nullptr;
+    std::vector<int> m_favChipNatural;   // natural chip widths (design px, physical)
+    int m_favBarFitW = 0;                // row width the chips were last fitted to
     CHorizontalLayoutUI* m_pFavoritesStrip = nullptr;
     CVerticalLayoutUI* m_pLeftQuickRows = nullptr;   // runtime rows (built-ins + pins)
     CVerticalLayoutUI* m_pLeftQuick = nullptr;

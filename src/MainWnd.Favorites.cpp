@@ -23,6 +23,48 @@ void CopyTextToClipboard(HWND owner, const std::wstring& text)
     ::CloseClipboard();
 }
 
+bool IsCjk(wchar_t c)
+{
+    return (c >= 0x2E80 && c <= 0x9FFF)      // radicals .. CJK unified
+        || (c >= 0xF900 && c <= 0xFAFF)      // compatibility ideographs
+        || (c >= 0xFF00 && c <= 0xFF60);     // fullwidth forms
+}
+
+// Folder names like "绝密较量Jue mi ji" or "太平年.Swords into Plowshares" glue a Chinese
+// title onto its pinyin/English translation, which reads as garbage in a 168px chip. When a
+// name mixes CJK and Latin letters, keep just the leading CJK title (the user asked for
+// "拆开或只留一个"), provided it is a real title (2+ characters). Names that are purely CJK,
+// purely Latin, or CJK + digits are untouched.
+std::wstring CleanFavoriteLabel(const std::wstring& raw)
+{
+    std::wstring name = raw;
+    while (!name.empty() && (name.front() == L' ' || name.front() == L'\t'))
+        name.erase(name.begin());
+    while (!name.empty() && (name.back() == L' ' || name.back() == L'\t'))
+        name.pop_back();
+    if (name.empty())
+        return name;
+
+    bool hasCjk = false, hasLatin = false;
+    for (wchar_t c : name) {
+        if (IsCjk(c)) hasCjk = true;
+        else if ((c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z')) hasLatin = true;
+    }
+    if (!hasCjk || !hasLatin)
+        return name;
+
+    // Leading CJK run (the title); stop at the first Latin/digit after it.
+    std::wstring cjk;
+    for (wchar_t c : name) {
+        if (IsCjk(c)) {
+            cjk.push_back(c);
+        } else if (!cjk.empty() && c != L' ' && c != L'.' && c != L'-' && c != L'_') {
+            break;
+        }
+    }
+    return cjk.size() >= 2 ? cjk : name;
+}
+
 } // namespace
 
 void CMainWnd::UpdateFavoritesHighlight()
@@ -545,9 +587,9 @@ void CMainWnd::LoadFavorites()
         if (IsFavoritePinned(path)) continue;
         FavoriteItem it;
         it.path = path;
-        it.displayName = GetShellDisplayName(path);
+        it.displayName = CleanFavoriteLabel(GetShellDisplayName(path));
         if (it.displayName.empty())
-            it.displayName = GetLeafName(path);
+            it.displayName = CleanFavoriteLabel(GetLeafName(path));
         if (it.displayName.empty()) it.displayName = path;
         m_favorites.push_back(std::move(it));
     }
@@ -588,7 +630,10 @@ bool CMainWnd::PinFavorite(const std::wstring& path)
     if (IsFavoritePinned(n)) return false;
     FavoriteItem it;
     it.path = n;
-    it.displayName = GetLeafName(n);
+    // Clean at pin time: a folder named "绝密较量Jue mi ji" is stored as "绝密较量" so the
+    // chip never shows Chinese glued to its pinyin translation.
+    it.displayName = CleanFavoriteLabel(GetShellDisplayName(n));
+    if (it.displayName.empty()) it.displayName = CleanFavoriteLabel(GetLeafName(n));
     if (it.displayName.empty()) it.displayName = n;
     m_favorites.push_back(std::move(it));
     SaveFavorites();
@@ -658,16 +703,6 @@ void CMainWnd::RebuildFavoritesBar()
     std::vector<int> widths;
     widths.reserve(m_favorites.size());
 
-    // Available width for the chips: favourites row minus its insets, the "收藏" mark and the
-    // trailing flexible spacer. Overflowing chips are squeezed (down to minChipW) before the
-    // row clips its tail, so a long list never grows the row or wraps.
-    int availW = 0;
-    if (m_pFavoritesBar) {
-        const RECT bar = m_pFavoritesBar->GetPos();
-        availW = bar.right - bar.left - DpiScale(8) * 2 - DpiScale(UiTokens::FavLabelW);
-        if (availW < minChipW) availW = minChipW;
-    }
-
     for (size_t i = 0; i < m_favorites.size(); ++i) {
         const auto& fav = m_favorites[i];
         auto* btn = new CButtonUI;
@@ -711,26 +746,10 @@ void CMainWnd::RebuildFavoritesBar()
         m_pFavoritesStrip->Add(btn);
         stripW += w;
     }
-
-    // Shrink-to-fit pass: every chip gets an equal share of the row, so nothing is clipped
-    // until even the minimum width stops fitting (the trailing chips clip at that point).
-    if (availW > 0 && !widths.empty()) {
-        const int gaps = chipGap * (static_cast<int>(widths.size()) - 1);
-        int per = (availW - gaps) / static_cast<int>(widths.size());
-        if (per < minChipW) per = minChipW;
-        bool shrunk = false;
-        for (auto& w : widths) {
-            if (w > per) { w = per; shrunk = true; }
-        }
-        if (shrunk) {
-            stripW = 0;
-            for (size_t i = 0; i < widths.size(); ++i) {
-                if (CControlUI* c = m_pFavoritesStrip->GetItemAt(static_cast<int>(i)))
-                    c->SetFixedWidth(widths[i]);
-                stripW += widths[i];
-            }
-        }
-    }
+    // Remember the natural widths: the row is not laid out yet during startup, so the
+    // shrink-to-fit pass runs from the layout-sync timer (and on every width change).
+    m_favChipNatural = widths;
+    m_favBarFitW = 0;
 
     if (!empty)
         m_pFavoritesStrip->SetFixedWidth((std::max)(DpiScale(1), stripW));
@@ -741,6 +760,39 @@ void CMainWnd::RebuildFavoritesBar()
     m_pFavoritesStrip->NeedUpdate();
     if (m_pFavoritesBar) m_pFavoritesBar->NeedUpdate();
     UpdateFavoritesHighlight();
+}
+
+// Squeeze the chips into the row width (every chip gets an equal share, never below 72 design
+// px). Runs whenever the favourites row's width changes; a no-op until the row has a size.
+void CMainWnd::RefitFavoritesChips()
+{
+    if (!m_pFavoritesStrip || !m_pFavoritesBar) return;
+    if (m_favChipNatural.empty()) return;
+    const RECT bar = m_pFavoritesBar->GetPos();
+    const int barW = static_cast<int>(bar.right - bar.left);
+    if (barW <= DpiScale(UiTokens::FavLabelW) + DpiScale(24)) return;   // layout not ready
+    if (barW == m_favBarFitW) return;
+    m_favBarFitW = barW;
+
+    const int chipGap = DpiScale(UiTokens::FavChipGap);
+    const int minChipW = DpiScale(72);
+    int availW = barW - DpiScale(8) * 2 - DpiScale(UiTokens::FavLabelW);
+    if (availW < minChipW) availW = minChipW;
+    const int count = static_cast<int>(m_favChipNatural.size());
+    int per = (availW - chipGap * (count - 1)) / count;
+    if (per < minChipW) per = minChipW;
+
+    int total = 0;
+    for (int i = 0; i < count; ++i) {
+        int w = m_favChipNatural[i];
+        if (w > per) w = per;
+        if (CControlUI* c = m_pFavoritesStrip->GetItemAt(i))
+            c->SetFixedWidth(w);
+        total += w;
+    }
+    m_pFavoritesStrip->SetFixedWidth((std::max)(DpiScale(1), total));
+    m_pFavoritesStrip->NeedUpdate();
+    if (m_pFavoritesBar) m_pFavoritesBar->NeedUpdate();
 }
 
 void CMainWnd::EnsureDefaultQuickRows()
@@ -972,12 +1024,9 @@ void CMainWnd::OnPinnedFavoriteClick(CControlUI* btn)
 
 void CMainWnd::OpenQuickAccessTab(const std::wstring& path)
 {
-    // Quick Access is a shortcut list, not a second view of the directory tree.
-    // Opening it must not unfold drives/folders in the independent "This PC" area.
-    const bool wasSuspended = m_suspendTreeSync;
-    m_suspendTreeSync = true;
+    // Navigating from a shortcut must still sync the tree: the requirement is that the
+    // highlighted/expanded node always matches the folder on screen, whatever the entry point.
     AddTab(path, true);
-    m_suspendTreeSync = wasSuspended;
 }
 
 void CMainWnd::ShowFavoriteContextMenu(CControlUI* btn, POINT ptScreen)

@@ -560,6 +560,9 @@ void CMainWnd::SyncLayoutDependents()
             RebuildBreadcrumb();
         }
     }
+    // The favourites row also re-flows with the window: chips squeeze equally instead of
+    // clipping their tail (the row itself never changes height).
+    RefitFavoritesChips();
     if (m_pPreviewPane && m_previewVisible && m_pPreviewPane->IsVisible()) {
         // Reapply the merged preview rail after DuiLib lays out the preview body, then
         // mirror the body's scroll range/position onto it. The rail keeps the sidebar

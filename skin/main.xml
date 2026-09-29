@@ -32,7 +32,7 @@
     <HorizontalLayout name="titlebar" height="36" bkcolor="#00000000" inset="8,0,0,0" childvalign="vcenter">
       <TabStrip name="tab_strip" />
       <Button name="btn_tab_add" text="" width="32" height="32" bkcolor="#00000000" hotbkcolor="#14000000" pushedbkcolor="#22000000" borderround="4,4" bordersize="0" tooltip="新建标签（Ctrl+T）" />
-      <Control name="caption_drag" minwidth="40" />
+      <Control name="caption_drag" width="40" />
       <Button name="minbtn" text="−" width="46" height="36" font="0" textcolor="#FF3B3B3B" bkcolor="#00FFFFFF" hotbkcolor="#FFE0E0E0" pushedbkcolor="#FFD0D0D0" tooltip="最小化" />
       <Button name="maxbtn" text="□" width="46" height="36" font="0" textcolor="#FF3B3B3B" bkcolor="#00FFFFFF" hotbkcolor="#FFE0E0E0" pushedbkcolor="#FFD0D0D0" tooltip="最大化" />
       <Button name="restorebtn" text="❐" width="46" height="36" font="0" textcolor="#FF3B3B3B" bkcolor="#00FFFFFF" hotbkcolor="#FFE0E0E0" pushedbkcolor="#FFD0D0D0" tooltip="还原" visible="false" />

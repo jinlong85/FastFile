@@ -30,6 +30,7 @@
 | 第十三批 | `065fde1` `ea6f6bd` `4d73a16` `30056a5` `d650e91` `32ade3d` `69637df` | 关闭确认框、快速访问原生右键菜单 + 拖动排序、双色命令图标、顶部功能区整体改版（标题栏并入标签行、地址栏在命令栏之上）、收藏栏位置与路径框缩放 |
 | 第十四批 | 待提交 | 标签栏改为自绘 `CTabStripUI`；DuiLib XML 骨架按规范重排（32/26/28/28）；窗口按钮改 Shell 字形；`Ctrl+Tab` 修复；拖出标签按源窗口尺寸开窗 |
 | 第十五批 | 待提交 | Fluent 密度（36/36/36/40）+ `inset` 消除栏间空隙；收藏栏 Explorer 化并搬走「配置文件」；面包屑首段带此电脑图标；导航名本地化；「含子目录」按需显示；此电脑详情页修正 |
+| 第十六批 | 待提交 | 标签按标题实测宽度 + 溢出横向滚动 + 选中滚入视野；选中卡片与收藏行真正连体；标签条铺满标题行；树随导航展开/选中/滚入视野；每目录视图模式在切标签时生效；收藏芯片文案清洗 |
 
 ## 目标
 
@@ -842,6 +843,61 @@ if (uMsg == WM_NCLBUTTONDOWN || uMsg == WM_NCLBUTTONUP) {
 - 收藏芯片的拖拽排序 / Delete 移除。
 - 滚动条仍是之前确认过的统一 12 设计像素（新规格提到的"6 物理细轨道"没有采纳，
   因为那是用户上一轮明确要求统一宽度的）。
+
+## 第十六批：标签条 / 树同步 / 收藏文案
+
+### 标签宽度与滚动（P0-1）
+
+`CTabStripUI::RecalcRects()` 不再 `avail / n` 均分（那是"8 个标签各显示 1 个字"的根因），
+改成：`MeasureTabWidth(i)` 用 `GetTextExtentPoint32W` 量标题 → 夹到
+`[TabMinW(120) | TabSelMinW(148) 选中, TabMaxW(200)]` → 累加得到 `m_contentW`；
+放不下时启用 `m_scrollX`：
+
+- 滚轮 / Shift+滚轮 = 水平滚动（`UIEVENT_SCROLLWHEEL`，步长 `TabMinW/2`）；
+- `EnsureTabVisible()` 在 `Add(activate) / Select / SetActiveTab` 时把选中标签滚进视野；
+- `ClampScroll()` 负责边界；`"+`" 放在 `min(内容末, 条右边界-plusW)`，不会被系统按钮盖住。
+- **必须给绘制加自身矩形裁剪**：DuiLib 只把控件裁到父容器，滚动后标签会画到系统按钮上
+  （`DoPaint` 里 `g.SetClip(m_rcItem ∩ rcClip, CombineModeIntersect)`）。
+
+### 标签条宽度
+
+`caption_drag` 从 `minwidth="40"` 改成 `width="40"`：原来它是第二个"可伸缩子控件"，
+和 TabStrip 平分了标题行，导致 "+" 右边空出半行。现在只有 TabStrip 可伸缩，铺满到按钮前。
+
+### 选中卡片连体（P0-2）
+
+两个原因：① `SetMetrics()` 把 strip 的最小高设成 26 逻辑（比 36 行矮），`childvalign="vcenter"`
+让它居中 → 卡片悬在行中间；现在 `SetMinHeight/SetFixedHeight(TabBarH)`，strip 占满整行。
+② 卡片只画到 `rc.bottom - 0.5`，底部留一条灰；现在选中卡片 `card.bottom += 1`，
+画到下一行里去，和收藏行无缝。
+
+### DWM 边框
+
+extends frame 之后 DWM 会自己画 1–2 物理像素边框（四个边都出现深色发丝线）。
+`ApplyDwmChrome()` 里加 `DWMWA_BORDER_COLOR = DWMWA_COLOR_NONE`（34 / 0xFFFFFFFE）关掉。
+
+### 树同步（P0-3）
+
+- `OpenQuickAccessTab()` 以前 `m_suspendTreeSync = true` 包住 `AddTab()`，从收藏进入目录
+  时树完全不动 —— 这是"内容在 E:\软件、树停在 F:\下载"的根因。已删除该暂停。
+- `ActivateTab()` 现在也 `SyncTreeToPath()`（标签激活同样要同步）。
+- `SyncTreeToPath()` 末尾新增"滚进视野"：`CListUI::EnsureVisible()` 只认顶层项，树节点是嵌套的，
+  所以用节点自己的 `GetPos()` 与树矩形求像素差，再 `m_pDirTree->Scroll(0, dy)`。
+
+### 每目录视图模式
+
+`NavigateToNow()` 会用 `LoadFolderViewForPath()` 应用该目录记住的视图模式，
+`ActivateTab()` 以前没有 —— 于是 `folder_views.ini` 里 `e:\软件=1`（大图标）却被渲染成
+上一个标签的「平铺」。现在两个入口都会应用（`UpdateViewModeButtons()` 后 `RefreshListing()`）。
+
+### 收藏芯片文案
+
+`CleanFavoriteLabel()`：名字同时含中日韩字符和拉丁字母时，只保留开头的中文串
+（≥2 字），例如「绝密较量.Jue mi jiao liang」→「绝密较量」、「太平年.Swords into
+Plowshares」→「太平年」；纯中文 / 纯英文 / 中文+数字不动。在 `LoadFavorites()`
+和 `PinFavorite()` 两处都调用（读入和保存都会清洗）。
+芯片宽度由 `RefitFavoritesChips()` 在 `SyncLayoutDependents()`（200ms 定时器）里按行宽
+重新均分 —— 启动时 `favorites_bar` 还没有尺寸，早期版本会把所有芯片压到最小宽。
 
 ## 当前顶部结构（自上而下）
 

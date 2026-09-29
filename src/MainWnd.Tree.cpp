@@ -352,5 +352,20 @@ void CMainWnd::SyncTreeToPath(const std::wstring& path)
     if (last)
         last->Select(true);
 
+    // Scroll the selected node into view. CListUI::EnsureVisible only understands top-level
+    // items and our chain is nested, so use the node's own rect (DuiLib lays tree nodes out in
+    // absolute client coordinates) and scroll by the same pixel delta it would use.
+    if (last && m_pDirTree) {
+        m_pDirTree->NeedUpdate();
+        const RECT rcItem = last->GetPos();
+        const RECT rcTree = m_pDirTree->GetPos();
+        if (rcItem.bottom > rcItem.top && rcTree.bottom > rcTree.top) {
+            int dy = 0;
+            if (rcItem.top < rcTree.top) dy = rcItem.top - rcTree.top;
+            else if (rcItem.bottom > rcTree.bottom) dy = rcItem.bottom - rcTree.bottom;
+            if (dy != 0) m_pDirTree->Scroll(0, dy);
+        }
+    }
+
     m_syncingTree = false;
 }

@@ -125,11 +125,21 @@ void CMainWnd::ApplyDwmChrome()
 #ifndef DWMSBT_TABBEDWINDOW
 #define DWMSBT_TABBEDWINDOW 4
 #endif
+#ifndef DWMWA_BORDER_COLOR
+#define DWMWA_BORDER_COLOR 34
+#endif
+#ifndef DWMWA_COLOR_NONE
+#define DWMWA_COLOR_NONE 0xFFFFFFFE
+#endif
 
     // FastFile ships a light palette, so the DWM frame stays light as well: a dark Mica band
     // over a light content area looked broken. Flip this together with a dark skin.
     const BOOL darkMode = FALSE;
     ::DwmSetWindowAttribute(m_hWnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+    // With the frame extended DWM also paints its own 1-2px border around the window, which
+    // showed up as a dark hairline on all four sides of our light chrome. Turn it off.
+    const COLORREF borderNone = DWMWA_COLOR_NONE;
+    ::DwmSetWindowAttribute(m_hWnd, DWMWA_BORDER_COLOR, &borderNone, sizeof(borderNone));
 
     // DWMSBT_TABBEDWINDOW = Mica Alt. Asking for it is safe on every OS (older builds just
     // fail the call), but *showing* it requires extending the DWM frame over the client area -

@@ -37,7 +37,7 @@ void CMainWnd::RebuildTabStrip()
     // sizes, hit-tests and paints the tabs itself (see TabStripUI.cpp).
     const int tabIconPx = DpiScale(UiTokens::TabIconPx);
     m_pTabStrip->SetMetrics(static_cast<int>(m_dpi));
-    m_pTabStrip->SetMaxTabWidth(UiTokens::TabMaxW);
+    m_pTabStrip->SetTabWidthRange(UiTokens::TabMinW, UiTokens::TabSelMinW, UiTokens::TabMaxW);
     m_pTabStrip->Clear();
     for (int i = 0; i < static_cast<int>(m_tabs.size()); ++i) {
         const std::wstring title = TabTitleForPath(m_tabs[i].path);
@@ -388,6 +388,18 @@ void CMainWnd::ActivateTab(int index)
         m_pSearchEdit->SetText(m_searchFilter.c_str());
         if (m_searchFilter.empty())
             SetSearchPlaceholder(true);
+    // Every folder remembers its own view mode; switching tabs (or opening a shortcut in a new
+    // tab) has to apply it too, otherwise E:\软件 opened as whatever the previous tab used.
+    {
+        const ViewMode remembered = LoadFolderViewForPath(m_currentPath);
+        if (m_viewMode != remembered) {
+            m_viewMode = remembered;
+            m_iconAnchor = -1;
+            m_lastIconClickTile = nullptr;
+            m_lastIconClickTick = 0;
+        }
+        UpdateViewModeButtons();
+    }
     RefreshListing();
     if (!m_suspendTreeSync)
         SyncTreeToPath(m_currentPath);
