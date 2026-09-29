@@ -235,6 +235,7 @@ void CMainWnd::ApplyUiChromeTokens()
     }) {
         if (CControlUI* b = m_PaintManager.FindControl(favName)) {
             b->SetFixedHeight(DpiScale(UiTokens::NavRowH));
+            b->SetAttribute(_T("font"), _T("4"));
             b->SetAttribute(_T("bkcolor"), surf);
             b->SetAttribute(_T("hotbkcolor"), UiTokens::ColorNavHover);
             b->SetAttribute(_T("pushedbkcolor"), UiTokens::ColorNavSelected);

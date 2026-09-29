@@ -41,6 +41,7 @@ void CMainWnd::StyleTreeNode(CTreeNodeUI* node, const std::wstring& title, bool 
         item->SetText(title.c_str());
         item->SetAttribute(_T("align"), _T("left"));
         item->SetAttribute(_T("valign"), _T("vcenter"));
+        item->SetAttribute(_T("font"), _T("4"));
         item->SetAttribute(_T("textcolor"), UiTokens::ColorTextPrimary);
         item->SetAttribute(_T("endellipsis"), _T("true"));
         item->SetMouseEnabled(false);
@@ -68,11 +69,12 @@ void CMainWnd::StyleTreeNode(CTreeNodeUI* node, const std::wstring& title, bool 
     }
 
     if (CCheckBoxUI* folder = node->GetFolderButton()) {
-        folder->SetFixedWidth(DpiScale(16));
+        folder->SetFixedWidth(DpiScale(22));
         folder->SetAttribute(_T("align"), _T("center"));
         folder->SetAttribute(_T("valign"), _T("vcenter"));
+        folder->SetAttribute(_T("font"), _T("6"));
         folder->SetAttribute(_T("textcolor"), UiTokens::ColorTextMuted);
-        folder->SetText(hasChildrenHint ? _T("+") : _T(" "));
+        folder->SetText(hasChildrenHint ? _T("\xE76C") : _T("")); // Segoe MDL2: ChevronRight
     }
 }
 
@@ -90,7 +92,7 @@ void CMainWnd::AttachPendingChild(CTreeNodeUI* parent)
     pending->SetVisible(false);
     if (CCheckBoxUI* folder = parent->GetFolderButton()) {
         folder->Selected(true); // selected == collapsed in DuiLib TreeView
-        folder->SetText(_T("+"));
+        folder->SetText(_T("\xE76C")); // ChevronRight
         folder->OnNotify += MakeDelegate(this, &CMainWnd::OnTreeFolderNotify);
     }
 }
@@ -127,11 +129,11 @@ bool CMainWnd::OnTreeFolderNotify(void* param)
     if (!collapsed) {
         EnsureTreeChildren(node);
         ExpandTreeNode(node, false);
-        if (folder) folder->SetText(_T("-"));
+        if (folder) folder->SetText(_T("\xE70D")); // ChevronDown
     } else {
         if (m_pDirTree)
             m_pDirTree->SetItemExpand(false, node);
-        if (folder) folder->SetText(_T("+"));
+        if (folder) folder->SetText(_T("\xE76C")); // ChevronRight
     }
     return true;
 }
@@ -157,7 +159,7 @@ void CMainWnd::ExpandTreeNode(CTreeNodeUI* node, bool navigate)
     }
     if (CCheckBoxUI* fb = node->GetFolderButton()) {
         fb->Selected(false);
-        fb->SetText(_T("-"));
+        fb->SetText(_T("\xE70D")); // ChevronDown
     }
     m_pDirTree->SetItemExpand(true, node);
 

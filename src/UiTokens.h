@@ -52,19 +52,19 @@ constexpr int ScrollBarW = 8;        // thin, low-weight Win11-like scrollbar
 constexpr int SidePaneScrollBarW = 12; // roomier track and thumb for navigation / preview panes
 
 // ---- Phase 2: left nav / tree (Win11 Explorer density) ----
-constexpr int NavSectionHeaderH = 22;  // Quick Access / This PC (Explorer denser)
-constexpr int NavRowH = 28;            // Quick Access rows + pinned favs
-constexpr int TreeRowH = 28;           // directory tree row (was 30)
-constexpr int TreeIndent = 12;         // per-level dotted indent (DuiLib default 16)
-constexpr int NavIconPx = 16;
-constexpr int NavIconPad = SpaceXs;    // icon left inset
-constexpr int NavIconTextGap = SpaceXs;// gap icon -> label
+constexpr int NavSectionHeaderH = 22;  // hidden legacy section labels; retained for layout compatibility
+constexpr int NavRowH = 32;            // Quick Access rows + pinned favs
+constexpr int TreeRowH = 32;           // roomier drive / folder rows
+constexpr int TreeIndent = 14;         // per-level tree indent
+constexpr int NavIconPx = 18;
+constexpr int NavIconPad = SpaceSm;    // icon left inset
+constexpr int NavIconTextGap = 6;      // gap icon -> label
 constexpr int NavTextPadR = SpaceXs;
 constexpr int NavHeaderPadL = SpaceSm;
 constexpr int LeftPanelPad = SpaceSm;
 constexpr int LeftNavGripH = 6;
 constexpr int LeftNavSepH = SpaceSm;
-constexpr int LeftQuickMinH = 148;     // header + four built-in quick-access rows
+constexpr int LeftQuickMinH = 160;     // four built-in rows plus breathing room; section label is hidden
 constexpr int LeftQuickDefaultH = 168;
 
 // ---- Phase 2: details list ----

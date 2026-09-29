@@ -7,25 +7,25 @@
 void CMainWnd::OnFavoriteClicked(const CDuiString& name)
 {
     if (name == _T("fav_thispc")) {
-        AddTab(kThisPcPath, true);
+        OpenQuickAccessTab(kThisPcPath);
         return;
     }
     if (name == _T("fav_documents")) {
         std::wstring p = GetKnownFolderPath(CSIDL_PERSONAL);
         if (p.empty()) { UpdateStatus(_T("无法定位文档文件夹")); return; }
-        AddTab(p, true);
+        OpenQuickAccessTab(p);
         return;
     }
     if (name == _T("fav_desktop")) {
         std::wstring p = GetKnownFolderPath(CSIDL_DESKTOPDIRECTORY);
         if (p.empty()) { UpdateStatus(_T("无法定位桌面")); return; }
-        AddTab(p, true);
+        OpenQuickAccessTab(p);
         return;
     }
     if (name == _T("fav_downloads")) {
         std::wstring p = GetDownloadsPath();
         if (p.empty()) { UpdateStatus(_T("无法定位下载文件夹")); return; }
-        AddTab(p, true);
+        OpenQuickAccessTab(p);
         return;
     }
 }
@@ -614,7 +614,7 @@ void CMainWnd::RebuildLeftPinnedFavorites()
         btn->SetFixedHeight(rowH);
         btn->SetAttribute(_T("align"), _T("left"));
         btn->SetAttribute(_T("valign"), _T("vcenter"));
-        btn->SetAttribute(_T("font"), _T("0"));
+        btn->SetAttribute(_T("font"), _T("4"));
         btn->SetAttribute(_T("endellipsis"), _T("true"));
         btn->SetAttribute(_T("bkcolor"), UiTokens::ColorSurface);
         btn->SetAttribute(_T("hotbkcolor"), UiTokens::ColorNavHover);
@@ -642,7 +642,17 @@ void CMainWnd::OnPinnedFavoriteClick(CControlUI* btn)
     if (!btn) return;
     CDuiString ud = btn->GetUserData();
     if (ud.IsEmpty()) return;
-    AddTab(ud.GetData(), true);
+    OpenQuickAccessTab(ud.GetData());
+}
+
+void CMainWnd::OpenQuickAccessTab(const std::wstring& path)
+{
+    // Quick Access is a shortcut list, not a second view of the directory tree.
+    // Opening it must not unfold drives/folders in the independent "This PC" area.
+    const bool wasSuspended = m_suspendTreeSync;
+    m_suspendTreeSync = true;
+    AddTab(path, true);
+    m_suspendTreeSync = wasSuspended;
 }
 
 void CMainWnd::ShowFavoriteContextMenu(CControlUI* btn, POINT ptScreen)

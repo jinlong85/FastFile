@@ -278,7 +278,8 @@ void CMainWnd::ActivateTab(int index)
         if (m_searchFilter.empty())
             SetSearchPlaceholder(true);
     RefreshListing();
-    SyncTreeToPath(m_currentPath);
+    if (!m_suspendTreeSync)
+        SyncTreeToPath(m_currentPath);
     UpdateFavoritesHighlight();
     UpdateNavButtons();
 }

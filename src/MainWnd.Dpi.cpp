@@ -174,6 +174,7 @@ void CMainWnd::ApplyDpiScaledChrome()
     ScaleNamedFixed(m_PaintManager, _T("fav_bar_hint"), 180, 0, m_dpi);
     // Divider between the Quick Access block and the This PC tree (the drag band DuiLib
     // provides sits at the bottom of left_quick, immediately above this line).
+    ScaleNamedFixed(m_PaintManager, _T("left_nav_divider_host"), 0, 13, m_dpi);
     ScaleNamedFixed(m_PaintManager, _T("left_nav_divider"), 0, 1, m_dpi);
 
     // Subtle vertical separators between command-bar groups
@@ -284,6 +285,7 @@ void CMainWnd::ApplyDpiScaledChrome()
         if (CControlUI* cFav = m_PaintManager.FindControl(favName)) {
             cFav->SetFixedHeight(DpiScale(UiTokens::NavRowH));
             cFav->SetBorderRound(ctlRound);
+            cFav->SetAttribute(_T("font"), _T("4"));
         }
     }
 

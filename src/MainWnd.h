@@ -187,6 +187,7 @@ private:
     bool PinQuickAccess(const std::wstring& path);
     bool UnpinQuickAccess(const std::wstring& path);
     bool IsQuickAccessPinned(const std::wstring& path) const;
+    void OpenQuickAccessTab(const std::wstring& path);
     bool InvokeShellRename(const std::wstring& path);
 
     // Search / filter
@@ -663,6 +664,7 @@ private:
     int m_activeTab = -1;
     bool m_updatingTabs = false;
     bool m_syncingTree = false;
+    bool m_suspendTreeSync = false;
     bool m_navigatingHistory = false;
 
     // Drag state
