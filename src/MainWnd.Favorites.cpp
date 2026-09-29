@@ -215,17 +215,24 @@ int CMainWnd::PaneDividerBandPx() const
     return (std::max)(8, DpiScale(8));   // +/- this many px around the divider line
 }
 
-int CMainWnd::HitTestPaneDivider(int clientX, int /*clientY*/) const
+int CMainWnd::HitTestPaneDivider(int clientX, int clientY) const
 {
     const int band = PaneDividerBandPx();
     if (m_pLeftPanel) {
         const RECT r = m_pLeftPanel->GetPos();
-        if (r.right > r.left && clientX >= r.right - band && clientX <= r.right + band)
+        // The divider is only active beside the actual body pane.  Its x-coordinate is
+        // shared with the tabs/toolbars above, so ignoring y here made those controls
+        // incorrectly show the horizontal-resize cursor and start a pane drag.
+        if (r.right > r.left && r.bottom > r.top
+            && clientY >= r.top && clientY < r.bottom
+            && clientX >= r.right - band && clientX <= r.right + band)
             return 1;
     }
     if (m_pPreviewPane && m_pPreviewPane->IsVisible()) {
         const RECT r = m_pPreviewPane->GetPos();
-        if (r.right > r.left && clientX >= r.left - band && clientX <= r.left + band)
+        if (r.right > r.left && r.bottom > r.top
+            && clientY >= r.top && clientY < r.bottom
+            && clientX >= r.left - band && clientX <= r.left + band)
             return 2;
     }
     return 0;
