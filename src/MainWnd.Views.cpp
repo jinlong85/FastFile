@@ -758,6 +758,199 @@ void CMainWnd::SelectIconRange(int from, int to)
         SetIconSelected(m_pIconTiles->GetItemAt(i), i >= from && i <= to);
 }
 
+// ---- Icon / tile / list keyboard navigation ------------------------------
+//
+// The tile host keeps one control per item, so the keyboard cursor *is* the selected tile:
+// m_iconAnchor records where a Shift-range began and tag bit 0x100 marks the current
+// selection. Arrows step by the live grid size - columns for the row-major icon views, rows
+// for the column-first Explorer list view - while Shift extends from the anchor, Ctrl adds,
+// and a plain move replaces the selection, exactly like the details view (DetailsMoveCursor).
+
+bool CMainWnd::IsIconViewFocused() const
+{
+    if (!m_pIconTiles) return false;
+    // The tile host itself holds focus after ReturnFocusToFileView(); a clicked tile is a
+    // descendant, so accept the whole subtree.
+    for (CControlUI* p = m_PaintManager.GetFocus(); p; p = p->GetParent()) {
+        if (p == m_pIconTiles) return true;
+    }
+    return false;
+}
+
+int CMainWnd::IconCursorIndex() const
+{
+    if (!m_pIconTiles) return -1;
+    const int n = m_pIconTiles->GetCount();
+    // The cursor is the *focused* tile: every move re-focuses it, so a Shift range can be
+    // extended and a later Ctrl/plain move continues from where the cursor actually sits
+    // (the anchor only remembers where the Shift range began).
+    CControlUI* focus = m_PaintManager.GetFocus();
+    if (focus && focus->GetParent() == m_pIconTiles) {
+        for (int i = 0; i < n; ++i) {
+            if (m_pIconTiles->GetItemAt(i) == focus)
+                return m_iconVirtMode ? (m_virtFirstIndex + i) : i;
+        }
+    }
+    // Otherwise trust the anchor while it still points at a live tile.
+    if (m_iconAnchor >= 0) {
+        const int local = m_iconVirtMode ? (m_iconAnchor - m_virtFirstIndex) : m_iconAnchor;
+        if (local >= 0 && local < n) return m_iconAnchor;
+    }
+    // Otherwise fall back to the first selected tile (e.g. after a Shift range).
+    for (int i = 0; i < n; ++i) {
+        CControlUI* t = m_pIconTiles->GetItemAt(i);
+        if (t && (t->GetTag() & 0x100) != 0)
+            return m_iconVirtMode ? (m_virtFirstIndex + i) : i;
+    }
+    return -1;
+}
+
+void CMainWnd::IconEnsureVisible(int flatIndex)
+{
+    if (!m_pIconTiles) return;
+    const int local = m_iconVirtMode ? (flatIndex - m_virtFirstIndex) : flatIndex;
+    if (local < 0 || local >= m_pIconTiles->GetCount()) return;
+    CControlUI* tile = m_pIconTiles->GetItemAt(local);
+    if (!tile) return;
+
+    // Child positions are window-client coordinates already shifted by the scrollbars, so a
+    // plain intersection with the host's rect tells us how far (and which way) to scroll.
+    const RECT rcItem = tile->GetPos();
+    RECT rcView = m_pIconTiles->GetPos();
+    CScrollBarUI* vb = m_pIconTiles->GetVerticalScrollBar();
+    CScrollBarUI* hb = m_pIconTiles->GetHorizontalScrollBar();
+    if (vb && vb->IsVisible()) rcView.right -= vb->GetFixedWidth();
+    if (hb && hb->IsVisible()) rcView.bottom -= hb->GetFixedHeight();
+
+    int dcy = 0, dcx = 0;
+    if (rcItem.top < rcView.top) dcy = rcItem.top - rcView.top;
+    else if (rcItem.bottom > rcView.bottom) dcy = rcItem.bottom - rcView.bottom;
+    if (rcItem.left < rcView.left) dcx = rcItem.left - rcView.left;
+    else if (rcItem.right > rcView.right) dcx = rcItem.right - rcView.right;
+    if (dcy == 0 && dcx == 0) return;
+
+    const SIZE range = m_pIconTiles->GetScrollRange();
+    const SIZE pos = m_pIconTiles->GetScrollPos();
+    int nx = pos.cx + dcx;
+    int ny = pos.cy + dcy;
+    if (nx < 0) nx = 0;
+    if (nx > range.cx) nx = range.cx;
+    if (ny < 0) ny = 0;
+    if (ny > range.cy) ny = range.cy;
+    if (nx == pos.cx && ny == pos.cy) return;
+    SIZE np = { nx, ny };
+    m_pIconTiles->SetScrollPos(np);
+}
+
+void CMainWnd::IconMoveTo(int next)
+{
+    if (!m_pIconTiles) return;
+    const int total = m_pIconTiles->GetCount();
+    if (total <= 0) return;
+    if (next < 0) next = 0;
+    if (next >= total) next = total - 1;
+
+    const int local = m_iconVirtMode ? (next - m_virtFirstIndex) : next;
+    if (local < 0 || local >= total) return;
+    CControlUI* tile = m_pIconTiles->GetItemAt(local);
+    if (!tile) return;
+
+    const bool shift = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    const bool ctrl = (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    if (shift && m_iconAnchor >= 0) {
+        SelectIconRange(m_iconAnchor, next);
+    } else if (ctrl) {
+        SetIconSelected(tile, true);
+        m_iconAnchor = next;
+    } else {
+        ClearIconSelection();
+        SetIconSelected(tile, true);
+        m_iconAnchor = next;
+    }
+
+    IconEnsureVisible(next);
+    m_PaintManager.SetFocus(tile);
+    UpdateListingStatusTip();
+    UpdatePreviewForSelection();
+}
+
+void CMainWnd::IconNavigate(int dCol, int dRow)
+{
+    if (!m_pIconTiles) return;
+    const int total = m_pIconTiles->GetCount();
+    if (total <= 0) return;
+
+    const bool columnFirst = (m_viewMode == ViewMode::List);
+    const int cols = (std::max)(1, m_pIconTiles->GetColumns());
+    const int rows = (std::max)(1, m_pIconTiles->GetRows());
+
+    const int cur = IconCursorIndex();
+    int next;
+    if (cur < 0) {
+        // Nothing selected yet: Down/Right land on the first item, Up/Left on the last.
+        next = (dCol < 0 || dRow < 0) ? total - 1 : 0;
+    } else if (columnFirst) {
+        // Column-first flow: flat index = column * rows + row.
+        int row = cur % rows + dRow;
+        int col = cur / rows + dCol;
+        if (row < 0) row = 0;
+        if (row > rows - 1) row = rows - 1;
+        if (col < 0) col = 0;
+        // Clamp to the last column that actually holds this row, so a sideways move in the
+        // final (partial) column does not teleport to the very last item.
+        const int maxCol = (total - 1) / rows;
+        if (col > maxCol) col = maxCol;
+        next = col * rows + row;
+        while (next > total - 1 && col > 0) next = (--col) * rows + row;
+        if (next > total - 1) next = total - 1;
+    } else {
+        int col = cur % cols + dCol;
+        int row = cur / cols + dRow;
+        if (col < 0) col = 0;
+        if (col > cols - 1) col = cols - 1;
+        if (row < 0) row = 0;
+        next = row * cols + col;
+        // The last row can be partial, so walk back up the same column until an item exists.
+        while (next > total - 1 && row > 0) next = (--row) * cols + col;
+        if (next > total - 1) next = total - 1;
+    }
+    IconMoveTo(next);
+}
+
+void CMainWnd::IconPageMove(int dir)
+{
+    if (!m_pIconTiles || dir == 0) return;
+    const int total = m_pIconTiles->GetCount();
+    if (total <= 0) return;
+
+    const SIZE item = m_pIconTiles->GetItemSize();
+    RECT rc = m_pIconTiles->GetPos();
+    const int viewW = (std::max)(1, static_cast<int>(rc.right - rc.left));
+    const int viewH = (std::max)(1, static_cast<int>(rc.bottom - rc.top));
+    const bool columnFirst = (m_viewMode == ViewMode::List);
+
+    if (columnFirst) {
+        // A "page" in the vertical list view is the set of visible columns.
+        const int pitch = (std::max)(1, static_cast<int>(item.cx) + m_pIconTiles->GetChildPadding());
+        const int page = (std::max)(1, viewW / pitch);
+        IconNavigate(dir * page, 0);
+    } else {
+        const int pitch = (std::max)(1, static_cast<int>(item.cy) + m_pIconTiles->GetChildVPadding());
+        const int page = (std::max)(1, viewH / pitch);
+        IconNavigate(0, dir * page);
+    }
+}
+
+void CMainWnd::IconActivateCursor()
+{
+    if (!m_pIconTiles) return;
+    const int cur = IconCursorIndex();
+    if (cur < 0) return;
+    const int local = m_iconVirtMode ? (cur - m_virtFirstIndex) : cur;
+    if (local < 0 || local >= m_pIconTiles->GetCount()) return;
+    ActivateIconTile(m_pIconTiles->GetItemAt(local));
+}
+
 void CMainWnd::ActivateIconTile(CControlUI* tile)
 {
     if (!tile) return;

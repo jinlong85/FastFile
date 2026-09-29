@@ -505,6 +505,15 @@ private:
     void ApplyIconSelectionVisual(CControlUI* tile);
     int FindIconIndex(CControlUI* tile) const;
     void SelectIconRange(int from, int to);
+    // Keyboard navigation for the tile/icon/list views (the `file_icons` TileLayout).
+    // The cursor is the selected tile, so these mirror DetailsMoveCursor's Shift/Ctrl rules.
+    bool IsIconViewFocused() const;
+    int  IconCursorIndex() const;              // flat index of the cursor, or -1
+    void IconMoveTo(int next);                 // move the cursor to a flat index
+    void IconNavigate(int dCol, int dRow);     // one grid step (arrow keys)
+    void IconPageMove(int dir);                // PageUp(-1) / PageDown(+1) by a screen
+    void IconEnsureVisible(int flatIndex);     // scroll the tile host so the item shows
+    void IconActivateCursor();                 // Enter/Space: open the cursor item
 
     void CollectSelectedItems(std::vector<ClipboardItem>& out) const;
     bool DeleteItems(const std::vector<ClipboardItem>& items, bool permanent = false);

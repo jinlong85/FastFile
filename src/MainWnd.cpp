@@ -964,6 +964,22 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                     return 0;
                 }
             }
+            // Tile / icon / list grid: arrows walk the cursor by the live grid size, Home/End
+            // jump to the ends, PageUp/PageDown move a screen, Enter/Space open the cursor.
+            if (IsTileViewMode() && m_pIconTiles && IsIconViewFocused()) {
+                if (wParam == VK_LEFT)  { IconNavigate(-1, 0); return 0; }
+                if (wParam == VK_RIGHT) { IconNavigate(1, 0);  return 0; }
+                if (wParam == VK_UP)    { IconNavigate(0, -1); return 0; }
+                if (wParam == VK_DOWN)  { IconNavigate(0, 1);  return 0; }
+                if (wParam == VK_PRIOR) { IconPageMove(-1);     return 0; }
+                if (wParam == VK_NEXT)  { IconPageMove(1);      return 0; }
+                if (wParam == VK_HOME)  { IconMoveTo(0);        return 0; }
+                if (wParam == VK_END)   { IconMoveTo(m_pIconTiles->GetCount() - 1); return 0; }
+                if (wParam == VK_RETURN || wParam == VK_SPACE) {
+                    IconActivateCursor();
+                    return 0;
+                }
+            }
             // ---- navigation ----
             if (wParam == VK_F5) {
                 RefreshListing();
