@@ -273,37 +273,25 @@ void CTabStripUI::RecalcRects(bool notifyOnly)
     m_contentW = 0;
     for (int i = 0; i < n; ++i)
         m_contentW += TabWidth(i) + gap;
-    // A single tab has no siblings to sit next to: let its card span the whole strip so it
-    // reads as the row itself instead of an island with grey around it (Explorer does this).
-    if (n == 1) {
-        const int plusW = Scaled(32, m_dpi);
-        const int gap = Scaled(UiTokens::TabCardGap, m_dpi);
-        int w = static_cast<int>(m_rcItem.right - m_rcItem.left) - plusW - gap;
-        if (w > 0) {
-            m_contentW = w + gap;
-            m_tabs[0].singleWidth = w;
-        }
-    } else {
-        for (auto& t : m_tabs) t.singleWidth = 0;
-    }
+    // A tab card is always exactly as wide as its own title needs - never stretched towards
+    // "+" or the caption buttons (that would paint the card under them and leave the tab text
+    // with no visible boundary). Overflow scrolls; see EnsureTabVisible()/ClampScroll().
+    for (auto& t : m_tabs) t.singleWidth = 0;
     ClampScroll();
 
     int x = m_rcItem.left - m_scrollX;
     for (int i = 0; i < n; ++i) {
-        const int w = m_tabs[i].singleWidth > 0 ? m_tabs[i].singleWidth : TabWidth(i);
+        const int w = TabWidth(i);
         m_tabs[i].body = { x, top, x + w, bottom };
         const int closeSize = Scaled(16, m_dpi);
-        // The close button hugs the label, not the (possibly stretched) card edge - a single
-        // full-width tab would otherwise park its X under the caption buttons.
-        int closeRight = m_tabs[i].body.left + (std::min)(MeasureTabWidth(i), w);
-        if (closeRight > m_tabs[i].body.right) closeRight = m_tabs[i].body.right;
-        const int cx = closeRight - Scaled(6, m_dpi) - closeSize;
+        const int cx = m_tabs[i].body.right - Scaled(6, m_dpi) - closeSize;
         const int cy = (top + bottom - closeSize) / 2;
         m_tabs[i].close = { cx, cy, cx + closeSize, cy + closeSize };
         x += w + gap;
     }
-    // "+" follows the last tab, but never slides under the caption buttons.
-    int plusX = x;
+    // "+" hugs the last visible tab (4..8 design px gap) - it is NOT anchored to the caption
+    // buttons. Only a fully scrolled strip clamps it to the right edge so it stays clickable.
+    int plusX = x + Scaled(UiTokens::TabCardGap, m_dpi);
     if (plusX + plusW > m_rcItem.right)
         plusX = m_rcItem.right - plusW;
     if (plusX < m_rcItem.left)
