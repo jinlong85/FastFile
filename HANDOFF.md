@@ -278,10 +278,20 @@ Windows 11 样式）：两条 `#FFF7F7F7` 轨道紧挨着会连成一条 36 设�
   移出，单独设 `FieldRound`。
 
 标签卡片由 `RebuildTabStrip()` 生成：`TabCardH`(30) 高的按钮，`TabCardRound`(6) 圆角、
-1px 边框，未选中 `ColorTabIdleBg #D2D2D2` / `ColorTabIdleBorder #C8C8C8`，当前页
-`ColorTabActive #F3F3F3`（= chrome surface，所以和下面一行连成一体）/
-`ColorTabActiveBorder #E5E5E5`；卡片之间的间距用包裹层的右 padding（`TabCardGap` 5）。
-行高与其它 band 一起走 `ScaleNamedFixed()`：`TabBarH` 36、`AddressBarH` 44、`ToolbarH` 44；
+标签卡片由 `RebuildTabStrip()` 生成，按 Explorer 的样子分成两态：
+
+- **未选中**：`bkcolor` 透明，只有图标 + 名称 + ×，直接坐在深灰底带上；hover 才给一层
+  `ColorTabIdleBg #D2D2D2` 的淡色。
+- **当前页**：**卡片挂在包裹层（host）上**而不是按钮上——`CHorizontalLayoutUI` 设
+  `bkcolor=ColorTabActive(#F3F3F3)`、`bordersize="1,1,1,0"`（**故意不画底边**，这样卡片
+  和下面一行同色融合）、`TabCardRound` 圆角。这样图标、名称和 × 都在同一张卡片里
+  （之前卡片只包住按钮，× 落在卡片外）。按钮本身透明、`align="left"`，文字从
+  `tabIconPad + tabIconPx + tabTextGap` 开始；字号用新增的 `<Font id="7">`（雅黑 13），
+  比正文大一号，接近 Explorer 的标签。
+
+卡片之间的间距靠包裹层的右 padding（`TabCardGap` 5）——注意 DuiLib 的布局里 padding 是
+*控件矩形之外*的空间，所以卡片底色不会把间距涂满。
+行高与其它 band 一起走 `ScaleNamedFixed()`：`TabBarH` 37、`FavoritesBarH` 32、`AddressBarH` 48、`ToolbarH` 45（对齐参考图的 56/—/72/68 物理像素）；
 地址栏的前进/后退/上级/刷新改成 `NavGlyphPx`(20) 的位图图标（原来是 16 号 MDL2 字形），
 按钮 40×32；命令栏的图标按钮加宽到 40、分隔线加高到 24，整体更接近参考的疏密。
 

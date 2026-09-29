@@ -52,6 +52,20 @@ void CMainWnd::RebuildTabStrip()
         CDuiString hostPad;
         hostPad.Format(_T("0,0,%d,0"), tabGap);
         host->SetAttribute(_T("padding"), hostPad.GetData());
+        // The card (background + border) belongs to the whole tab - icon, label *and* close
+        // button - like Explorer, where the × sits inside the rounded card. Inactive tabs stay
+        // flat on the strip; only the current tab is raised into a light card, and that card
+        // has no bottom border so it merges with the row underneath.
+        if (i == m_activeTab) {
+            host->SetAttribute(_T("bkcolor"), UiTokens::ColorTabActive);
+            host->SetAttribute(_T("bordercolor"), UiTokens::ColorTabActiveBorder);
+            host->SetAttribute(_T("bordersize"), _T("1,1,1,0"));
+        } else {
+            host->SetAttribute(_T("bkcolor"), UiTokens::ColorTransparent);
+            host->SetAttribute(_T("bordercolor"), UiTokens::ColorTransparent);
+            host->SetAttribute(_T("bordersize"), _T("0"));
+        }
+        host->SetBorderRound({ DpiScale(UiTokens::TabCardRound), DpiScale(UiTokens::TabCardRound) });
 
         CDuiString btnName, closeName;
         btnName.Format(_T("tab_btn_%d"), i);
@@ -61,14 +75,16 @@ void CMainWnd::RebuildTabStrip()
         auto* btn = new CButtonUI;
         btn->SetName(btnName);
         btn->SetText(title.c_str());
-        btn->SetAttribute(_T("align"), _T("center"));
+        btn->SetAttribute(_T("align"), _T("left"));
         btn->SetAttribute(_T("valign"), _T("vcenter"));
         btn->SetAttribute(_T("endellipsis"), _T("true"));
-        btn->SetAttribute(_T("bkcolor"), UiTokens::ColorTabIdleBg);
-        btn->SetAttribute(_T("bordercolor"), UiTokens::ColorTabIdleBorder);
-        btn->SetAttribute(_T("bordersize"), _T("1"));
-        btn->SetAttribute(_T("hotbkcolor"), UiTokens::ColorTabActiveHot);
-        btn->SetAttribute(_T("pushedbkcolor"), UiTokens::ColorTabActiveHot);
+        // Explorer keeps the background tabs flat on the strip and only raises the current
+        // one into a light card; hovering an idle tab tints it slightly.
+        btn->SetAttribute(_T("bkcolor"), UiTokens::ColorTransparent);
+        btn->SetAttribute(_T("bordercolor"), UiTokens::ColorTransparent);
+        btn->SetAttribute(_T("bordersize"), _T("0"));
+        btn->SetAttribute(_T("hotbkcolor"), UiTokens::ColorTabIdleBg);
+        btn->SetAttribute(_T("pushedbkcolor"), UiTokens::ColorTabIdleBorder);
         {
             CDuiString tp;
             tp.Format(_T("%d,0,%d,0"),
@@ -76,14 +92,11 @@ void CMainWnd::RebuildTabStrip()
             btn->SetAttribute(_T("textpadding"), tp);
         }
         if (i == m_activeTab) {
-            btn->SetAttribute(_T("bkcolor"), UiTokens::ColorTabActive);
             btn->SetAttribute(_T("textcolor"), UiTokens::ColorTextPrimary);
-            btn->SetAttribute(_T("font"), _T("0"));
-            btn->SetAttribute(_T("hotbkcolor"), UiTokens::ColorTabActiveHot);
-            btn->SetAttribute(_T("bordercolor"), UiTokens::ColorTabActiveBorder);
         } else {
-            btn->SetAttribute(_T("textcolor"), UiTokens::ColorTextPrimary);
+            btn->SetAttribute(_T("textcolor"), UiTokens::ColorTextTabIdle);
         }
+        btn->SetAttribute(_T("font"), _T("7"));   // 13pt tab label, closer to Explorer's size
         int textW = MeasureTextWidth(title);
         if (textW <= 0)
             textW = DpiScale(static_cast<int>(title.size()) * 8);   // fallback estimate
@@ -91,8 +104,6 @@ void CMainWnd::RebuildTabStrip()
         if (w < DpiScale(UiTokens::TabMinW)) w = DpiScale(UiTokens::TabMinW);
         if (w > DpiScale(UiTokens::TabMaxW)) w = DpiScale(UiTokens::TabMaxW);
         btn->SetFixedWidth(w);
-        SIZE tabRound = { DpiScale(UiTokens::TabCardRound), DpiScale(UiTokens::TabCardRound) };
-        btn->SetBorderRound(tabRound);
         std::wstring tabIcon = IsThisPcPath(m_tabs[i].path)
             ? GetStockIconBmp(SIID_DESKTOPPC, tabIconPx)
             : GetShellIconBmp(m_tabs[i].path, true, tabIconPx);

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // FastFile UI design tokens (96-DPI design units).
 // Physical pixels = DpiScale(token). Win11 light theme only. No 360 assets.
 // Spacing scale: 4 / 8 / 12 / 16. Outer gutter raised 8 -> 14 (user-confirmed 12-16).
@@ -26,31 +26,31 @@ constexpr int GapGroup = SpaceSm;   // toolbar group gaps
 constexpr int SepH = 20;            // command-bar separators (bar is 40, buttons 32)
 constexpr int HitTabH = 24;
 constexpr int TabIconPx = 16;
-constexpr int TabMinW = 132;          // Explorer-style tab cards are roomy
-constexpr int TabMaxW = 280;
+constexpr int TabMinW = 175;          // Explorer-style tab cards are roomy
+constexpr int TabMaxW = 260;
 constexpr int TabCloseW = 20;
 constexpr int HitBreadcrumbH = 30;      // address text stays vertically centered
 constexpr int CmdBtnH = 32;
 // Phase 6: Explorer-style chrome - a taller tab strip with tab "cards", a roomier address
 // row whose path/search fields are white rounded boxes, and the command bar sitting on the
 // white content surface instead of the grey chrome.
-constexpr int TabBarH = 36;
-constexpr int TabCardH = 30;          // chip inside the strip
+constexpr int TabBarH = 37;
+constexpr int TabCardH = 32;          // chip inside the strip; its bottom edge = strip bottom
 constexpr int TabCardGap = 5;         // gap between chips
-constexpr int TabCardRound = 6;       // chip corner radius
-constexpr int ToolbarH = 44;
+constexpr int TabCardRound = 8;       // chip corner radius (Explorer-like)
+constexpr int ToolbarH = 45;
 constexpr int BreadcrumbBarH = 28;     // legacy; path merged into address_bar
 constexpr int BreadcrumbSegPadX = 3;   // compact Explorer-style segment gap
 constexpr int BreadcrumbSepW = 12;
 constexpr int TitleBarH = 32;
-constexpr int FavoritesBarH = 26;
+constexpr int FavoritesBarH = 32;
 constexpr int FavBarPadY = 2;          // tighter than InnerPadY so chips fit
 constexpr int FavChipH = 22;
 constexpr int FavIconPx = 16;
 constexpr int FavLabelW = 72;          // star + fav left mark
 constexpr int FavLabelBaselineLift = 4; // design px to raise the CJK "★ 收藏" label onto the
                                         // Latin baseline of the chips beside it
-constexpr int AddressBarH = 44;       // roomier row; the path/search fields stay 32 and centre
+constexpr int AddressBarH = 48;       // roomier row; the path/search fields stay 32 and centre
 constexpr int FieldRound = 8;         // path / search field corner radius
 constexpr int AddressBarPadY = 2;
 constexpr int SearchBoxH = 28;
