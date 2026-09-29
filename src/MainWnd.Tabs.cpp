@@ -1,4 +1,4 @@
-// FastFile - tab strip, session persistence, per-folder view memory
+﻿// FastFile - tab strip, session persistence, per-folder view memory
 // Implements CMainWnd members moved out of the original monolithic MainWnd.cpp.
 // Behaviour is unchanged; declarations live in MainWnd.h.
 
@@ -11,10 +11,8 @@ void CMainWnd::InitTabs()
     m_tabs.clear();
     m_activeTab = -1;
     if (m_pTabStrip) {
-        m_pTabStrip->RemoveAll();
-        // A zero-width layout is treated as flexible by DuiLib and moves the + button
-        // toward the centre of an empty tab bar. Keep a minimal fixed anchor instead.
-        m_pTabStrip->SetFixedWidth(DpiScale(1));
+        m_pTabStrip->SetMetrics(static_cast<int>(m_dpi));
+        m_pTabStrip->Clear();
     }
 }
 
@@ -35,109 +33,26 @@ void CMainWnd::RebuildTabStrip()
 {
     if (!m_pTabStrip) return;
     m_updatingTabs = true;
-    m_pTabStrip->RemoveAll();
-    int tabStripW = 0;
+    // The strip is a self-drawn control: hand it the model (path / title / shell icon) and it
+    // sizes, hit-tests and paints the tabs itself (see TabStripUI.cpp).
     const int tabIconPx = DpiScale(UiTokens::TabIconPx);
-    const int tabIconPad = DpiScale(UiTokens::SpaceSm);
-    const int tabTextGap = DpiScale(UiTokens::SpaceXs);
-    const int tabTextPadR = DpiScale(UiTokens::SpaceSm);
-    // Explorer-style tab "cards": a bordered rounded chip inside the darker tab strip, with
-    // the active tab painted in the chrome surface colour so it merges with the row below.
-    const int tabH = DpiScale(UiTokens::TabCardH);
-    const int tabGap = DpiScale(UiTokens::TabCardGap);
-
+    m_pTabStrip->SetMetrics(static_cast<int>(m_dpi));
+    m_pTabStrip->SetMaxTabWidth(UiTokens::TabMaxW);
+    m_pTabStrip->Clear();
     for (int i = 0; i < static_cast<int>(m_tabs.size()); ++i) {
-        auto* host = new CHorizontalLayoutUI;
-        host->SetFixedHeight(tabH);
-        CDuiString hostPad;
-        hostPad.Format(_T("0,0,%d,0"), tabGap);
-        host->SetAttribute(_T("padding"), hostPad.GetData());
-        // The card (background + border) belongs to the whole tab - icon, label *and* close
-        // button - like Explorer, where the × sits inside the rounded card. Inactive tabs stay
-        // flat on the strip; only the current tab is raised into a light card, and that card
-        // has no bottom border so it merges with the row underneath.
-        if (i == m_activeTab) {
-            host->SetAttribute(_T("bkcolor"), UiTokens::ColorTabActive);
-            host->SetAttribute(_T("bordercolor"), UiTokens::ColorTabActiveBorder);
-            host->SetAttribute(_T("bordersize"), _T("1,1,1,0"));
-        } else {
-            host->SetAttribute(_T("bkcolor"), UiTokens::ColorTransparent);
-            host->SetAttribute(_T("bordercolor"), UiTokens::ColorTransparent);
-            host->SetAttribute(_T("bordersize"), _T("0"));
-        }
-        host->SetBorderRound({ DpiScale(UiTokens::TabCardRound), DpiScale(UiTokens::TabCardRound) });
-
-        CDuiString btnName, closeName;
-        btnName.Format(_T("tab_btn_%d"), i);
-        closeName.Format(_T("tab_close_%d"), i);
-
         const std::wstring title = TabTitleForPath(m_tabs[i].path);
-        auto* btn = new CButtonUI;
-        btn->SetName(btnName);
-        btn->SetText(title.c_str());
-        btn->SetAttribute(_T("align"), _T("left"));
-        btn->SetAttribute(_T("valign"), _T("vcenter"));
-        btn->SetAttribute(_T("endellipsis"), _T("true"));
-        // Explorer keeps the background tabs flat on the strip and only raises the current
-        // one into a light card; hovering an idle tab tints it slightly.
-        btn->SetAttribute(_T("bkcolor"), UiTokens::ColorTransparent);
-        btn->SetAttribute(_T("bordercolor"), UiTokens::ColorTransparent);
-        btn->SetAttribute(_T("bordersize"), _T("0"));
-        btn->SetAttribute(_T("hotbkcolor"), UiTokens::ColorTabIdleBg);
-        btn->SetAttribute(_T("pushedbkcolor"), UiTokens::ColorTabIdleBorder);
-        {
-            CDuiString tp;
-            tp.Format(_T("%d,0,%d,0"),
-                tabIconPad + tabIconPx + tabTextGap, tabTextPadR);
-            btn->SetAttribute(_T("textpadding"), tp);
-        }
-        if (i == m_activeTab) {
-            btn->SetAttribute(_T("textcolor"), UiTokens::ColorTextPrimary);
-        } else {
-            btn->SetAttribute(_T("textcolor"), UiTokens::ColorTextTabIdle);
-        }
-        btn->SetAttribute(_T("font"), _T("7"));   // 13pt tab label, closer to Explorer's size
-        int textW = MeasureTextWidth(title);
-        if (textW <= 0)
-            textW = DpiScale(static_cast<int>(title.size()) * 8);   // fallback estimate
-        int w = textW + tabIconPad + tabIconPx + tabTextGap + tabTextPadR;
-        if (w < DpiScale(UiTokens::TabMinW)) w = DpiScale(UiTokens::TabMinW);
-        if (w > DpiScale(UiTokens::TabMaxW)) w = DpiScale(UiTokens::TabMaxW);
-        btn->SetFixedWidth(w);
-        std::wstring tabIcon = IsThisPcPath(m_tabs[i].path)
+        std::wstring icon = IsThisPcPath(m_tabs[i].path)
             ? GetStockIconBmp(SIID_DESKTOPPC, tabIconPx)
             : GetShellIconBmp(m_tabs[i].path, true, tabIconPx);
-        if (tabIcon.empty())
-            tabIcon = GetStockIconBmp(SIID_FOLDER, tabIconPx);
-        if (!tabIcon.empty())
-            ApplyControlForeIcon(btn, tabIcon, tabIconPx, tabIconPad,
-                (tabH - tabIconPx) / 2, false);
-        m_tabs[i].button = btn;
-
-        auto* closeBtn = new CButtonUI;
-        closeBtn->SetName(closeName);
-        closeBtn->SetText(_T("×"));
-        closeBtn->SetFixedWidth(DpiScale(UiTokens::TabCloseW));
-        closeBtn->SetAttribute(_T("bkcolor"), UiTokens::ColorTransparent);
-        closeBtn->SetAttribute(_T("bordersize"), _T("0"));
-        closeBtn->SetAttribute(_T("textcolor"), UiTokens::ColorTextMuted);
-        closeBtn->SetAttribute(_T("hotbkcolor"), UiTokens::ColorHover);
-        closeBtn->SetAttribute(_T("hottextcolor"), UiTokens::ColorDanger);
-
-        host->SetFixedWidth(w + DpiScale(UiTokens::TabCloseW));
-        host->Add(btn);
-        host->Add(closeBtn);
-        m_pTabStrip->Add(host);
-        tabStripW += w + DpiScale(UiTokens::TabCloseW);
+        if (icon.empty()) icon = GetStockIconBmp(SIID_FOLDER, tabIconPx);
+        m_pTabStrip->Add(m_tabs[i].path, title, icon, tabIconPx, i == m_activeTab);
+        m_tabs[i].button = nullptr;
     }
-    // The strip must occupy only its actual content so the static + button stays
-    // immediately after the final tab; the following spacer consumes the remainder.
-    m_pTabStrip->SetFixedWidth((std::max)(DpiScale(1), tabStripW));
-    m_pTabStrip->NeedUpdate();
+    m_pTabStrip->NeedParentUpdate();
     m_updatingTabs = false;
 }
 
-void CMainWnd::AddTab(const std::wstring& path, bool activate)
+void CMainWnd::AddTab(const std::wstring& path, bool activate, bool allowDuplicate)
 {
     std::wstring target = path.empty() ? GetDefaultStartPath() : path;
     if (target == L"此电脑")
@@ -150,11 +65,14 @@ void CMainWnd::AddTab(const std::wstring& path, bool activate)
 
     // One directory has one tab.  This also applies to folders opened by another process,
     // so repeated clicks in Explorer simply bring the existing FastFile tab forward.
-    for (int i = 0; i < static_cast<int>(m_tabs.size()); ++i) {
-        if (PathEquals(m_tabs[i].path, target)) {
-            if (activate)
-                ActivateTab(i);
-            return;
+    // Ctrl+T / the "+" button pass allowDuplicate: a new tab is always what the user asked for.
+    if (!allowDuplicate) {
+        for (int i = 0; i < static_cast<int>(m_tabs.size()); ++i) {
+            if (PathEquals(m_tabs[i].path, target)) {
+                if (activate)
+                    ActivateTab(i);
+                return;
+            }
         }
     }
 
@@ -229,7 +147,147 @@ std::wstring CMainWnd::NewTabTargetForSelection() const
 
 void CMainWnd::OnNewTabRequested()
 {
-    AddTab(NewTabTargetForSelection(), true);
+    AddTab(NewTabTargetForSelection(), true, true);
+}
+
+// ---- CTabStripUI notifications -------------------------------------------
+
+CControlUI* CMainWnd::CreateControl(LPCTSTR pstrClass)
+{
+    if (_tcsicmp(pstrClass, _T("TabStrip")) == 0)
+        return new CTabStripUI;
+    return nullptr;   // everything else goes through DuiLib's own factory
+}
+
+void CMainWnd::OnTabStripSelect(int index)
+{
+    if (index < 0 || index >= static_cast<int>(m_tabs.size()) || index == m_activeTab)
+        return;
+    ActivateTab(index);
+}
+
+void CMainWnd::OnTabStripClose(int index)
+{
+    CloseTab(index);
+}
+
+void CMainWnd::OnTabStripReorder(int from, int to)
+{
+    if (from < 0 || to < 0 || from == to) return;
+    if (from >= static_cast<int>(m_tabs.size()) || to >= static_cast<int>(m_tabs.size())) return;
+    // The strip already moved its own copy; mirror that on the real tab model.
+    TabInfo moved = m_tabs[from];
+    m_tabs.erase(m_tabs.begin() + from);
+    m_tabs.insert(m_tabs.begin() + to, std::move(moved));
+    if (m_activeTab == from) m_activeTab = to;
+    else if (from < m_activeTab && to >= m_activeTab) --m_activeTab;
+    else if (from > m_activeTab && to <= m_activeTab) ++m_activeTab;
+    SaveSession();
+}
+
+void CMainWnd::OnTabStripDragOut(int index, POINT screenPt)
+{
+    if (index < 0 || index >= static_cast<int>(m_tabs.size())) return;
+    OpenPathInNewWindow(m_tabs[index].path, screenPt);
+}
+
+void CMainWnd::OnTabStripAdd()
+{
+    OnNewTabRequested();
+}
+
+void CMainWnd::CloseOtherTabs(int keepIndex, bool rightSideOnly)
+{
+    if (keepIndex < 0 || keepIndex >= static_cast<int>(m_tabs.size())) return;
+    for (int i = static_cast<int>(m_tabs.size()) - 1; i >= 0; --i) {
+        if (i == keepIndex) continue;
+        if (rightSideOnly && i < keepIndex) continue;
+        m_tabs.erase(m_tabs.begin() + i);
+        if (i < keepIndex) --keepIndex;
+    }
+    m_activeTab = -1;
+    ActivateTab(keepIndex);
+}
+
+void CMainWnd::OpenPathInNewWindow(const std::wstring& path, POINT screenPt)
+{
+    // "--new-window" bypasses the single-instance forwarding in main.cpp so the clone really
+    // becomes its own HWND.
+    wchar_t exe[MAX_PATH] = {};
+    ::GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    std::wstring cmd = L"\"" + std::wstring(exe) + L"\" --new-window";
+    if (!path.empty())
+        cmd += L" \"" + path + L"\"";
+    // Hand the clone its geometry so a dragged-out tab opens exactly as big as this window,
+    // at the drop point, without the parent having to race the new process' own layout pass.
+    if ((screenPt.x != 0 || screenPt.y != 0) && m_hWnd) {
+        RECT rc = {};
+        ::GetWindowRect(m_hWnd, &rc);
+        const int w = rc.right - rc.left, h = rc.bottom - rc.top;
+        if (w > 0 && h > 0) {
+            wchar_t geom[64] = {};
+            swprintf_s(geom, L" --geometry=%d,%d,%d,%d", screenPt.x - 60, screenPt.y - 16, w, h);
+            cmd += geom;
+        }
+    }
+    STARTUPINFOW si = {};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi = {};
+    if (::CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+        ::CloseHandle(pi.hThread);
+        ::CloseHandle(pi.hProcess);
+    }
+}
+
+void CMainWnd::OnTabStripContextMenu(int index, POINT screenPt)
+{
+    if (index < 0 || index >= static_cast<int>(m_tabs.size())) return;
+    enum { kClose = 1, kCloseRight, kCloseOthers, kCopyPath, kNewWindow };
+    HMENU menu = ::CreatePopupMenu();
+    if (!menu) return;
+    const bool hasOthers = m_tabs.size() > 1;
+    const bool hasRight = index + 1 < static_cast<int>(m_tabs.size());
+    ::AppendMenuW(menu, MF_STRING, kClose, L"关闭标签页");
+    ::AppendMenuW(menu, MF_STRING | (hasRight ? 0 : MF_GRAYED), kCloseRight, L"关闭右侧标签页");
+    ::AppendMenuW(menu, MF_STRING | (hasOthers ? 0 : MF_GRAYED), kCloseOthers, L"关闭其他标签页");
+    ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    ::AppendMenuW(menu, MF_STRING, kCopyPath, L"复制路径");
+    ::AppendMenuW(menu, MF_STRING, kNewWindow, L"在新窗口打开");
+    const UINT cmd = ::TrackPopupMenuEx(menu,
+        TPM_RETURNCMD | TPM_RIGHTBUTTON, screenPt.x, screenPt.y, m_hWnd, nullptr);
+    ::DestroyMenu(menu);
+    switch (cmd) {
+    case kClose:
+        CloseTab(index);
+        break;
+    case kCloseRight:
+        CloseOtherTabs(index, true);
+        break;
+    case kCloseOthers:
+        CloseOtherTabs(index, false);
+        break;
+    case kCopyPath: {
+        const std::wstring text = (m_tabs[index].path == kThisPcPath) ? L"此电脑" : m_tabs[index].path;
+        ::OpenClipboard(m_hWnd);
+        ::EmptyClipboard();
+        const size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+        if (HGLOBAL mem = ::GlobalAlloc(GMEM_MOVEABLE, bytes)) {
+            if (void* dst = ::GlobalLock(mem)) {
+                memcpy(dst, text.c_str(), bytes);
+                ::GlobalUnlock(mem);
+                ::SetClipboardData(CF_UNICODETEXT, mem);
+            }
+        }
+        ::CloseClipboard();
+        UpdateStatus(_T("已复制路径"));
+        break;
+    }
+    case kNewWindow:
+        OpenPathInNewWindow(m_tabs[index].path, screenPt);
+        break;
+    default:
+        break;
+    }
 }
 
 // Modal confirmation for "close the window while several tabs are open". Uses the native

@@ -117,6 +117,50 @@ std::vector<std::wstring> ParseOpenPaths()
     return paths;
 }
 
+// "--new-window" (used when a tab is dragged out of the window) must NOT be folded into an
+// existing instance: the caller wants a separate HWND.
+bool ForceNewWindowRequested()
+{
+    int argc = 0;
+    LPWSTR* argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
+    if (!argv)
+        return false;
+    bool force = false;
+    for (int i = 1; i < argc; ++i) {
+        if (argv[i] && ::_wcsicmp(argv[i], L"--new-window") == 0) {
+            force = true;
+            break;
+        }
+    }
+    ::LocalFree(argv);
+    return force;
+}
+
+// "--geometry=x,y,w,h" - a tab dragged out of the window is handed to the clone process so it
+// opens at the drop point with the *source* window's size instead of the default design size.
+bool StartupGeometryRequested(RECT& out)
+{
+    int argc = 0;
+    LPWSTR* argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
+    if (!argv)
+        return false;
+    bool found = false;
+    for (int i = 1; i < argc && !found; ++i) {
+        if (!argv[i] || ::_wcsnicmp(argv[i], L"--geometry=", 11) != 0)
+            continue;
+        int x = 0, y = 0, w = 0, h = 0;
+        if (::swscanf_s(argv[i] + 11, L"%d,%d,%d,%d", &x, &y, &w, &h) == 4 && w > 0 && h > 0) {
+            out.left = x;
+            out.top = y;
+            out.right = x + w;
+            out.bottom = y + h;
+            found = true;
+        }
+    }
+    ::LocalFree(argv);
+    return found;
+}
+
 bool ForwardOpenPaths(HWND existing, const std::vector<std::wstring>& paths)
 {
     if (!existing || paths.empty())
@@ -197,7 +241,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPWSTR /*lpCmdLi
 
     // Single-instance: tray / second launch should restore the existing main HWND
     const std::vector<std::wstring> startupPaths = ParseOpenPaths();
-    if (ActivateExistingInstance(startupPaths))
+    // ... unless the caller explicitly asked for a second window (tab dragged out).
+    if (!ForceNewWindowRequested() && ActivateExistingInstance(startupPaths))
         return 0;
 
     HRESULT hr = ::OleInitialize(nullptr);
@@ -230,7 +275,15 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPWSTR /*lpCmdLi
     mainWnd->CenterWindow();
     mainWnd->ShowWindow(true);
     mainWnd->EnsureDpiLayout();
-    mainWnd->CenterWindow();
+    RECT startupGeom = {};
+    if (StartupGeometryRequested(startupGeom)) {
+        // Drag-out clone: keep the source window's size at the drop point.
+        ::SetWindowPos(hWnd, nullptr, startupGeom.left, startupGeom.top,
+            startupGeom.right - startupGeom.left, startupGeom.bottom - startupGeom.top,
+            SWP_NOZORDER | SWP_NOACTIVATE);
+    } else {
+        mainWnd->CenterWindow();
+    }
 
     CPaintManagerUI::MessageLoop();
     CPaintManagerUI::Term();

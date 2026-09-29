@@ -59,6 +59,8 @@ add_executable(FastFile WIN32
   src/MainWnd.Integration.cpp
   src/MainWnd.Views.cpp
   src/MainWnd.Icons.cpp
+  src/TabStripUI.cpp
+  src/TabStripUI.h
   src/MainWnd.Preview.cpp
   src/MainWnd.DragDrop.cpp
   src/MainWnd.h

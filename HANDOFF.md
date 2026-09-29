@@ -5,6 +5,10 @@
 > 2026-09-28：已纳入 Git 版本管理；原 8000 行单文件 `src\MainWnd.cpp` 已拆分为 14 个编译单元（见「源码结构」）。
 >
 > 2026-09-29：完成「第二批～第十二批」共 11 轮修复/打磨（含安装程序、应用图标、右键菜单、崩溃修复、可选文件夹打开接管）。
+>
+> 2026-09-29（晚）：第十三批（顶部功能区整体改版）+ 第十四批（标签栏改为自绘 `CTabStripUI`，
+> 标题行按 Win11/360 规范重排，`Ctrl+Tab` 与拖出标签开窗修复）。DWM Mica Alt 仍默认关闭，
+> 原因见「DWM / Mica 现状」。
 > 面向使用者的版本记录见 [CHANGELOG.md](CHANGELOG.md)；下面的「开发日志」按批次保留完整细节。
 
 ## 开发日志索引（2026-09-29）
@@ -22,7 +26,9 @@
 | 第九批 | `fd1a154` | 驱动器右键改走原生 Shell 菜单；删项后多余分隔线 |
 | 第十批 | `61674ab` | 磁盘「属性」作用于选中路径（SHObjectProperties）；磁盘根绑定走桌面+完整路径 |
 | 第十一批 | `2cd0b0e` | 可选接管文件夹 / 目录 / 磁盘的默认打开动作；外部路径转发到现有窗口新标签；关闭或卸载恢复 |
-| 第十二批 | 待提交 | 标签切换状态同步；“此电脑”磁盘卡片响应式分列；预览栏最小宽度与元数据列优化 |
+| 第十二批 | `b01e569` `707ee98` | 标签切换状态同步；“此电脑”磁盘卡片响应式分列；预览栏最小宽度与元数据列优化；滚动条统一宽度 + 预览导轨并入调宽手柄 |
+| 第十三批 | `065fde1` `ea6f6bd` `4d73a16` `30056a5` `d650e91` `32ade3d` `69637df` | 关闭确认框、快速访问原生右键菜单 + 拖动排序、双色命令图标、顶部功能区整体改版（标题栏并入标签行、地址栏在命令栏之上）、收藏栏位置与路径框缩放 |
+| 第十四批 | 待提交 | 标签栏改为自绘 `CTabStripUI`；DuiLib XML 骨架按规范重排（32/26/28/28）；窗口按钮改 Shell 字形；`Ctrl+Tab` 修复；拖出标签按源窗口尺寸开窗 |
 
 ## 目标
 
@@ -638,13 +644,116 @@ SHObjectProperties(m_hWnd, SHOP_FILEPATH, path, nullptr);
 > （Explorer 里“此电脑 → 属性”同样是系统页面），那一条不是 bug。
 
 
+## 第十四批：标签栏自绘（CTabStripUI）+ 标题行规范
+
+目标是把 `skin\main.xml` + `UiTokens.h` 按"Win11 资源管理器标签栏 / 360 密度"的规范重排，
+并把标签从"一堆 Button 拼出来"换成一块自绘控件。
+
+### XML 骨架（`skin/main.xml`）
+
+```xml
+<Window size="1180,740" sizebox="4,4,4,4" caption="0,0,0,32" mininfo="900,540">
+  <VerticalLayout name="outer_gutter" bkcolor="#00000000" padding="0,0,0,0">
+  <VerticalLayout name="chrome_root" bkcolor="#00000000" bordersize="0" borderround="0,0">
+    <HorizontalLayout name="titlebar" height="32" padding="8,0,0,0" childvalign="vcenter">
+      <TabStrip name="tab_strip" />                 <!-- 自绘，吃剩余宽度 -->
+      <Button name="btn_tab_add" width="24" height="24" ... />   <!-- + -->
+      <Control name="caption_drag" minwidth="40" />  <!-- 弹性空白：拖窗口 -->
+      <Button name="minbtn" ... /> <Button name="maxbtn" ... />
+      <Button name="restorebtn" visible="false" ... /> <Button name="closebtn" ... />
+    </HorizontalLayout>
+    <HorizontalLayout name="favorites_bar" height="26" ...>…</HorizontalLayout>
+    <HorizontalLayout name="address_bar" height="28" ...>…</HorizontalLayout>
+    <HorizontalLayout name="toolbar" height="28" ...>…</HorizontalLayout>
+```
+
+密度（`UiTokens.h`，设计像素 @96dpi）：标题行 32 / 标签卡片 30（上方留 2px、底边与下一行
+连通）/ 卡片间距 4 / 圆角 6 / 卡片宽 120–190 / 收藏栏 26 / 地址栏 28 / 命令栏 28 /
+地址框 24 / 导航按钮 24 / 详细列表行 24 / 导航行 26 / 状态栏 22。
+
+### CTabStripUI（`src/TabStripUI.h` / `.cpp`）
+
+`class CTabStripUI : public CContainerUI`，自己算几何、自己画、自己命中：
+
+| 分组 | 接口 |
+|---|---|
+| 模型镜像 | `Add / Insert / RemoveAt / Clear / Select / Reorder / FindByPath / SetTabTitle / SetTabIcon / SetActiveTab / GetCount / GetActive` |
+| 外观 | `SetDarkMode / SetMetrics(dpi) / SetMaxTabWidth / AnimateAppear` |
+| 命中 | `HitTest(POINT) -> {index, part∈{None,Body,Close,Plus,Empty}}`、`IsCaptionDragPoint()` |
+| DuiLib 重写 | `GetClass/GetInterface/EstimateSize/SetPos/DoEvent/DoPaint` |
+
+控件只上报意图，模型仍归 `CMainWnd`（`src/MainWnd.Tabs.cpp`）。上报用 `PostMessage`，
+带 `POINT` 的两条消息由宿主 `delete` 指针：
+
+```
+kMsgTabSelect      = WM_USER+300   wParam = index
+kMsgTabClose       = WM_USER+301   wParam = index
+kMsgTabReorder     = WM_USER+302   wParam = from, lParam = to
+kMsgTabDragOut     = WM_USER+303   wParam = index, lParam = POINT*（屏幕坐标）
+kMsgTabContextMenu = WM_USER+304   wParam = index, lParam = POINT*
+kMsgTabAdd         = WM_USER+305
+```
+
+绘制：GDI+ 抗锯齿。选中卡片用 `BuildTopRoundedPath()` 画"上方圆角 + 底边敞开"的形状，
+描边只描上边和左右两条竖边（**不画底边**），所以卡片能和下面的白色收藏/地址区连成一体；
+未选中标签不画底、文字 #5C5C5C，悬停给 8–12% 黑/白淡底并显示关闭叉；选中的叉常显，
+叉悬停是柔和圆角红底（不是 Win10 的直角大红块）；`+` 在标签右侧，热区 24px。
+图标 16px 走 Shell（`GetStockIconBmp` / `GetShellIconBmp`，`SHIL_SMALL`）。
+新建标签有 160ms 的短滑入（`SetTimer(this, 1, 16)`）。
+
+### 非客户区命中（`CMainWnd::HandleMessage` 的 `WM_NCHITTEST`）
+
+标题行整行都是"标题栏"，但里面分三种返回：
+
+| 位置 | 返回 |
+|---|---|
+| `closebtn` / `maxbtn`+`restorebtn` / `minbtn` 的矩形 | `HTCLOSE` / `HTMAXBUTTON` / `HTMINBUTTON` |
+| 标签行里 `TabStrip` 之上（命中 part == Body/Close/Plus） | `HTCLIENT`（交回控件自己处理） |
+| 标签行其余空白（part == Empty）以及 `caption_drag` | `HTCAPTION`（拖动窗口 / 双击最大化） |
+| 窗口四边 `sizeBox` 内 | 继续交给 DuiLib 的默认命中（缩放窗口） |
+
+因为按钮由系统负责（不是 DuiLib 控件）派发，悬停高亮要自己画：
+`WM_NCMOUSEMOVE/WM_NCMOUSELEAVE` → `UpdateCaptionButtonHover()`。所以**不要**指望
+DuiLib 的 `hotbkcolor` 生效。
+
+### 交互
+
+左键切换、中键关闭（`WM_MBUTTONDOWN` 里按命中索引关）、拖动排序（拖动过程中实时
+`Reorder`，越出客户区就 `kMsgTabDragOut`）、拖出后由宿主 `CreateProcess "--new-window"`；
+右键菜单五项（关闭 / 关闭右侧 / 关闭其他 / 复制路径 / 在新窗口打开）；
+`Ctrl+T` 新建、`Ctrl+W`/`Ctrl+F4` 关闭、`Ctrl+Tab`/`Ctrl+Shift+Tab` 前后循环。
+`AddTab()` 增加了 `allowDuplicate` 参数：`Ctrl+T` / "+" 一定新开（资源管理器行为），
+来自其它进程的文件夹仍然复用已有标签。
+
+### 拖出标签的窗口几何
+
+`OpenPathInNewWindow()` 会把"落点 + 本窗口外框尺寸"通过 `--geometry=x,y,w,h` 传给新进程；
+`wWinMain` 的 `StartupGeometryRequested()` 在 `EnsureDpiLayout()` 之后应用它（有参数就
+不再 `CenterWindow()`）。**不要**再用"父进程轮询 `FindWindow` 后 `SetWindowPos`"的写法：
+新进程自己的布局还没跑完，尺寸会被它覆盖（实测新窗口会变成系统的级联默认尺寸
+1920×997，而不是源窗口的 1770×1110）。
+
+### DWM / Mica 现状（重要）
+
+`ApplyWindowCornerAndPadding()` → `ApplyDwmChrome()`：
+
+- `DWMWA_WINDOW_CORNER_PREFERENCE = DWMWCP_ROUND`（圆角，一直开启）；
+- `DWMWA_USE_IMMERSIVE_DARK_MODE`：按亮色皮肤固定 `FALSE`；
+- `DWMWA_SYSTEMBACKDROP_TYPE = DWMSBT_TABBEDWINDOW`（Mica Alt）**只在
+  `constexpr bool kShowMicaBackdrop = true` 时才真正启用**，目前是 `false`，
+  标题行填 `#FFEDEDED` 平色。
+
+原因：要让 Mica 透出来必须 `DwmExtendFrameIntoClientArea` 把边框延伸到客户区，一旦这么做
+DWM 就按**客户区像素的 alpha** 合成，而 DuiLib 的 GDI 绘制（标签文字、窗口按钮字形、
+列表文字）在重定向表面上的 alpha 是 0 —— 深色文字会整片消失。要真正开启 Mica，得先把
+标题行整条改成 GDI+/`AlphaBlend` 的 32bpp 绘制，再打开 `kShowMicaBackdrop`。
+
 ## 当前顶部结构（自上而下）
 
-1. 系统标题栏（客户端内已去掉「FastFile 文件管理」自定义标题行）
-2. **选项卡**
-3. **收藏**（★ 收藏 + 可拖入固定）
-4. **工具栏**（新建/剪切复制…/排序/查看/预览开关）
-5. **地址栏**（与面包屑合并：默认面包屑；点击进入编辑；Enter 导航；Esc/失焦回面包屑）+ **搜索**（框内占位「搜索」；「含子目录」复选框；无外侧放大镜/清除按钮）
+1. **标题行 = 标题栏**（`titlebar`，32px）：标签栏（自绘卡片）+“+” + 弹性空白 + 窗口按钮
+2. **收藏栏**（`favorites_bar`，26px，白底，与选中标签卡片连通）
+3. **地址栏**（`address_bar`，28px）：后退/前进/上级/刷新 + 路径（面包屑↔编辑）+ 搜索 + 含子目录
+4. **命令栏**（`toolbar`，28px，白底）：新建/剪切复制…/排序/查看/更多
 
 ## 已实现能力（摘要）
 
@@ -672,6 +781,8 @@ SHObjectProperties(m_hWnd, SHOP_FILEPATH, path, nullptr);
 | Ctrl+A | 全选（详细信息视图与图标视图都支持） |
 | Ctrl+Shift+N | 新建文件夹 |
 | Ctrl+T / Ctrl+W | 新建标签 / 关闭当前标签 |
+| Ctrl+F4 | 关闭当前标签 |
+| Ctrl+Tab / Ctrl+Shift+Tab | 下一个 / 上一个标签 |
 | Ctrl+F 或 F3 | 聚焦搜索框并全选 |
 | Alt+D | 聚焦地址栏（资源管理器习惯） |
 | Alt+←/→、Alt+↑、Backspace | 后退 / 前进 / 上级 / 后退 |
@@ -745,6 +856,22 @@ SHObjectProperties(m_hWnd, SHOP_FILEPATH, path, nullptr);
 23. **Shell 菜单要先转储再决定怎么改**：`GetMenuStringW` 拿文本、`GetCommandString(GCS_VERBW)`
     拿动词。文件夹对象菜单（`CreateViewObject`）与视图菜单（`SHCreateShellFolderView` +
     `SVGIO_BACKGROUND`）内容不同，前者缺少查看/排序/刷新，得自己补
+24. **DuiLib 的预翻译阶段会吃掉 `Ctrl+Tab`**：`CPaintManagerUI::TranslateMessage` →
+    `PreMessageHandler` 把任何 `WM_KEYDOWN`+`VK_TAB` 当成控件间 Tab 切换并 `return true`，
+    消息不会再 `DispatchMessage`，所以 `HandleMessage` 里的 `WM_KEYDOWN` 分支永远收不到它。
+    正解是重写 `WindowImplBase::MessageHandler`（预消息过滤器，签名 `bool& bHandled`），
+    在里面接管并置 `bHandled = true`（见 `CMainWnd::MessageHandler`）。
+25. **`WM_NCHITTEST` 返回 `HTCLOSE/HTMAXBUTTON/HTMINBUTTON` 后，DuiLib 不再收到鼠标事件**：
+    这些按钮的悬停/按下高亮要自己在 `WM_NCMOUSEMOVE` 里画（`UpdateCaptionButtonHover`），
+    XML 里的 `hotbkcolor` 不会生效
+26. **改控件名字要同步改按名查找的代码**：`tab_bar` 改名 `titlebar` 后，
+    `ScaleNamedFixed(_T("tab_bar"), …)` 与 `setPad(_T("tab_bar"), …)` 就静默失效了 ——
+    表现是"标签行没跟着 DPI 缩放，比其它行矮一截"。改 XML `name` 时用
+    `rg "tab_bar|titlebar"` 全文搜一遍
+27. **截图窗口时要先 `SetThreadDpiAwarenessContext(PER_MONITOR_AWARE_V2)`**：否则
+    `GetWindowRect` 返回被 DPI 虚拟化的尺寸（150% 下 1770×1110 会报成 1180×740），
+    按这个尺寸 `PrintWindow` 只会截到左上角一块，最右侧的窗口按钮看起来"消失"了。
+    排查"某控件没画出来"之前，先确认截图区域是不是完整窗口
 
 ## 崩溃排查流程
 

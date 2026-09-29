@@ -22,16 +22,17 @@
   <Default name="VScrollBar" value="width=&quot;12&quot; showbutton1=&quot;false&quot; showbutton2=&quot;false&quot; bkcolor=&quot;#FFF7F7F7&quot; thumbcolor=&quot;#FFC4C4C4&quot; button1color=&quot;#FFF7F7F7&quot; button2color=&quot;#FFF7F7F7&quot;" />
   <Default name="HScrollBar" value="height=&quot;12&quot; showbutton1=&quot;false&quot; showbutton2=&quot;false&quot; bkcolor=&quot;#FFF7F7F7&quot; thumbcolor=&quot;#FFC4C4C4&quot;" />
   <!-- Outer gutter + rounded chrome (Win11-ish); DWM round corners applied in code -->
-  <VerticalLayout name="outer_gutter" bkcolor="#FFE8E8E8" padding="14,14,14,14">
-  <VerticalLayout name="chrome_root" bkcolor="#FFF3F3F3" bordercolor="#FFE0E0E0" bordersize="1" borderround="10,10">
-    <!-- A/B: Explorer-style title row - the tab strip *is* the caption band, with the window
-         buttons at its right end. Only the empty part of the strip drags the window
-         (WM_NCHITTEST in CMainWnd::HandleMessage); tabs and buttons keep normal clicks. -->
-    <HorizontalLayout name="tab_bar" height="38" bkcolor="#FFDBDBDB" padding="12,6,0,0" bordercolor="#FFCECECE" bordersize="0,0,0,1">
-      <HorizontalLayout name="tab_strip" />
-      <Button name="btn_tab_add" text="+" width="30" height="32" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#FFCFCFCF" pushedbkcolor="#FFC4C4C4" bordersize="0" padding="4,0,0,0" tooltip="新建标签" />
-      <!-- Flexible trailing area; tab_strip is resized to its actual tab content in code. -->
-      <Control />
+  <!-- The shell paints nothing: DWM's Mica Alt (tabbed-window backdrop) shows through the
+       title band. Each band below paints its own surface colour. -->
+  <VerticalLayout name="outer_gutter" bkcolor="#00000000" padding="0,0,0,0">
+  <VerticalLayout name="chrome_root" bkcolor="#00000000" bordersize="0" borderround="0,0">
+    <!-- Title row = caption: TabStrip | "+" | flexible drag area | min / max / close.
+         Hit testing returns HTCAPTION for the empty part and HTCLOSE/HTMAXBUTTON/
+         HTMINBUTTON for the system buttons (CMainWnd::HandleMessage, WM_NCHITTEST). -->
+    <HorizontalLayout name="titlebar" height="32" bkcolor="#00000000" padding="8,0,0,0" childvalign="vcenter">
+      <TabStrip name="tab_strip" />
+      <Button name="btn_tab_add" text="" width="24" height="24" bkcolor="#00000000" hotbkcolor="#14000000" pushedbkcolor="#22000000" borderround="6,6" bordersize="0" tooltip="新建标签（Ctrl+T）" />
+      <Control name="caption_drag" minwidth="40" />
       <Button name="minbtn" text="−" width="46" height="32" font="0" textcolor="#FF3B3B3B" bkcolor="#00FFFFFF" hotbkcolor="#FFE0E0E0" pushedbkcolor="#FFD0D0D0" tooltip="最小化" />
       <Button name="maxbtn" text="□" width="46" height="32" font="0" textcolor="#FF3B3B3B" bkcolor="#00FFFFFF" hotbkcolor="#FFE0E0E0" pushedbkcolor="#FFD0D0D0" tooltip="最大化" />
       <Button name="restorebtn" text="❐" width="46" height="32" font="0" textcolor="#FF3B3B3B" bkcolor="#00FFFFFF" hotbkcolor="#FFE0E0E0" pushedbkcolor="#FFD0D0D0" tooltip="还原" visible="false" />
@@ -39,56 +40,50 @@
     </HorizontalLayout>
 
     <!-- C: Favorites bar under tabs (drag folders to pin) -->
-    <HorizontalLayout name="favorites_bar" height="40" bkcolor="#FFF3F3F3" padding="16,9,12,9" bordercolor="#FFE5E5E5" bordersize="0,0,0,1" childvalign="vcenter">
-      <Label name="fav_bar_label" text="★ 收藏" font="0" textcolor="#FF4A4A4A" width="56" height="22" valign="vcenter" endellipsis="true" />
-      <Label name="fav_bar_hint" text="可将文件夹拖到此处固定" font="0" textcolor="#FF8A8A8A" width="180" height="22" align="left" valign="vcenter" />
+    <HorizontalLayout name="favorites_bar" height="26" bkcolor="#FFF3F3F3" padding="12,2,12,2" bordercolor="#FFE5E5E5" bordersize="0,0,0,1" childvalign="vcenter">
+      <Label name="fav_bar_label" text="★ 收藏" font="0" textcolor="#FF4A4A4A" width="56" height="20" valign="vcenter" endellipsis="true" />
+      <Label name="fav_bar_hint" text="可将文件夹拖到此处固定" font="0" textcolor="#FF8A8A8A" width="180" height="20" align="left" valign="vcenter" />
       <HorizontalLayout name="favorites_strip" childvalign="vcenter" />
       <Control />
     </HorizontalLayout>
 
     <!-- Path + search: Explorer-style breadcrumb/address merge (favorites stay above) -->
-    <HorizontalLayout name="address_bar" height="48" bkcolor="#FFF3F3F3" padding="12,8,12,8" childvalign="vcenter" bordercolor="#FFDCDCDC" bordersize="0,0,0,1">
-      <Button name="btn_back" text="" width="48" height="32" tooltip="后退" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
-      <Button name="btn_forward" text="" width="48" height="32" tooltip="前进" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
-      <Button name="btn_up" text="" width="48" height="32" tooltip="上级" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
-      <Button name="btn_refresh" text="" width="48" height="32" tooltip="刷新" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
-      <Control name="gap_address_nav" width="6" />
-      <HorizontalLayout name="path_host" height="32" bkcolor="#FFFFFFFF" bordercolor="#FFD6D6D6" bordersize="1" borderround="8,8" padding="6,0,6,0" childvalign="vcenter">
+    <HorizontalLayout name="address_bar" height="28" bkcolor="#FFFFFFFF" padding="8,2,8,2" childvalign="vcenter" bordercolor="#FFE5E5E5" bordersize="0,0,0,1">
+      <Button name="btn_back" text="" width="24" height="24" tooltip="后退" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
+      <Button name="btn_forward" text="" width="24" height="24" tooltip="前进" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
+      <Button name="btn_up" text="" width="24" height="24" tooltip="上级" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
+      <Button name="btn_refresh" text="" width="24" height="24" tooltip="刷新" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
+      <Control name="gap_address_nav" width="4" />
+      <HorizontalLayout name="path_host" height="24" bkcolor="#FFFFFFFF" bordercolor="#33000000" bordersize="1" borderround="4,4" padding="6,0,6,0" childvalign="vcenter">
         <HorizontalLayout name="breadcrumb" childpadding="0" childvalign="vcenter" />
         <HorizontalLayout name="address_edit_host" visible="false" padding="4,0,4,0" childvalign="vcenter">
           <Edit name="edit_address" text="" textcolor="#FF1A1A1A" nativebkcolor="#FFFFFFFF" bkcolor="#FFFFFFFF" tipvalue="地址栏 · 输入路径后回车跳转" padding="0,0,0,0" />
         </HorizontalLayout>
       </HorizontalLayout>
-      <Control width="6" />
-      <HorizontalLayout name="search_box" width="210" height="32" bkcolor="#FFFFFFFF" bordercolor="#FFD6D6D6" bordersize="1" borderround="8,8" padding="8,0,8,0" childvalign="vcenter" tooltip="输入即筛选；勾选「含子目录」后按回车开始递归搜索">
+      <Control width="4" />
+      <HorizontalLayout name="search_box" width="180" height="24" bkcolor="#FFFFFFFF" bordercolor="#33000000" bordersize="1" borderround="4,4" padding="6,0,6,0" childvalign="vcenter" tooltip="输入即筛选；勾选「含子目录」后按回车开始递归搜索">
         <Edit name="edit_search" text="" textcolor="#FFB0B0B0" nativebkcolor="#FFFFFFFF" bkcolor="#FFFFFFFF" tipvalue="搜索" padding="0,0,0,0" />
       </HorizontalLayout>
-      <Option name="chk_recursive" text="☐ 含子目录" width="100" height="28" font="0" textcolor="#FF5A5A5A" selected="false" align="left" valign="vcenter" textpadding="4,0,4,0" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" selectedbkcolor="#00FFFFFF" padding="6,0,0,0" tooltip="在当前文件夹及子文件夹中搜索" />
+      <Option name="chk_recursive" text="☐ 含子目录" width="92" height="24" font="0" textcolor="#FF5A5A5A" selected="false" align="left" valign="vcenter" textpadding="4,0,4,0" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" selectedbkcolor="#00FFFFFF" padding="6,0,0,0" tooltip="在当前文件夹及子文件夹中搜索" />
     </HorizontalLayout>
 
     <!-- Windows 11 command bar: New | edit commands | Sort / View | More. -->
-    <HorizontalLayout name="toolbar" height="45" bkcolor="#FFFFFFFF" padding="12,6,12,6" childvalign="vcenter" bordercolor="#FFDCDCDC" bordersize="0,0,0,1">
+    <HorizontalLayout name="toolbar" height="28" bkcolor="#FFFFFFFF" padding="8,2,8,2" childvalign="vcenter" bordercolor="#FFE5E5E5" bordersize="0,0,0,1">
       <!-- Icon + label + chevron in one button: the glyph is applied as an image in code so the
            label keeps the UI font, and the whole button highlights as a unit on hover. -->
-      <Button name="btn_new" text="新建  ⌄" width="76" height="32" tooltip="新建" align="left" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
-      <Control name="gap_new" width="6" height="1" />
-      <Control name="sep_new" width="1" height="24" bkcolor="#FFD0D0D0" />
-      <Control name="gap_new2" width="8" height="1" />
-      <Button name="btn_cut" text="" width="40" height="32" tooltip="剪切" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
-      <Button name="btn_copy" text="" width="40" height="32" tooltip="复制" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
-      <Button name="btn_paste" text="" width="40" height="32" tooltip="粘贴" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
-      <Button name="btn_rename" text="" width="40" height="32" tooltip="重命名" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
-      <Button name="btn_share" text="" width="40" height="32" tooltip="共享" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
-      <Button name="btn_delete" text="" width="40" height="32" tooltip="删除" textcolor="#FFB91C1C" bkcolor="#00FFFFFF" hotbkcolor="#FFFEE2E2" pushedbkcolor="#FFFECACA" />
-      <Control name="gap_org" width="8" height="1" />
-      <Control name="sep_organize" width="1" height="24" bkcolor="#FFD0D0D0" />
-      <Control name="gap_org2" width="8" height="1" />
-      <Button name="btn_sort" text="排序  ⌄" width="76" height="32" tooltip="排序" align="left" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
-      <Button name="btn_view_menu" text="查看  ⌄" width="76" height="32" tooltip="查看" align="left" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
-      <Control name="gap_more" width="8" height="1" />
-      <Control name="sep_more" width="1" height="24" bkcolor="#FFD0D0D0" />
-      <Control name="gap_more2" width="8" height="1" />
-      <Button name="btn_more" text="•••" width="32" height="32" tooltip="更多选项" font="1" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" pushedbkcolor="#FFD4D4D4" />
+      <Button name="btn_new" text="新建  ⌄" width="62" height="24" tooltip="新建" align="left" font="2" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
+      <Control name="sep_new" width="1" height="14" bkcolor="#FFD0D0D0" />
+      <Button name="btn_cut" text="" width="26" height="24" tooltip="剪切" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
+      <Button name="btn_copy" text="" width="26" height="24" tooltip="复制" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
+      <Button name="btn_paste" text="" width="26" height="24" tooltip="粘贴" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
+      <Button name="btn_rename" text="" width="26" height="24" tooltip="重命名" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
+      <Button name="btn_share" text="" width="26" height="24" tooltip="共享" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
+      <Button name="btn_delete" text="" width="26" height="24" tooltip="删除" textcolor="#FFB91C1C" bkcolor="#00FFFFFF" hotbkcolor="#FFFEE2E2" pushedbkcolor="#FFFECACA" borderround="4,4" />
+      <Control name="sep_organize" width="1" height="14" bkcolor="#FFD0D0D0" />
+      <Button name="btn_sort" text="排序  ⌄" width="62" height="24" tooltip="排序" align="left" font="2" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
+      <Button name="btn_view_menu" text="查看  ⌄" width="62" height="24" tooltip="查看" align="left" font="2" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
+      <Control name="sep_more" width="1" height="14" bkcolor="#FFD0D0D0" />
+      <Button name="btn_more" text="•••" width="26" height="24" tooltip="更多选项" font="1" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
       <Button name="btn_toggle_preview" text="" width="0" height="0" visible="false" tooltip="显示/隐藏预览窗格" />
       <!-- Hidden legacy view-mode buttons (driven by 查看 menu; keep for UpdateViewModeButtons) -->
       <HorizontalLayout name="view_switcher" width="0" height="0" visible="false">

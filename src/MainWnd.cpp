@@ -1,4 +1,4 @@
-// FastFile - main window: lifecycle, message routing, selection, window activation
+﻿// FastFile - main window: lifecycle, message routing, selection, window activation
 // Implements CMainWnd members moved out of the original monolithic MainWnd.cpp.
 // Behaviour is unchanged; declarations live in MainWnd.h.
 
@@ -46,7 +46,7 @@ void CMainWnd::InitWindow()
     m_addressEditMode = false;
     m_pFileList = static_cast<CListUI*>(m_PaintManager.FindControl(_T("file_list")));
     m_pDirTree = static_cast<CTreeViewUI*>(m_PaintManager.FindControl(_T("dir_tree")));
-    m_pTabStrip = static_cast<CHorizontalLayoutUI*>(m_PaintManager.FindControl(_T("tab_strip")));
+    m_pTabStrip = static_cast<CTabStripUI*>(m_PaintManager.FindControl(_T("tab_strip")));
     m_pIconScroll = static_cast<CVerticalLayoutUI*>(m_PaintManager.FindControl(_T("icon_scroll")));
     m_pIconTiles = static_cast<CTileLayoutUI*>(m_PaintManager.FindControl(_T("file_icons")));
     m_pBreadcrumb = static_cast<CHorizontalLayoutUI*>(m_PaintManager.FindControl(_T("breadcrumb")));
@@ -438,37 +438,56 @@ void CMainWnd::OnClick(TNotifyUI& msg)
 LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
     if (uMsg == WM_NCHITTEST) {
-        // The tab strip doubles as the window caption (there is no separate title bar any
-        // more, the window buttons live at its right end). Dragging its empty part moves the
-        // window, while tabs, the "+" and the window buttons keep their normal clicks. The
-        // outer size box stays with DuiLib so the window can still be resized by its edges.
+        // The title row is the caption: the system buttons report the standard non-client
+        // codes (so minimize/maximize/close and Aero Snap behave natively), tabs answer
+        // HTCLIENT, and the empty part of the row drags the window. The outer size box stays
+        // with DuiLib so the window can still be resized from its edges.
         POINT pt = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
         ::ScreenToClient(m_hWnd, &pt);
-        CControlUI* strip = m_PaintManager.FindControl(_T("tab_bar"));
-        if (strip && strip->IsVisible()) {
-            RECT rcClient = {};
-            ::GetClientRect(m_hWnd, &rcClient);
-            const RECT szb = m_PaintManager.GetSizeBox();
-            const RECT r = strip->GetPos();
-            if (r.right > r.left && r.bottom > r.top
-                && pt.y >= rcClient.top + szb.top
-                && pt.x >= r.left && pt.x < r.right
-                && pt.y >= r.top && pt.y < r.bottom) {
-                CControlUI* c = m_PaintManager.FindControl(pt);
-                bool interactive = false;
-                while (c) {
-                    const CDuiString cls = c->GetClass();
-                    if (cls == DUI_CTR_BUTTON || cls == DUI_CTR_OPTION || cls == DUI_CTR_EDIT
-                        || cls == DUI_CTR_LABEL || cls == DUI_CTR_TEXT) {
-                        interactive = true;
-                        break;
-                    }
-                    if (c == strip) break;
-                    c = c->GetParent();
-                }
-                return interactive ? HTCLIENT : HTCAPTION;
+        RECT rcClient = {};
+        ::GetClientRect(m_hWnd, &rcClient);
+        const RECT szb = m_PaintManager.GetSizeBox();
+        const bool inSizeBox = pt.x < rcClient.left + szb.left
+            || pt.x >= rcClient.right - szb.right
+            || pt.y < rcClient.top + szb.top
+            || pt.y >= rcClient.bottom - szb.bottom;
+        if (!inSizeBox) {
+            const auto hitBtn = [&](LPCTSTR name) {
+                CControlUI* c = m_PaintManager.FindControl(name);
+                return c && c->IsVisible() && ::PtInRect(&c->GetPos(), pt);
+            };
+            if (hitBtn(_T("closebtn"))) return HTCLOSE;
+            if (hitBtn(_T("maxbtn")) || hitBtn(_T("restorebtn"))) return HTMAXBUTTON;
+            if (hitBtn(_T("minbtn"))) return HTMINBUTTON;
+            if (m_pTabStrip && m_pTabStrip->IsVisible()
+                && ::PtInRect(&m_pTabStrip->GetPos(), pt)) {
+                return m_pTabStrip->HitTest(pt).part == CTabStripUI::Part::Empty
+                    ? HTCAPTION : HTCLIENT;
             }
+            CControlUI* bar = m_PaintManager.FindControl(_T("titlebar"));
+            if (bar && bar->IsVisible() && ::PtInRect(&bar->GetPos(), pt))
+                return HTCAPTION;
         }
+    }
+    if (uMsg == WM_NCMOUSEMOVE || uMsg == WM_NCMOUSELEAVE) {
+        // The system owns the button clicks now (HTCAPTION family), so DuiLib never sees the
+        // hover: paint the hover state here instead.
+        POINT pt = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
+        if (uMsg == WM_NCMOUSEMOVE) ::ScreenToClient(m_hWnd, &pt);
+        UpdateCaptionButtonHover(pt, uMsg == WM_NCMOUSEMOVE);
+    }
+    // Messages posted by the self-drawn tab strip (see TabStripUI.h).
+    if (uMsg == CTabStripUI::kMsgTabSelect) { OnTabStripSelect((int)wParam); return 0; }
+    if (uMsg == CTabStripUI::kMsgTabClose) { OnTabStripClose((int)wParam); return 0; }
+    if (uMsg == CTabStripUI::kMsgTabReorder) { OnTabStripReorder((int)wParam, (int)lParam); return 0; }
+    if (uMsg == CTabStripUI::kMsgTabAdd) { OnTabStripAdd(); return 0; }
+    if (uMsg == CTabStripUI::kMsgTabDragOut || uMsg == CTabStripUI::kMsgTabContextMenu) {
+        POINT* screenPt = reinterpret_cast<POINT*>(lParam);
+        const POINT pt = screenPt ? *screenPt : POINT{};
+        delete screenPt;
+        if (uMsg == CTabStripUI::kMsgTabDragOut) OnTabStripDragOut((int)wParam, pt);
+        else OnTabStripContextMenu((int)wParam, pt);
+        return 0;
     }
     // A second FastFile process forwards folders through WM_COPYDATA, then exits.  Use a
     // line-delimited payload: Windows paths cannot contain a line break, and the copy is
@@ -553,6 +572,17 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         if (wParam == kTimerColWidth) { CaptureColumnWidths(); return 0; }
         if (wParam == kTimerDetailsSync) { UpdateDetailsWindow(false); return 0; }
         if (wParam == kTimerLayoutSync) { SyncLayoutDependents(); return 0; }
+    }
+    if (uMsg == WM_MBUTTONDOWN) {
+        // Middle click on a tab closes it (Explorer behaviour).
+        POINT mp = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
+        if (m_pTabStrip && m_pTabStrip->IsVisible()) {
+            const CTabStripUI::HitInfo h = m_pTabStrip->HitTest(mp);
+            if (h.part == CTabStripUI::Part::Body || h.part == CTabStripUI::Part::Close) {
+                CloseTab(h.index);
+                return 0;
+            }
+        }
     }
     if (uMsg == WM_LBUTTONDOWN && !m_inDoDragDrop) {
         // Pane dividers own a generous grab band that straddles the divider line: the
@@ -963,9 +993,43 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                     CloseTab(m_activeTab);
                 return 0;
             }
+            if (ctrl && wParam == VK_F4) {
+                if (m_activeTab >= 0)
+                    CloseTab(m_activeTab);
+                return 0;
+            }
+            if (ctrl && wParam == VK_TAB) {
+                const int count = static_cast<int>(m_tabs.size());
+                if (count > 1 && m_activeTab >= 0) {
+                    const int step = shift ? -1 : 1;
+                    ActivateTab((m_activeTab + step + count) % count);
+                }
+                return 0;
+            }
         }
     }
+    if (uMsg == WM_THEMECHANGED || (uMsg == WM_SETTINGCHANGE && wParam == 0)) {
+        ApplyDwmChrome();   // backdrop / AppsUseLightTheme changed while running
+    }
     return WindowImplBase::HandleMessage(uMsg, wParam, lParam);
+}
+
+// DuiLib calls its pre-message filters from CPaintManagerUI::TranslateMessage, *before*
+// DispatchMessage, and its own handler turns any WM_KEYDOWN/VK_TAB into control tabbing - so a
+// Ctrl+Tab never reaches the window proc. Claim the message here (bHandled) and cycle tabs.
+LRESULT CMainWnd::MessageHandler(UINT uMsg, WPARAM wParam, LPARAM lParam, bool& bHandled)
+{
+    if (uMsg == WM_KEYDOWN && wParam == VK_TAB
+        && (::GetKeyState(VK_CONTROL) & 0x8000) != 0) {
+        const int count = static_cast<int>(m_tabs.size());
+        if (count > 1 && m_activeTab >= 0) {
+            const int step = (::GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1;
+            ActivateTab((m_activeTab + step + count) % count);
+        }
+        bHandled = true;
+        return 0;
+    }
+    return WindowImplBase::MessageHandler(uMsg, wParam, lParam, bHandled);
 }
 
 // Push the exe's own icon (resource id 1, see res\FastFile.rc) onto the window.

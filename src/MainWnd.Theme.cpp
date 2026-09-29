@@ -105,6 +105,93 @@ void CMainWnd::ApplyWindowCornerAndPadding()
         chrome->SetAttribute(_T("bordercolor"), UiTokens::ColorBorderStrong);
     }
     ApplyUiChromeTokens();
+    ApplyDwmChrome();
+}
+
+// DWM shell: rounded corners, Mica Alt backdrop (DWMSBT_TABBEDWINDOW) and the frame extended
+// over the client area so the tab strip / title row shows the material. Everything below the
+// title row paints its own opaque surface, so Mica is only visible where we want it.
+// On Windows 10 / older Win11 the backdrop call fails: we then fall back to a flat title band.
+void CMainWnd::ApplyDwmChrome()
+{
+    if (!m_hWnd || !::IsWindow(m_hWnd))
+        return;
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
+#ifndef DWMWA_SYSTEMBACKDROP_TYPE
+#define DWMWA_SYSTEMBACKDROP_TYPE 38
+#endif
+#ifndef DWMSBT_TABBEDWINDOW
+#define DWMSBT_TABBEDWINDOW 4
+#endif
+
+    // FastFile ships a light palette, so the DWM frame stays light as well: a dark Mica band
+    // over a light content area looked broken. Flip this together with a dark skin.
+    const BOOL darkMode = FALSE;
+    ::DwmSetWindowAttribute(m_hWnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+
+    // DWMSBT_TABBEDWINDOW = Mica Alt. Asking for it is safe on every OS (older builds just
+    // fail the call), but *showing* it requires extending the DWM frame over the client area -
+    // and once that happens DWM composites the client pixels by their alpha, so DuiLib's
+    // GDI-drawn dark text (tabs' labels, window buttons, list text) turns transparent.
+    // Until the whole title band is painted with GDI+/AlphaBlend (see TabStripUI, which
+    // already does), the backdrop stays off and the title row keeps the chrome surface so the
+    // UI stays readable. Flip kShowMicaBackdrop once the band paints alpha-correct pixels.
+    constexpr bool kShowMicaBackdrop = false;
+    int backdrop = DWMSBT_TABBEDWINDOW;
+    const HRESULT hr = ::DwmSetWindowAttribute(m_hWnd, DWMWA_SYSTEMBACKDROP_TYPE,
+        &backdrop, sizeof(backdrop));
+    m_micaActive = kShowMicaBackdrop && SUCCEEDED(hr);
+    MARGINS margins = { 0, 0, 0, 0 };
+    ::DwmExtendFrameIntoClientArea(m_hWnd, &margins);
+    if (CControlUI* bar = m_PaintManager.FindControl(_T("titlebar"))) {
+        // With Mica the band must stay unpainted; without it, a slightly darker grey than the
+        // white rows below so the active "card" (white, merging downwards) still reads.
+        bar->SetAttribute(_T("bkcolor"),
+            m_micaActive ? UiTokens::ColorTransparent : L"#FFEDEDED");
+        bar->Invalidate();
+    }
+    if (m_pTabStrip) {
+        m_pTabStrip->SetDarkMode(false);
+        m_pTabStrip->SetMetrics(static_cast<int>(m_dpi));
+        m_pTabStrip->Invalidate();
+    }
+}
+
+void CMainWnd::UpdateCaptionButtonHover(POINT ptClient, bool hovering)
+{
+    struct BtnState {
+        LPCTSTR name;
+        LPCWSTR hotBg;
+        LPCWSTR normalBg;
+        LPCWSTR hotText;
+        LPCWSTR normalText;
+    };
+    static const BtnState kBtns[] = {
+        { _T("minbtn"),     L"#FFE0E0E0", UiTokens::ColorTransparent, UiTokens::ColorTextPrimary, UiTokens::ColorTextPrimary },
+        { _T("maxbtn"),     L"#FFE0E0E0", UiTokens::ColorTransparent, UiTokens::ColorTextPrimary, UiTokens::ColorTextPrimary },
+        { _T("restorebtn"), L"#FFE0E0E0", UiTokens::ColorTransparent, UiTokens::ColorTextPrimary, UiTokens::ColorTextPrimary },
+        { _T("closebtn"),   L"#FFE81123", UiTokens::ColorTransparent, L"#FFFFFFFF", UiTokens::ColorTextPrimary },
+    };
+    int hot = -1;
+    if (hovering) {
+        for (int i = 0; i < ARRAYSIZE(kBtns); ++i) {
+            CControlUI* c = m_PaintManager.FindControl(kBtns[i].name);
+            if (!c || !c->IsVisible()) continue;
+            if (::PtInRect(&c->GetPos(), ptClient)) { hot = i; break; }
+        }
+    }
+    if (hot == m_captionHot) return;
+    m_captionHot = hot;
+    for (int i = 0; i < ARRAYSIZE(kBtns); ++i) {
+        CControlUI* c = m_PaintManager.FindControl(kBtns[i].name);
+        if (!c) continue;
+        const bool on = (i == hot);
+        c->SetAttribute(_T("bkcolor"), on ? kBtns[i].hotBg : kBtns[i].normalBg);
+        c->SetAttribute(_T("textcolor"), on ? kBtns[i].hotText : kBtns[i].normalText);
+        c->Invalidate();
+    }
 }
 
 void CMainWnd::ApplyUiChromeTokens()
@@ -132,7 +219,9 @@ void CMainWnd::ApplyUiChromeTokens()
     const int px = UiTokens::InnerPadX;
     const int py = UiTokens::InnerPadY;
 
-    setPad(_T("tab_bar"), px, py, px, 0);
+    // Title row = caption: no vertical inset, so the 32px band is fully usable by the tab cards
+    // and the caption buttons (an inset here squashed both).
+    setPad(_T("titlebar"), 8, 0, 0, 0);
     setPad(_T("toolbar"), px, py, px, py);
     // Favourite chips hang below the tab strip: the top inset keeps them off the strip and
     // lets the address row's own inset make the gaps above/below look even.
@@ -153,15 +242,17 @@ void CMainWnd::ApplyUiChromeTokens()
     const LPCWSTR surf = UiTokens::ColorSurface;
     const LPCWSTR border = UiTokens::ColorChromeDivider;
     for (LPCTSTR band : {
-        _T("tab_bar"), _T("favorites_bar"), _T("toolbar"),
+        _T("titlebar"), _T("toolbar"),
         _T("address_bar"),
         _T("status_bar"), _T("left_panel")
     }) {
         setBk(band, surf);
         setBorder(band, border, _T("0,0,0,1"));
     }
-    setBk(_T("tab_bar"), UiTokens::ColorTabStripBg);
-    setBorder(_T("tab_bar"), _T("#FFCECECE"), _T("0,0,0,1"));
+    // One white surface from the favourites row down to the command bar, so the active tab's
+    // white card merges into it (Mica / flat grey band above).
+    setBk(_T("favorites_bar"), UiTokens::ColorContent);
+    setBorder(_T("favorites_bar"), border, _T("0,0,0,1"));
     setBk(_T("toolbar"), UiTokens::ColorContent);
     // Path / search fields: white rounded boxes on the chrome surface.
     for (LPCTSTR field : { _T("path_host"), _T("search_box") }) {

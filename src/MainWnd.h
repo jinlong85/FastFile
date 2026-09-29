@@ -1,7 +1,8 @@
-#pragma once
+﻿#pragma once
 
 #include "UIlib.h"
 #include "UiTokens.h"
+#include "TabStripUI.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -229,7 +230,26 @@ private:
     // Tabs
     void InitTabs();
     void RebuildTabStrip();
-    void AddTab(const std::wstring& path, bool activate);
+    // Tab strip notifications (self-drawn CTabStripUI; see src/TabStripUI.h)
+    void OnTabStripSelect(int index);
+    void OnTabStripClose(int index);
+    void OnTabStripReorder(int from, int to);
+    void OnTabStripDragOut(int index, POINT screenPt);
+    void OnTabStripContextMenu(int index, POINT screenPt);
+    void OnTabStripAdd();
+    void CloseOtherTabs(int keepIndex, bool rightSideOnly);
+    void OpenPathInNewWindow(const std::wstring& path, POINT screenPt);
+    // Caption buttons report HTMINBUTTON/HTMAXBUTTON/HTCLOSE, so their hover is painted here.
+    void UpdateCaptionButtonHover(POINT ptClient, bool hovering);
+    void ApplyDwmChrome();          // Mica Alt backdrop + frame extension (Win11 22H2+)
+    // DuiLib's pre-translate pass swallows Tab (dialog navigation) before the window proc
+    // sees WM_KEYDOWN, so Ctrl+Tab / Ctrl+Shift+Tab are handled in this filter instead.
+    LRESULT MessageHandler(UINT uMsg, WPARAM wParam, LPARAM lParam, bool& bHandled) override;
+    // Custom DuiLib controls (TabStrip)
+    CControlUI* CreateControl(LPCTSTR pstrClass) override;
+    // allowDuplicate: the "+" button / Ctrl+T must always open a fresh tab (Explorer behaviour),
+    // while folder hand-offs from other processes fold into the tab that already shows it.
+    void AddTab(const std::wstring& path, bool activate, bool allowDuplicate = false);
     void OnNewTabRequested();
     std::wstring NewTabTargetForSelection() const;
     void CloseTab(int index);
@@ -600,7 +620,7 @@ private:
     bool m_addressEditMode = false;
     CListUI* m_pFileList = nullptr;
     CTreeViewUI* m_pDirTree = nullptr;
-    CHorizontalLayoutUI* m_pTabStrip = nullptr;
+    CTabStripUI* m_pTabStrip = nullptr;       // self-drawn tab strip
     CHorizontalLayoutUI* m_pBreadcrumb = nullptr;
     CHorizontalLayoutUI* m_pFavoritesBar = nullptr;
     CHorizontalLayoutUI* m_pFavoritesStrip = nullptr;
@@ -614,6 +634,8 @@ private:
     bool m_leftNavDragging = false;
     int m_leftNavDragStartY = 0;
     int m_leftNavDragStartH = 0;
+    int m_captionHot = -1;           // hovered caption button (min/max/restore/close)
+    bool m_micaActive = false;       // DWM system backdrop accepted
     int m_leftPanelDesignW = 220;                         // sidebar width @96 DPI
     int m_previewPaneDesignW = UiTokens::PreviewPaneW;    // preview width @96 DPI
     int m_thisPcTilesLayoutW = 0;                         // physical central viewport width

@@ -1127,6 +1127,23 @@ void CMainWnd::ApplyChromeShellIcons()
         c->Invalidate();
     };
 
+    // Caption buttons (min / max / restore / close) live in the tab row and report the
+    // non-client hit codes, so they must look like Explorer's: Segoe MDL2 "chrome" glyphs at
+    // the title-bar size instead of the UI font's fallback "− □ ×" characters.
+    auto applyCaptionGlyph = [&](LPCTSTR name, wchar_t glyph) {
+        CControlUI* c = m_PaintManager.FindControl(name);
+        if (!c) return;
+        wchar_t text[2] = { glyph, L'\0' };
+        c->SetAttribute(_T("font"), _T("8"));
+        c->SetAttribute(_T("textpadding"), _T("0,0,0,0"));
+        c->SetText(text);
+        c->Invalidate();
+    };
+    applyCaptionGlyph(_T("minbtn"), 0xE921);      // ChromeMinimize
+    applyCaptionGlyph(_T("maxbtn"), 0xE922);      // ChromeMaximize
+    applyCaptionGlyph(_T("restorebtn"), 0xE923);  // ChromeRestore
+    applyCaptionGlyph(_T("closebtn"), 0xE8BB);    // ChromeClose
+
     // Command bar (新建 / 剪切 / … / 更多): two-tone line icons - a light grey outline with a
     // light blue accent - drawn by GetCommandIconBmp so the bar matches the Explorer command
     // bar. ApplyCommandIcon also picks the dimmed variant while a button is disabled.
