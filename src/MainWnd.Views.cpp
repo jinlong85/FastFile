@@ -192,8 +192,8 @@ private:
             if (of) ::SelectObject(dc, of);
         }
         const int nameH = S(20);
-        int barH = fsTextHeight;
-        if (barH < S(10)) barH = S(10);
+        // Explorer's drive cards use a thin, rounded capacity bar, not a text-height one.
+        int barH = S(UiTokens::DriveBarH);
         if (barH > (rc.bottom - rc.top) / 3) barH = (rc.bottom - rc.top) / 3;
         const int gap = S(5);
         const int capH = S(17);
@@ -251,11 +251,18 @@ private:
     }
 
     // Plain rectangular usage bar (user preference: 矩形, no rounded corners).
-    static void DrawUsageBar(HDC hDC, const RECT& rc, ULONGLONG freeBytes, ULONGLONG totalBytes)
+    void DrawUsageBar(HDC hDC, const RECT& rc, ULONGLONG freeBytes, ULONGLONG totalBytes)
     {
         if (rc.right <= rc.left || rc.bottom <= rc.top) return;
+        const int radius = S(UiTokens::DriveBarRound);
         HBRUSH track = ::CreateSolidBrush(RGB(0xE6, 0xE6, 0xE6));
-        ::FillRect(hDC, &rc, track);
+        HPEN trackPen = ::CreatePen(PS_SOLID, 1, RGB(0xE6, 0xE6, 0xE6));
+        HGDIOBJ oldBrush = ::SelectObject(hDC, track);
+        HGDIOBJ oldPen = ::SelectObject(hDC, trackPen);
+        ::RoundRect(hDC, rc.left, rc.top, rc.right, rc.bottom, radius * 2, radius * 2);
+        ::SelectObject(hDC, oldPen);
+        ::SelectObject(hDC, oldBrush);
+        ::DeleteObject(trackPen);
         ::DeleteObject(track);
 
         if (totalBytes == 0) return;
@@ -266,8 +273,19 @@ private:
         if (fillW <= 0) return;
         RECT rf = rc;
         rf.right = rf.left + fillW;
-        HBRUSH fill = ::CreateSolidBrush(RGB(0x00, 0x78, 0xD4));
-        ::FillRect(hDC, &rf, fill);
+        // Low free space switches to the Windows warning ramp (orange < 20%, red < 10%).
+        const int freePct = static_cast<int>((freeBytes * 100ULL) / totalBytes);
+        COLORREF fillColor = RGB(0x00, 0x78, 0xD4);            // system accent blue
+        if (freePct < UiTokens::DriveLowFreeRedPct)      fillColor = RGB(0xC4, 0x2B, 0x1C);
+        else if (freePct < UiTokens::DriveLowFreeWarnPct) fillColor = RGB(0xF7, 0x63, 0x0C);
+        HBRUSH fill = ::CreateSolidBrush(fillColor);
+        HPEN fillPen = ::CreatePen(PS_SOLID, 1, fillColor);
+        oldBrush = ::SelectObject(hDC, fill);
+        oldPen = ::SelectObject(hDC, fillPen);
+        ::RoundRect(hDC, rf.left, rf.top, rf.right, rf.bottom, radius * 2, radius * 2);
+        ::SelectObject(hDC, oldPen);
+        ::SelectObject(hDC, oldBrush);
+        ::DeleteObject(fillPen);
         ::DeleteObject(fill);
     }
 

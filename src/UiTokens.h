@@ -29,6 +29,11 @@ constexpr int TabIconPx = 16;
 constexpr int TabMinW = 120;          // icon + 2-4 CJK chars + ellipsis
 constexpr int TabSelMinW = 148;       // the active tab also carries a visible close button
 constexpr int TabMaxW = 200;
+// This PC drive cards (Explorer): thin rounded capacity bar with a warning ramp.
+constexpr int DriveBarH = 6;            // logical height of the usage bar
+constexpr int DriveBarRound = 2;
+constexpr int DriveLowFreeWarnPct = 20; // < 20% free -> orange
+constexpr int DriveLowFreeRedPct = 10;  // < 10% free -> red
 constexpr int TabCloseW = 20;
 constexpr int HitBreadcrumbH = 30;      // address text stays vertically centered
 constexpr int CmdBtnH = 32;
