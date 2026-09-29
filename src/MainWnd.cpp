@@ -437,6 +437,29 @@ void CMainWnd::OnClick(TNotifyUI& msg)
 
 LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
+    if (uMsg == WM_NCLBUTTONDOWN || uMsg == WM_NCLBUTTONUP) {
+        // Custom frame: the caption buttons are reported by WM_NCHITTEST (HTMINBUTTON /
+        // HTMAXBUTTON / HTCLOSE) instead of being DuiLib controls. DefWindowProc's caption
+        // button tracking does not run its SC_MINIMIZE / SC_MAXIMIZE commands for a window
+        // whose caption we removed - it swallows the mouse messages, which made the buttons
+        // look dead (and the hover paint flicker). Run the commands ourselves; HTCAPTION and
+        // the resize borders still go to DefWindowProc so moving / Aero Snap keep working.
+        const UINT code = static_cast<UINT>(wParam);
+        const bool isCaptionButton = code == HTMINBUTTON || code == HTMAXBUTTON
+            || code == HTCLOSE;
+        if (isCaptionButton) {
+            if (uMsg == WM_NCLBUTTONDOWN) {
+                if (code == HTMINBUTTON) {
+                    SendMessage(WM_SYSCOMMAND, SC_MINIMIZE, 0);
+                } else if (code == HTMAXBUTTON) {
+                    SendMessage(WM_SYSCOMMAND, ::IsZoomed(m_hWnd) ? SC_RESTORE : SC_MAXIMIZE, 0);
+                } else {
+                    SendMessage(WM_SYSCOMMAND, SC_CLOSE, 0);
+                }
+            }
+            return 0;
+        }
+    }
     if (uMsg == WM_NCHITTEST) {
         // The title row is the caption: the system buttons report the standard non-client
         // codes (so minimize/maximize/close and Aero Snap behave natively), tabs answer

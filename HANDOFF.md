@@ -716,6 +716,30 @@ kMsgTabAdd         = WM_USER+305
 `WM_NCMOUSEMOVE/WM_NCMOUSELEAVE` → `UpdateCaptionButtonHover()`。所以**不要**指望
 DuiLib 的 `hotbkcolor` 生效。
 
+但**光返回命中码不等于按钮能用**：这个窗口用 `WM_NCCALCSIZE`/去掉 `WS_CAPTION` 做了
+自定义边框，`DefWindowProc` 对 `HTMINBUTTON` / `HTMAXBUTTON` 只会进入内部跟踪循环
+（`SendMessage` 过去会直接阻塞住），既不发 `SC_MINIMIZE` / `SC_MAXIMIZE`，也不把
+`WM_NCLBUTTONUP` 交给窗口过程（表现就是"点了没反应 + 悬停高亮一闪而过"）。
+所以 `CMainWnd::HandleMessage` 现在自己接管 `WM_NCLBUTTONDOWN`：
+
+```cpp
+if (uMsg == WM_NCLBUTTONDOWN || uMsg == WM_NCLBUTTONUP) {
+    const UINT code = (UINT)wParam;
+    if (code == HTMINBUTTON || code == HTMAXBUTTON || code == HTCLOSE) {
+        if (uMsg == WM_NCLBUTTONDOWN) {
+            if (code == HTMINBUTTON)      SendMessage(WM_SYSCOMMAND, SC_MINIMIZE, 0);
+            else if (code == HTMAXBUTTON) SendMessage(WM_SYSCOMMAND, IsZoomed(m_hWnd) ? SC_RESTORE : SC_MAXIMIZE, 0);
+            else                          SendMessage(WM_SYSCOMMAND, SC_CLOSE, 0);
+        }
+        return 0;   // 别落回 DefWindowProc，否则又开始跟踪循环
+    }
+    // HTCAPTION / 四边缩放继续交给 DefWindowProc：拖动窗口、双击最大化、Aero Snap 都靠它
+}
+```
+
+`SC_MAXIMIZE` / `SC_RESTORE` 走 `WindowImplBase::OnSysCommand`，它会在缩放状态变化时
+切换 `maxbtn` / `restorebtn` 的可见性，所以"最大化后变成还原字形"是免费的。
+
 ### 交互
 
 左键切换、中键关闭（`WM_MBUTTONDOWN` 里按命中索引关）、拖动排序（拖动过程中实时
@@ -872,6 +896,13 @@ DWM 就按**客户区像素的 alpha** 合成，而 DuiLib 的 GDI 绘制（标�
     `GetWindowRect` 返回被 DPI 虚拟化的尺寸（150% 下 1770×1110 会报成 1180×740），
     按这个尺寸 `PrintWindow` 只会截到左上角一块，最右侧的窗口按钮看起来"消失"了。
     排查"某控件没画出来"之前，先确认截图区域是不是完整窗口
+28. **自定义边框窗口的标题按钮必须自己执行命令**：`WM_NCHITTEST` 返回
+    `HTMINBUTTON/HTMAXBUTTON/HTCLOSE` 只负责"光标 + 高亮"，真正的动作要由
+    `WM_NCLBUTTONDOWN` 里自己发 `WM_SYSCOMMAND`。去掉 `WS_CAPTION` 后
+    `DefWindowProc` 不会再为这些命中码发 `SC_*` 命令，反而进入跟踪循环吞消息
+    （用 `SendMessage(WM_NCLBUTTONDOWN, HTMINBUTTON)` 测试会直接卡住调用线程，
+    这本身就是"进了模态循环"的证据）。另外 `Get-Process ... .MainWindowHandle` 可能
+    拿到同进程里的小窗口（如 42×28），量窗口尺寸前先按类名 `FastFile_MainWnd` + 宽度过滤
 
 ## 崩溃排查流程
 
