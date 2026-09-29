@@ -250,6 +250,44 @@ Windows 11 样式）：两条 `#FFF7F7F7` 轨道紧挨着会连成一条 36 设�
 `ApplyChromeShellIcons` 的 `applyFav` 和 `RebuildLeftPinnedFavorites` 都调它。
 实测两条行的 rect 都是 `36..327`、图标 ink 都从 x=49 起，选中高亮也等宽。
 
+### 关闭多个标签页时的确认框
+`WM_CLOSE` 里先判 `m_tabs.size() > 1`，走 `ConfirmCloseWithMultipleTabs()`，用户选“取消”
+就 `return 0` 把消息吃掉（窗口与标签页都保留），选“关闭”才 `m_closeConfirmed = true`
+继续原来的保存 + 关闭流程。
+
+**坑**：`TaskDialogIndirect` 要求进程激活 **comctl32 v6**。`cmake/FastFile.manifest` 原来只有
+DPI/兼容性节点，没有 `Microsoft.Windows.Common-Controls 6.0.0.0` 依赖，调用会直接失败
+（`FAILED(hr)` → 我们的兜底返回 true，于是“确认框”一闪而过、窗口直接关掉，看起来像没写）。
+已在 manifest 里补上 `<dependency>`；DuiLib 自己画控件，所以 v6 只影响系统对话框。
+“关闭 / 取消”用自定义按钮 id（1001/1002），所以判断的是 `pressed == 1001`；Esc / 右上角 X
+返回的是 IDCANCEL(2)，同样按“取消”处理。
+
+### 快速访问：原生右键菜单 + 拖动排序
+四条内置行不再写在 `main.xml` 里，改成运行时统一在 `left_quick_rows` 里建（`RebuildLeftQuickRows`），
+模型是 `m_quickRows`（`QuickRow{ isThisPc, builtIn, path, label }`），内置四项与用户固定项
+共用一条有序列表。持久化仍然用 `quick_access.txt`，但写的是**完整顺序**：`::ThisPC` 表示
+“此电脑”，其余每行一个路径。老文件（只有固定项）会在加载时把缺失的内置项按默认顺序插到
+前面，所以升级后顺序不变。
+
+- 行样式仍走 `ApplyQuickAccessRow()`（行 padding / 图标偏移 / 文字 padding 一份）。
+- 点击/拖动由 `CMainWnd::HandleMessage` 在控件分发之前接管：`WM_LBUTTONDOWN` 命中行就
+  `SetCapture` 并记 `m_quickDragIndex`；`WM_MOUSEMOVE` 超过 4 设计像素进入拖动，按每行中心
+  算出目标槽位并 `MoveQuickRow()` 实时重排；`WM_LBUTTONUP` 没拖动就 `ActivateQuickRow()`
+  （所以按钮自身的 notify 被忽略：名字前缀 `fav_row_`）。
+- 右键走 `ShowQuickRowContextMenu()`：「此电脑」用 `ShowShellBackgroundContextMenu(kThisPcPath)`
+  （内部走 FOLDERID_ComputerFolder），文件夹用 `ShowShellContextMenu()`；
+  `ShowShellContextMenu` / `TrackPopupShellMenu` 新增 `extraItems/outExtraCmd`，把 FastFile 自己的
+  「打开 / 从快速访问中取消固定」追加在 Shell 菜单下方（id 取 9340+，远离 Shell 的
+  `idCmdFirst..idCmdLast`），`TrackPopupShellMenu` 命中这些 id 时通过 `outExtraCmd` 回传。
+- DPI 变化时 `OnDpiChanged` 会 `RebuildLeftQuickRows()`，因为行是运行时控件、按物理像素排版。
+
+### 命令栏双色图标
+`main.xml` 里的命令栏按钮不再用 Segoe MDL2 单色字形，而是 `GetCommandIconBmp()` 用 GDI+
+在 20×20 网格上自绘成 PNG（缓存进 `m_iconCache`），配色取自 Windows 11 资源管理器命令栏：
+浅灰 `#C2C2C2` 主轮廓 + 浅蓝 `#A3CEEF` 点缀，排序是深灰 `#555555` 上箭头 + `#0078D4`
+下箭头，更多按钮是 `#1B1B1B` 三个点。图标尺寸沿用 `UiTokens::ToolbarGlyphPx`，
+纯图标按钮居中、带文字按钮按 `ToolbarIconPad` 左对齐，`textpadding` 与原来一致。
+
 ### 排序不再强制文件夹在前
 `EntryComesBefore()` 取代了原来"`if (a.isDir != b.isDir) return a.isDir;`"的写法，
 `BuildDisplayOrder()` 把文件夹和文件合并后 `stable_sort`。资源管理器本来就只按当前列

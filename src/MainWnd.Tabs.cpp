@@ -215,6 +215,42 @@ void CMainWnd::OnNewTabRequested()
     AddTab(NewTabTargetForSelection(), true);
 }
 
+// Modal confirmation for "close the window while several tabs are open". Uses the native
+// task dialog so the buttons can read 关闭 / 取消 (a plain MessageBox can only offer
+// 确定 / 取消) and so it inherits the app's window icon and DPI.
+bool CMainWnd::ConfirmCloseWithMultipleTabs()
+{
+    TASKDIALOGCONFIG cfg = {};
+    cfg.cbSize = sizeof(cfg);
+    cfg.hwndParent = m_hWnd;
+    cfg.dwFlags = TDF_POSITION_RELATIVE_TO_WINDOW | TDF_ALLOW_DIALOG_CANCELLATION
+        | TDF_SIZE_TO_CONTENT;
+    cfg.dwCommonButtons = 0;
+    cfg.pszWindowTitle = L"FastFile";
+    cfg.pszMainIcon = TD_WARNING_ICON;
+    cfg.pszMainInstruction = L"当前打开了多个标签页，确认是否关闭";
+    wchar_t content[128] = {};
+    swprintf_s(content, L"关闭窗口会同时关闭全部 %u 个标签页。",
+        static_cast<unsigned>(m_tabs.size()));
+    cfg.pszContent = content;
+
+    // First entry is the default (Enter) action; Cancel is listed second but focused, so a
+    // stray Enter never closes the window by accident.
+    const TASKDIALOG_BUTTON buttons[] = {
+        { 1001, L"关闭" },
+        { 1002, L"取消" },
+    };
+    cfg.pButtons = buttons;
+    cfg.cButtons = ARRAYSIZE(buttons);
+    cfg.nDefaultButton = 1002;
+
+    int pressed = 0;
+    const HRESULT hr = ::TaskDialogIndirect(&cfg, &pressed, nullptr, nullptr);
+    if (FAILED(hr))
+        return true;   // no task dialog available: keep the previous close behaviour
+    return pressed == 1001;
+}
+
 void CMainWnd::CloseTab(int index)
 {
     if (index < 0 || index >= static_cast<int>(m_tabs.size()))

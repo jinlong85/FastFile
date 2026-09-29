@@ -206,7 +206,6 @@ void CMainWnd::ApplyDpiScaledChrome()
         _T("btn_toggle_preview"),
         _T("btn_view_xlarge"), _T("btn_view_large"), _T("btn_view_medium"),
         _T("btn_view_list"), _T("btn_view_details"), _T("btn_view_tiles"),
-        _T("fav_thispc"), _T("fav_documents"), _T("fav_desktop"), _T("fav_downloads"),
     };
     for (auto name : toolbarBtns) {
         CControlUI* c = m_PaintManager.FindControl(name);
@@ -278,17 +277,9 @@ void CMainWnd::ApplyDpiScaledChrome()
             hdr->SetFixedHeight(DpiScale(UiTokens::DetailsHeaderH));
     }
 
-    // Phase 2: left-nav Quick Access rows use NavRowH
+    // Quick-access rows are rebuilt on DPI changes (RebuildLeftQuickRows) with NavRowH and
+    // the runtime row metrics, so they need no named-control pass here.
     const SIZE ctlRound = { DpiScale(UiTokens::RadiusControl), DpiScale(UiTokens::RadiusControl) };
-    for (LPCTSTR favName : {
-        _T("fav_thispc"), _T("fav_documents"), _T("fav_desktop"), _T("fav_downloads")
-    }) {
-        if (CControlUI* cFav = m_PaintManager.FindControl(favName)) {
-            cFav->SetFixedHeight(DpiScale(UiTokens::NavRowH));
-            cFav->SetBorderRound(ctlRound);
-            cFav->SetAttribute(_T("font"), _T("4"));
-        }
-    }
 
     // Unify the corner language: command-bar buttons and the address/search inputs are now
     // 4px like Explorer (they used to be a mix of square and 6px).
@@ -361,6 +352,7 @@ void CMainWnd::OnDpiChanged(UINT newDpi, const RECT* suggested)
         ApplyFileViewScrollBars();
         StyleSidePaneScrollBars(m_pDirTree);
         StylePreviewRail();
+        RebuildLeftQuickRows();   // runtime rows are sized in physical pixels
         ApplyChromeShellIcons();
         RefreshTreeShellIcons();
         RebuildBreadcrumb();

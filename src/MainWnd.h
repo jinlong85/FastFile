@@ -160,7 +160,6 @@ private:
     void PushMoveUndo(std::vector<std::pair<std::wstring, std::wstring>> pairs);
     void OnUndo();
     void ShowToolbarPopupMenu(CControlUI* anchor, HMENU hMenu);
-    void OnFavoriteClicked(const CDuiString& name);
     void UpdateFavoritesHighlight();
     // Collapsible favourites bar (toggle lives in the 查看 menu, state in session.ini).
     void SetFavoritesBarVisible(bool visible);
@@ -174,19 +173,34 @@ private:
     void LoadFavorites();
     void SaveFavorites() const;
     void RebuildFavoritesBar();
-    void RebuildLeftPinnedFavorites();
     bool PinFavorite(const std::wstring& path);
     bool UnpinFavorite(const std::wstring& path);
     bool IsFavoritePinned(const std::wstring& path) const;
     void OnPinnedFavoriteClick(CControlUI* btn);
     void ShowFavoriteContextMenu(CControlUI* btn, POINT ptScreen);
     bool IsOverFavoritesBar(POINT ptClient) const;
+    // Quick access rows: the four built-ins plus the user's pinned folders live in one
+    // ordered list so the order can be dragged and is persisted in quick_access.txt.
+    struct QuickRow {
+        bool isThisPc = false;
+        bool builtIn = false;   // one of 此电脑 / 文档 / 桌面 / 下载
+        std::wstring path;      // folder path (kThisPcPath for This PC)
+        std::wstring label;     // display name (localized for the built-ins)
+    };
     static std::wstring GetQuickAccessFilePath();
     void LoadQuickAccess();
     void SaveQuickAccess() const;
+    void BuildDefaultQuickRows();
+    void RebuildLeftQuickRows();
+    void UpdateQuickRowHighlight();
+    int HitTestQuickRow(POINT ptClient) const;
+    void ActivateQuickRow(int index);
+    void ShowQuickRowContextMenu(int index, POINT ptScreen);
+    void MoveQuickRow(int from, int to);
     bool PinQuickAccess(const std::wstring& path);
     bool UnpinQuickAccess(const std::wstring& path);
     bool IsQuickAccessPinned(const std::wstring& path) const;
+    void EnsureDefaultQuickRows();   // inserts any missing built-in row (keeps user order)
     void OpenQuickAccessTab(const std::wstring& path);
     bool InvokeShellRename(const std::wstring& path);
 
@@ -220,6 +234,8 @@ private:
     std::wstring NewTabTargetForSelection() const;
     void CloseTab(int index);
     void ActivateTab(int index);
+    // Closing the window closes every tab at once, so ask before doing that.
+    bool ConfirmCloseWithMultipleTabs();
     void UpdateActiveTabPath(const std::wstring& path);
     std::wstring TabTitleForPath(const std::wstring& path) const;
     void OpenExternalPaths(const std::vector<std::wstring>& paths, bool replaceInitialTab);
@@ -280,6 +296,10 @@ private:
     static bool EnsureGdiplus();
     static bool GetPngEncoderClsid(CLSID* pClsid);
     static void WipeDirectoryFiles(const std::wstring& dirNoSlash);
+    // Command-bar icons: two-tone line art (grey outline + light blue accent) drawn with
+    // GDI+ so the toolbar matches the Explorer command bar without shipping icon assets.
+    // The icon ids live in MainWnd.Icons.cpp.
+    std::wstring GetCommandIconBmp(int kind, int px);
     // Content thumbs only; never SIIGBF_ICONONLY (folders/drives use HICON).
     static bool ExtractShellItemImage(const std::wstring& path, int cx, int cy, const std::wstring& pngPath);
     static bool ExtractShellIconSized(const std::wstring& path, bool isDir, int cx, const std::wstring& bmpPath);
@@ -315,7 +335,9 @@ private:
     void ApplyWindowIcon();
     void ApplyUiChromeTokens(); // Phase1: paddings + unified Win11 light colors
     bool TrackPopupShellMenu(IContextMenu* pMenu, HMENU hMenu, POINT ptScreen,
-        UINT idCmdFirst, UINT idShellMax, bool appendHiddenToggle);
+        UINT idCmdFirst, UINT idShellMax, bool appendHiddenToggle,
+        const std::vector<std::pair<UINT, std::wstring>>* extraItems = nullptr,
+        UINT* outExtraCmd = nullptr);
     // Hide shell-menu entries FastFile does not want to show (see the implementation)
     void PruneShellMenu(IContextMenu* pMenu, HMENU hMenu, UINT idCmdFirst, UINT idShellMax,
         bool backgroundMenu);
@@ -459,7 +481,9 @@ private:
     bool CreateNewFolder();
 
     void ShowItemContextMenu(CControlUI* pItem, POINT ptScreen);
-    bool ShowShellContextMenu(const std::vector<std::wstring>& paths, POINT ptScreen);
+    bool ShowShellContextMenu(const std::vector<std::wstring>& paths, POINT ptScreen,
+        const std::vector<std::pair<UINT, std::wstring>>* extraItems = nullptr,
+        UINT* outExtraCmd = nullptr);
     bool ShowShellBackgroundContextMenu(const std::wstring& folderPath, POINT ptScreen);
     void ShowFallbackContextMenu(const std::vector<ClipboardItem>& items, POINT ptScreen);
     void ShowTreeContextMenu(CTreeNodeUI* node, POINT ptScreen);
@@ -572,7 +596,7 @@ private:
     CHorizontalLayoutUI* m_pBreadcrumb = nullptr;
     CHorizontalLayoutUI* m_pFavoritesBar = nullptr;
     CHorizontalLayoutUI* m_pFavoritesStrip = nullptr;
-    CVerticalLayoutUI* m_pLeftFavPins = nullptr;
+    CVerticalLayoutUI* m_pLeftQuickRows = nullptr;   // runtime rows (built-ins + pins)
     CVerticalLayoutUI* m_pLeftQuick = nullptr;
     CVerticalLayoutUI* m_pLeftThisPc = nullptr;
     CVerticalLayoutUI* m_pIconScroll = nullptr;
@@ -582,6 +606,7 @@ private:
     int m_previewPaneDesignW = UiTokens::PreviewPaneW;    // preview width @96 DPI
     int m_thisPcTilesLayoutW = 0;                         // physical central viewport width
     int m_paneDragKind = 0;          // 0 = none, 1 = sidebar, 2 = preview
+    bool m_closeConfirmed = false;   // user already answered the multi-tab close prompt
     int m_paneDragStartX = 0;
     int m_paneDragStartLeft = 0;
     int m_paneDragStartPreview = 0;
@@ -589,7 +614,11 @@ private:
     int m_previewRailGesture = 0;
     int m_previewRailLastY = 0;
     std::vector<FavoriteItem> m_favorites;
-    std::vector<FavoriteItem> m_quickAccess;
+    std::vector<QuickRow> m_quickRows;
+    // Quick-access drag-to-reorder state (vertical drag moves the row under the cursor).
+    int m_quickDragIndex = -1;
+    bool m_quickDragActive = false;
+    int m_quickDragStartY = 0;
     std::vector<std::wstring> m_shellMenuPaths;
     // preview_pane is a CHorizontalLayoutUI wrapper holding the merged scroll rail
     // (preview_rail, width grip + scrollbar along the divider) and preview_body, which
@@ -768,4 +797,7 @@ private:
     static constexpr UINT_PTR kCmdBgPaste = 9301;
     static constexpr UINT_PTR kCmdBgViewBase = 9310;   // +0..5 -> ViewMode
     static constexpr UINT_PTR kCmdBgSortBase = 9320;   // +0..3 -> SortColumn, +4 asc, +5 desc
+    // FastFile entries appended below a shell context menu opened from a quick-access row.
+    static constexpr UINT_PTR kCmdQuickOpen = 9340;
+    static constexpr UINT_PTR kCmdQuickUnpin = 9341;
 };

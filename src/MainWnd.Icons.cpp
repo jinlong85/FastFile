@@ -848,6 +848,193 @@ std::wstring CMainWnd::GetModuleIconBmp(const wchar_t* moduleFile, int index, in
     return {};
 }
 
+namespace {
+
+// Ids for the two-tone command-bar icons (see GetCommandIconBmp).
+enum CommandIcon {
+    CmdIconNew = 0, CmdIconCut, CmdIconCopy, CmdIconPaste, CmdIconRename,
+    CmdIconShare, CmdIconDelete, CmdIconSort, CmdIconView, CmdIconMore
+};
+
+// Command-bar palette (sampled from the Windows 11 Explorer command bar): a light grey
+// outline with a light blue accent, a darker grey + strong accent blue for the sort
+// arrows, and near-black dots for the "more" button.
+constexpr Gdiplus::ARGB kCmdGray = 0xFFC2C2C2;
+constexpr Gdiplus::ARGB kCmdBlue = 0xFFA3CEEF;
+constexpr Gdiplus::ARGB kCmdDarkGray = 0xFF555555;
+constexpr Gdiplus::ARGB kCmdAccent = 0xFF0078D4;
+constexpr Gdiplus::ARGB kCmdInk = 0xFF1B1B1B;
+
+// Icons are authored on a 20x20 grid and scaled to the requested pixel size.
+void DrawCommandIcon(Gdiplus::Graphics& g, int kind, float px)
+{
+    using namespace Gdiplus;
+    const float s = px / 20.0f;
+    auto X = [s](float v) { return v * s; };
+    const float w = (std::max)(1.0f, px / 12.0f);   // ~2px on a 24px icon
+    const float corner = 2.0f;                      // rounded-rect radius on the grid
+
+    auto stroke = [&](ARGB color, float x1, float y1, float x2, float y2) {
+        Pen p(Color(color), w);
+        p.SetStartCap(LineCapRound);
+        p.SetEndCap(LineCapRound);
+        g.DrawLine(&p, X(x1), X(y1), X(x2), X(y2));
+    };
+    auto poly = [&](ARGB color, const float* xy, int count) {
+        PointF pts[8] = {};
+        for (int i = 0; i < count && i < 8; ++i)
+            pts[i] = PointF(X(xy[i * 2]), X(xy[i * 2 + 1]));
+        Pen p(Color(color), w);
+        p.SetStartCap(LineCapRound);
+        p.SetEndCap(LineCapRound);
+        p.SetLineJoin(LineJoinRound);
+        g.DrawLines(&p, pts, count);
+    };
+    auto box = [&](ARGB color, float l, float t, float r, float b) {
+        GraphicsPath path;
+        const float d = X(corner * 2.0f);
+        path.AddArc(X(l), X(t), d, d, 180, 90);
+        path.AddArc(X(r) - d, X(t), d, d, 270, 90);
+        path.AddArc(X(r) - d, X(b) - d, d, d, 0, 90);
+        path.AddArc(X(l), X(b) - d, d, d, 90, 90);
+        path.CloseFigure();
+        Pen p(Color(color), w);
+        p.SetLineJoin(LineJoinRound);
+        g.DrawPath(&p, &path);
+    };
+    auto ring = [&](ARGB color, float cx, float cy, float radius, bool filled) {
+        const float d = X(radius * 2.0f);
+        const float x = X(cx) - d / 2.0f;
+        const float y = X(cy) - d / 2.0f;
+        if (filled) {
+            SolidBrush brush{ Color(color) };
+            g.FillEllipse(&brush, (INT)x, (INT)y, (INT)d, (INT)d);
+        } else {
+            Pen p(Color(color), w);
+            g.DrawEllipse(&p, x, y, d, d);
+        }
+    };
+
+    switch (kind) {
+    case CmdIconNew:      // grey ring + blue plus
+        ring(kCmdGray, 10, 10, 8.2f, false);
+        stroke(kCmdBlue, 10, 6.0f, 10, 14.0f);
+        stroke(kCmdBlue, 6.0f, 10, 14.0f, 10);
+        break;
+    case CmdIconCut:      // grey blades + blue handles
+        stroke(kCmdGray, 5.2f, 3.4f, 12.3f, 13.0f);
+        stroke(kCmdGray, 14.8f, 3.4f, 7.7f, 13.0f);
+        ring(kCmdBlue, 5.6f, 15.4f, 2.5f, false);
+        ring(kCmdBlue, 14.4f, 15.4f, 2.5f, false);
+        break;
+    case CmdIconCopy:     // grey sheet behind, blue sheet in front
+        box(kCmdGray, 3.0f, 2.6f, 12.6f, 12.2f);
+        box(kCmdBlue, 7.4f, 7.8f, 17.0f, 17.4f);
+        break;
+    case CmdIconPaste:    // grey clipboard + blue sheet
+        box(kCmdGray, 3.8f, 4.4f, 15.6f, 18.0f);
+        box(kCmdGray, 7.4f, 2.4f, 12.0f, 6.2f);
+        box(kCmdBlue, 6.4f, 7.6f, 13.0f, 15.6f);
+        break;
+    case CmdIconRename:   // grey box + blue "A" and caret
+        box(kCmdGray, 2.6f, 4.4f, 15.0f, 15.6f);
+        stroke(kCmdBlue, 6.4f, 13.4f, 9.0f, 6.6f);
+        stroke(kCmdBlue, 11.6f, 13.4f, 9.0f, 6.6f);
+        stroke(kCmdBlue, 7.5f, 10.9f, 10.5f, 10.9f);
+        stroke(kCmdBlue, 17.2f, 2.6f, 17.2f, 17.4f);
+        stroke(kCmdBlue, 16.0f, 17.4f, 18.4f, 17.4f);
+        break;
+    case CmdIconShare: {  // grey box + blue arrow leaving it
+        box(kCmdGray, 3.0f, 6.8f, 13.4f, 17.4f);
+        const float curve[] = { 7.0f, 12.4f, 10.4f, 9.2f, 13.4f, 6.4f, 16.6f, 4.4f };
+        poly(kCmdBlue, curve, 4);
+        stroke(kCmdBlue, 12.4f, 4.0f, 16.9f, 4.2f);
+        stroke(kCmdBlue, 16.7f, 4.2f, 16.6f, 8.7f);
+        break; }
+    case CmdIconDelete:   // light grey bin
+        stroke(kCmdGray, 3.6f, 6.4f, 16.4f, 6.4f);
+        stroke(kCmdGray, 7.8f, 6.4f, 8.6f, 3.4f);
+        stroke(kCmdGray, 8.6f, 3.4f, 11.4f, 3.4f);
+        stroke(kCmdGray, 11.4f, 3.4f, 12.2f, 6.4f);
+        stroke(kCmdGray, 5.4f, 6.4f, 6.4f, 17.6f);
+        stroke(kCmdGray, 14.6f, 6.4f, 13.6f, 17.6f);
+        stroke(kCmdGray, 6.4f, 17.6f, 13.6f, 17.6f);
+        stroke(kCmdGray, 8.6f, 9.6f, 8.6f, 14.6f);
+        stroke(kCmdGray, 11.4f, 9.6f, 11.4f, 14.6f);
+        break;
+    case CmdIconSort:     // dark grey up arrow + accent blue down arrow
+        stroke(kCmdDarkGray, 6.4f, 16.6f, 6.4f, 4.6f);
+        stroke(kCmdDarkGray, 3.4f, 7.8f, 6.4f, 4.2f);
+        stroke(kCmdDarkGray, 9.4f, 7.8f, 6.4f, 4.2f);
+        stroke(kCmdAccent, 13.6f, 3.4f, 13.6f, 15.4f);
+        stroke(kCmdAccent, 10.6f, 12.2f, 13.6f, 15.8f);
+        stroke(kCmdAccent, 16.6f, 12.2f, 13.6f, 15.8f);
+        break;
+    case CmdIconView:     // grey tile grid
+        box(kCmdGray, 3.2f, 3.2f, 8.4f, 8.4f);
+        stroke(kCmdGray, 10.8f, 4.0f, 16.8f, 4.0f);
+        stroke(kCmdGray, 10.8f, 7.6f, 16.8f, 7.6f);
+        box(kCmdGray, 3.2f, 11.6f, 8.4f, 16.8f);
+        stroke(kCmdGray, 10.8f, 14.2f, 16.8f, 14.2f);
+        break;
+    default:                        // more: three ink dots
+        ring(kCmdInk, 4.4f, 10, 1.5f, true);
+        ring(kCmdInk, 10, 10, 1.5f, true);
+        ring(kCmdInk, 15.6f, 10, 1.5f, true);
+        break;
+    }
+}
+
+} // namespace
+
+std::wstring CMainWnd::GetCommandIconBmp(int kind, int px)
+{
+    if (px < 8) px = 8;
+    if (px > 128) px = 128;
+    wchar_t keybuf[64] = {};
+    swprintf_s(keybuf, L"cmdi:%d@%d", kind, px);
+    const std::wstring key = keybuf;
+    {
+        std::lock_guard<std::mutex> lock(m_iconCacheMutex);
+        auto it = m_iconCache.find(key);
+        if (it != m_iconCache.end() && ::PathFileExistsW(it->second.c_str()))
+            return it->second;
+    }
+    if (m_iconCacheDir.empty() || !EnsureGdiplus())
+        return {};
+
+    size_t h = std::hash<std::wstring>{}(key);
+    wchar_t name[96] = {};
+    swprintf_s(name, L"cmd_%08X_%d_%d_v1.png", static_cast<unsigned>(h & 0xFFFFFFFFu), kind, px);
+    const std::wstring pngPath = m_iconCacheDir + name;
+    if (::PathFileExistsW(pngPath.c_str())) {
+        std::lock_guard<std::mutex> lock(m_iconCacheMutex);
+        m_iconCache[key] = pngPath;
+        return pngPath;
+    }
+
+    bool ok = false;
+    {
+        using namespace Gdiplus;
+        Bitmap bmp(px, px, PixelFormat32bppARGB);
+        if (bmp.GetLastStatus() == Ok) {
+            Graphics g(&bmp);
+            g.SetSmoothingMode(SmoothingModeAntiAlias);
+            g.SetPixelOffsetMode(PixelOffsetModeHalf);
+            DrawCommandIcon(g, kind, static_cast<float>(px));
+            CLSID clsidPng = {};
+            ok = GetPngEncoderClsid(&clsidPng)
+                && bmp.Save(pngPath.c_str(), &clsidPng, nullptr) == Ok;
+        }
+    }
+    if (!ok) return {};
+    {
+        std::lock_guard<std::mutex> lock(m_iconCacheMutex);
+        m_iconCache[key] = pngPath;
+    }
+    return pngPath;
+}
+
 void CMainWnd::ApplyChromeShellIcons()
 {
     // Toolbar glyphs: UiTokens::ToolbarIconPx (Win11 command-bar density).
@@ -870,14 +1057,6 @@ void CMainWnd::ApplyChromeShellIcons()
         c->Invalidate();
     };
 
-    auto applyFav = [&](LPCTSTR name, const std::wstring& bmp) {
-        CControlUI* c = m_PaintManager.FindControl(name);
-        if (!c || bmp.empty()) return;
-        // Row padding, icon offset and text padding live in ApplyQuickAccessRow so the
-        // pinned favorites below the built-in rows land on the same pixels.
-        ApplyQuickAccessRow(c, bmp);
-    };
-
     auto applyFluent = [&](LPCTSTR name, wchar_t glyph) {
         CControlUI* c = m_PaintManager.FindControl(name);
         if (!c) return;
@@ -890,26 +1069,32 @@ void CMainWnd::ApplyChromeShellIcons()
         c->Invalidate();
     };
 
-    // Command-bar buttons that show an icon *and* a label ("新建 ⌄"): the glyph becomes a
-    // bitmap so the label keeps the UI font, and textpadding keeps the two from overlapping.
-    // (These used to be two adjacent buttons - a glyph button plus a text button - which made
-    // the hover highlight cover only half of the visual button.)
-    auto applyGlyphLabel = [&](LPCTSTR name, wchar_t glyph) {
+    // Command bar (新建 / 剪切 / … / 更多): two-tone line icons - a light grey outline with a
+    // light blue accent - drawn by GetCommandIconBmp so the bar matches the Explorer command
+    // bar. Icon-only buttons centre the bitmap; label buttons keep the icon left of the text.
+    auto applyCmdIcon = [&](LPCTSTR name, int kind, bool withLabel) {
         CControlUI* c = m_PaintManager.FindControl(name);
         if (!c) return;
         const int px = DpiScale(UiTokens::ToolbarGlyphPx);
-        std::wstring bmp = GetGlyphIconBmp(glyph, px, RGB(0x1A, 0x1A, 0x1A));
+        const std::wstring bmp = GetCommandIconBmp(kind, px);
         if (bmp.empty()) return;
+        const int bw = c->GetFixedWidth();
         int bh = c->GetFixedHeight();
         if (bh <= 0) bh = DpiScale(UiTokens::CmdBtnH);
         const int padL = DpiScale(UiTokens::ToolbarIconPad);
+        int x = withLabel ? padL : (bw > 0 ? (bw - px) / 2 : padL);
+        if (x < 0) x = 0;
         int y = (bh - px) / 2;
         if (y < 0) y = 0;
-        ApplyControlForeIcon(c, bmp, px, padL, y, false);
-        CDuiString tp;
-        tp.Format(_T("%d,0,%d,0"),
-            padL + px + DpiScale(UiTokens::SpaceXs), DpiScale(UiTokens::SpaceSm));
-        c->SetAttribute(_T("textpadding"), tp);
+        ApplyControlForeIcon(c, bmp, px, x, y, false);
+        if (withLabel) {
+            CDuiString tp;
+            tp.Format(_T("%d,0,%d,0"),
+                padL + px + DpiScale(UiTokens::SpaceXs), DpiScale(UiTokens::SpaceSm));
+            c->SetAttribute(_T("textpadding"), tp.GetData());
+        } else {
+            c->SetAttribute(_T("textpadding"), _T("0,0,0,0"));
+        }
         c->Invalidate();
     };
 
@@ -919,20 +1104,19 @@ void CMainWnd::ApplyChromeShellIcons()
     applyFluent(_T("btn_forward"), 0xE0AB);
     applyFluent(_T("btn_up"), 0xE74A);
     applyFluent(_T("btn_refresh"), 0xE72C);
-    applyFluent(_T("btn_cut"), 0xE8C6);
-    applyFluent(_T("btn_copy"), 0xE8C8);
-    applyFluent(_T("btn_paste"), 0xE77F);
-    applyFluent(_T("btn_rename"), 0xE8AC);
-    applyFluent(_T("btn_share"), 0xE72D);
-    applyFluent(_T("btn_delete"), 0xE74D);
-    applyFluent(_T("btn_more"), 0xE712);
     applyFluent(_T("btn_toggle_preview"), 0xE7F4);
     applyFluent(_T("btn_newfolder"), 0xE710);
 
-    // Single-button 新建 / 排序 / 查看: glyph bitmap + label + chevron.
-    applyGlyphLabel(_T("btn_new"), 0xE710);
-    applyGlyphLabel(_T("btn_sort"), 0xE8CB);
-    applyGlyphLabel(_T("btn_view_menu"), 0xE80D);
+    applyCmdIcon(_T("btn_new"), CmdIconNew, true);
+    applyCmdIcon(_T("btn_cut"), CmdIconCut, false);
+    applyCmdIcon(_T("btn_copy"), CmdIconCopy, false);
+    applyCmdIcon(_T("btn_paste"), CmdIconPaste, false);
+    applyCmdIcon(_T("btn_rename"), CmdIconRename, false);
+    applyCmdIcon(_T("btn_share"), CmdIconShare, false);
+    applyCmdIcon(_T("btn_delete"), CmdIconDelete, false);
+    applyCmdIcon(_T("btn_sort"), CmdIconSort, true);
+    applyCmdIcon(_T("btn_view_menu"), CmdIconView, true);
+    applyCmdIcon(_T("btn_more"), CmdIconMore, false);
 
     // Keep hidden legacy view buttons iconized for UpdateViewModeButtons
     applyBtn(_T("btn_view_xlarge"), GetModuleIconBmp(L"shell32.dll", 257, iconPx), true);
@@ -942,27 +1126,8 @@ void CMainWnd::ApplyChromeShellIcons()
     applyBtn(_T("btn_view_details"), GetModuleIconBmp(L"shell32.dll", 253, iconPx), true);
     applyBtn(_T("btn_view_tiles"), GetStockIconBmp(SIID_STACK, iconPx), true);
 
-    // --- Quick Access favorites: real known-folder / stock This PC icons ---
-    applyFav(_T("fav_thispc"), GetStockIconBmp(SIID_DESKTOPPC, navIconPx));
-    {
-        std::wstring docs = GetKnownFolderPath(CSIDL_PERSONAL);
-        applyFav(_T("fav_documents"), docs.empty()
-            ? GetStockIconBmp(SIID_FOLDER, navIconPx)
-            : GetShellIconBmp(docs, true, navIconPx));
-    }
-    {
-        std::wstring desk = GetKnownFolderPath(CSIDL_DESKTOPDIRECTORY);
-        applyFav(_T("fav_desktop"), desk.empty()
-            ? GetStockIconBmp(SIID_DESKTOPPC, navIconPx)
-            : GetShellIconBmp(desk, true, navIconPx));
-    }
-    {
-        std::wstring down = GetDownloadsPath();
-        applyFav(_T("fav_downloads"), down.empty()
-            ? GetStockIconBmp(SIID_FOLDER, navIconPx)
-            : GetShellIconBmp(down, true, navIconPx));
-    }
-
+    // Quick-access row icons are applied in RebuildLeftQuickRows (the rows are built at
+    // runtime so the user can reorder them).
     m_PaintManager.NeedUpdate();
 }
 

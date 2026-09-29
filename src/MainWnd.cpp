@@ -52,7 +52,7 @@ void CMainWnd::InitWindow()
     m_pBreadcrumb = static_cast<CHorizontalLayoutUI*>(m_PaintManager.FindControl(_T("breadcrumb")));
     m_pFavoritesBar = static_cast<CHorizontalLayoutUI*>(m_PaintManager.FindControl(_T("favorites_bar")));
     m_pFavoritesStrip = static_cast<CHorizontalLayoutUI*>(m_PaintManager.FindControl(_T("favorites_strip")));
-    m_pLeftFavPins = static_cast<CVerticalLayoutUI*>(m_PaintManager.FindControl(_T("left_fav_pins")));
+    m_pLeftQuickRows = static_cast<CVerticalLayoutUI*>(m_PaintManager.FindControl(_T("left_quick_rows")));
     m_pLeftQuick = static_cast<CVerticalLayoutUI*>(m_PaintManager.FindControl(_T("left_quick")));
     m_pLeftThisPc = static_cast<CVerticalLayoutUI*>(m_PaintManager.FindControl(_T("left_thispc")));
     m_pPreviewPane = static_cast<CContainerUI*>(m_PaintManager.FindControl(_T("preview_pane")));
@@ -120,7 +120,6 @@ void CMainWnd::InitWindow()
     LoadFavorites();
     LoadQuickAccess();
     RebuildFavoritesBar();
-    RebuildLeftPinnedFavorites();
     InitDragDrop();
     ApplyFileViewScrollBars();
     ApplyColumnWidths();
@@ -395,11 +394,10 @@ void CMainWnd::OnClick(TNotifyUI& msg)
         if (name == _T("btn_sort")) { OnSortMenuClicked(); return; }
         if (name == _T("btn_view_menu")) { OnViewMenuClicked(); return; }
     if (name == _T("btn_more")) { OnMoreMenuClicked(); return; }
-    if (name == _T("fav_thispc") || name == _T("fav_documents")
-        || name == _T("fav_desktop") || name == _T("fav_downloads")) {
-        OnFavoriteClicked(name);
+    // Quick-access rows: their clicks come from the window-level press/release handling
+    // below (so a vertical drag can reorder them); ignore any stray notify.
+    if (name.Find(_T("fav_row_")) == 0)
         return;
-    }
     if (name.Find(_T("fav_pin_")) == 0 || name.Find(_T("fav_dyn_")) == 0) {
         OnPinnedFavoriteClick(msg.pSender);
         return;
@@ -492,6 +490,13 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         return 0;
     }
     if (uMsg == WM_CLOSE) {
+        // Closing the window closes every tab, so confirm first while more than one is
+        // open (Explorer/Terminal style). Cancel keeps the window and all tabs alive.
+        if (!m_closeConfirmed && m_tabs.size() > 1) {
+            if (!ConfirmCloseWithMultipleTabs())
+                return 0;
+            m_closeConfirmed = true;
+        }
         CaptureColumnWidths();
         if (m_hWnd) {
             ::KillTimer(m_hWnd, kTimerVirtSync);
@@ -543,6 +548,17 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             ::SetCapture(m_hWnd);
             return 0;
         }
+        // Quick-access rows own their press: releasing without moving activates the row,
+        // dragging vertically reorders it (built-ins and pinned folders share one list).
+        const POINT quickPt = { px, py };
+        const int quickIdx = HitTestQuickRow(quickPt);
+        if (quickIdx >= 0) {
+            m_quickDragIndex = quickIdx;
+            m_quickDragActive = false;
+            m_quickDragStartY = py;
+            ::SetCapture(m_hWnd);
+            return 0;
+        }
         m_dragTracking = true;
         m_dragStartPt.x = (short)LOWORD(lParam);
         m_dragStartPt.y = (short)HIWORD(lParam);
@@ -554,6 +570,41 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         if (m_paneDragKind == 1) w = m_paneDragStartLeft + dx;         // sidebar: right edge
         else w = m_paneDragStartPreview - dx;                          // preview: left edge
         ApplyPaneDragWidth(m_paneDragKind, w);
+        return 0;
+    }
+    if (uMsg == WM_MOUSEMOVE && m_quickDragIndex >= 0 && (wParam & MK_LBUTTON) != 0) {
+        const int y = (short)HIWORD(lParam);
+        if (!m_quickDragActive && ::abs(y - m_quickDragStartY) >= DpiScale(4))
+            m_quickDragActive = true;
+        if (m_quickDragActive && m_pLeftQuickRows) {
+            // Live reorder: drop the dragged row into the slot the cursor sits over.
+            int target = 0;
+            const int n = m_pLeftQuickRows->GetCount();
+            for (int i = 0; i < n; ++i) {
+                CControlUI* c = m_pLeftQuickRows->GetItemAt(i);
+                if (!c || !c->IsVisible()) continue;
+                const RECT r = c->GetPos();
+                if (y > (r.top + r.bottom) / 2) target = i + 1;
+            }
+            int moveTo = (target > m_quickDragIndex) ? target - 1 : target;
+            if (moveTo < 0) moveTo = 0;
+            if (moveTo >= static_cast<int>(m_quickRows.size()))
+                moveTo = static_cast<int>(m_quickRows.size()) - 1;
+            if (moveTo != m_quickDragIndex)
+                MoveQuickRow(m_quickDragIndex, moveTo);
+        }
+        return 0;
+    }
+    if (uMsg == WM_LBUTTONUP && m_quickDragIndex >= 0) {
+        const int idx = m_quickDragIndex;
+        const bool reordered = m_quickDragActive;
+        m_quickDragIndex = -1;
+        m_quickDragActive = false;
+        ::ReleaseCapture();
+        if (reordered)
+            SaveQuickAccess();      // keep the dragged order for the next launch
+        else
+            ActivateQuickRow(idx);  // plain click: open the folder / This PC
         return 0;
     }
     if (uMsg == WM_MOUSEMOVE && m_previewRailGesture != 0
@@ -633,6 +684,8 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         if (m_paneDragKind != 0)
             m_paneDragKind = 0;
         m_previewRailGesture = 0;
+        m_quickDragIndex = -1;
+        m_quickDragActive = false;
     }
     if (uMsg == WM_LBUTTONUP || uMsg == WM_RBUTTONDOWN) {
         m_dragTracking = false;
@@ -650,6 +703,15 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     }
     if (uMsg == WM_RBUTTONUP) {
         POINT ptClient = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
+        // Quick-access row: hand over to the real Shell menu for that folder (This PC gets
+        // the Computer folder's own menu), plus FastFile's own entries for pinned rows.
+        const int quickIdx = HitTestQuickRow(ptClient);
+        if (quickIdx >= 0) {
+            POINT ptScreen = ptClient;
+            ::ClientToScreen(m_hWnd, &ptScreen);
+            ShowQuickRowContextMenu(quickIdx, ptScreen);
+            return 0;
+        }
         CControlUI* hit = m_PaintManager.FindControl(ptClient);
         CControlUI* p = hit;
         while (p) {

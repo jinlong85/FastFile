@@ -2,6 +2,15 @@
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <assemblyIdentity version="0.1.0.0" name="FastFile.app" type="win32"/>
   <description>FastFile lightweight file manager</description>
+  <!-- Common Controls v6: required for TaskDialogIndirect (the "close with several tabs
+       open" confirmation) and for modern system dialogs. DuiLib draws its own controls, so
+       this only affects the system dialogs FastFile raises. -->
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0"
+        processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>
+    </dependentAssembly>
+  </dependency>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>

@@ -4,63 +4,8 @@
 
 #include "MainWndInternal.h"
 
-void CMainWnd::OnFavoriteClicked(const CDuiString& name)
-{
-    if (name == _T("fav_thispc")) {
-        OpenQuickAccessTab(kThisPcPath);
-        return;
-    }
-    if (name == _T("fav_documents")) {
-        std::wstring p = GetKnownFolderPath(CSIDL_PERSONAL);
-        if (p.empty()) { UpdateStatus(_T("无法定位文档文件夹")); return; }
-        OpenQuickAccessTab(p);
-        return;
-    }
-    if (name == _T("fav_desktop")) {
-        std::wstring p = GetKnownFolderPath(CSIDL_DESKTOPDIRECTORY);
-        if (p.empty()) { UpdateStatus(_T("无法定位桌面")); return; }
-        OpenQuickAccessTab(p);
-        return;
-    }
-    if (name == _T("fav_downloads")) {
-        std::wstring p = GetDownloadsPath();
-        if (p.empty()) { UpdateStatus(_T("无法定位下载文件夹")); return; }
-        OpenQuickAccessTab(p);
-        return;
-    }
-}
-
 void CMainWnd::UpdateFavoritesHighlight()
 {
-    const std::wstring docs = GetKnownFolderPath(CSIDL_PERSONAL);
-    const std::wstring desk = GetKnownFolderPath(CSIDL_DESKTOPDIRECTORY);
-    const std::wstring downs = GetDownloadsPath();
-
-    struct FavBtn { LPCTSTR name; bool active; };
-    const FavBtn btns[] = {
-        { _T("fav_thispc"), IsThisPcPath(m_currentPath) },
-        { _T("fav_documents"), PathEquals(m_currentPath, docs) },
-        { _T("fav_desktop"), PathEquals(m_currentPath, desk) },
-        { _T("fav_downloads"), PathEquals(m_currentPath, downs) },
-    };
-
-    for (const auto& b : btns) {
-        auto* btn = static_cast<CButtonUI*>(m_PaintManager.FindControl(b.name));
-        if (!btn) continue;
-        if (b.active) {
-            btn->SetAttribute(_T("bkcolor"), UiTokens::ColorNavSelected);
-            btn->SetAttribute(_T("textcolor"), UiTokens::ColorTextPrimary);
-            btn->SetAttribute(_T("bordercolor"), UiTokens::ColorTransparent);
-            btn->SetAttribute(_T("bordersize"), _T("0"));
-        } else {
-            btn->SetAttribute(_T("bkcolor"), UiTokens::ColorSurface);
-            btn->SetAttribute(_T("textcolor"), UiTokens::ColorTextPrimary);
-            btn->SetAttribute(_T("bordercolor"), UiTokens::ColorTransparent);
-            btn->SetAttribute(_T("bordersize"), _T("0"));
-        }
-        btn->Invalidate();
-    }
-
     auto stylePin = [&](CContainerUI* host) {
         if (!host) return;
         const int n = host->GetCount();
@@ -84,7 +29,7 @@ void CMainWnd::UpdateFavoritesHighlight()
         }
     };
     stylePin(m_pFavoritesStrip);
-    stylePin(m_pLeftFavPins);
+    UpdateQuickRowHighlight();
 }
 
 // ---- C: left Quick Access / This PC splitter -----------------------------
@@ -127,9 +72,7 @@ void CMainWnd::ApplyLeftNavSplitterHeight(int designHeight)
 void CMainWnd::UpdateLeftQuickAccessSpacing()
 {
     if (!m_pLeftQuick) return;
-    int rowCount = 4; // This PC, Documents, Desktop, Downloads
-    if (m_pLeftFavPins && m_pLeftFavPins->IsVisible())
-        rowCount += m_pLeftFavPins->GetCount();
+    const int rowCount = (std::max)(1, static_cast<int>(m_quickRows.size()));
 
     const int rowHeight = DpiScale(UiTokens::NavRowH);
     const int height = m_pLeftQuick->GetFixedHeight();
@@ -146,12 +89,10 @@ void CMainWnd::UpdateLeftQuickAccessSpacing()
     m_pLeftQuick->NeedParentUpdate();
 }
 
-// One place for the Quick Access row metrics. The four built-in rows come from the XML and
-// the pinned favorites are created at runtime, but both end up in the same list, so they
-// have to share the row padding, the icon offset and the text padding. DuiLib offsets a
-// laid-out child by its own padding (CVerticalLayoutUI::SetPos), which is why the built-in
-// rows sit 12px inside the list: a pinned row without that padding was 12px wider on each
-// side and its icon/label drifted left of the rows above it.
+// One place for the Quick Access row metrics. Every row (built-in or pinned) is created at
+// runtime, so they share the row padding, icon offset and text padding. DuiLib offsets a
+// laid-out child by its own padding (CVerticalLayoutUI::SetPos), which is what keeps the
+// rows inset from the panel edge and makes the hover/selected band match the old XML rows.
 void CMainWnd::ApplyQuickAccessRow(CControlUI* row, const std::wstring& iconBmp)
 {
     if (!row) return;
@@ -404,32 +345,76 @@ std::wstring CMainWnd::GetQuickAccessFilePath()
 
 void CMainWnd::LoadQuickAccess()
 {
-    m_quickAccess.clear();
+    m_quickRows.clear();
     FILE* fp = nullptr;
     const std::wstring file = GetQuickAccessFilePath();
-    if (_wfopen_s(&fp, file.c_str(), L"rb") != 0 || !fp) return;
+    if (_wfopen_s(&fp, file.c_str(), L"rb") != 0 || !fp) {
+        BuildDefaultQuickRows();
+        return;
+    }
     fseek(fp, 0, SEEK_END);
     const long size = ftell(fp);
     fseek(fp, 0, SEEK_SET);
-    if (size < 2) { fclose(fp); return; }
+    if (size < 2) { fclose(fp); BuildDefaultQuickRows(); return; }
     std::wstring content(static_cast<size_t>(size) / sizeof(wchar_t), L'\0');
     fread(&content[0], 1, size, fp);
     fclose(fp);
     if (!content.empty() && content[0] == 0xFEFF) content.erase(content.begin());
+
+    // The file stores the full display order: "::ThisPC" for the Computer folder, then one
+    // path per row. Files written by older builds only list the user's pins, so the four
+    // built-ins are still inserted (first, in their default order) when they are missing.
+    const std::wstring docs = GetKnownFolderPath(CSIDL_PERSONAL);
+    const std::wstring desk = GetKnownFolderPath(CSIDL_DESKTOPDIRECTORY);
+    const std::wstring downs = GetDownloadsPath();
+
+    auto alreadyListed = [&](const std::wstring& path) {
+        for (const auto& row : m_quickRows)
+            if (!row.isThisPc && PathEquals(row.path, path)) return true;
+        return false;
+    };
+
     size_t pos = 0;
     while (pos < content.size()) {
         const size_t eol = content.find(L'\n', pos);
         std::wstring line = content.substr(pos, (eol == std::wstring::npos ? content.size() : eol) - pos);
         pos = eol == std::wstring::npos ? content.size() : eol + 1;
         if (!line.empty() && line.back() == L'\r') line.pop_back();
+        if (line.empty()) continue;
+        if (line == kThisPcPath) {
+            if (m_quickRows.empty()) {
+                QuickRow row;
+                row.isThisPc = true;
+                row.builtIn = true;
+                row.path = kThisPcPath;
+                row.label = L"此电脑";
+                m_quickRows.push_back(std::move(row));
+            }
+            continue;
+        }
         const std::wstring path = NormalizePath(line);
-        if (path.empty() || IsQuickAccessPinned(path)) continue;
+        if (path.empty() || alreadyListed(path)) continue;
         DWORD attrs = ::GetFileAttributesW(path.c_str());
         if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) continue;
-        FavoriteItem item{ path, GetLeafName(path) };
-        if (item.displayName.empty()) item.displayName = path;
-        m_quickAccess.push_back(std::move(item));
+        QuickRow row;
+        row.path = path;
+        if (!docs.empty() && PathEquals(path, docs)) {
+            row.builtIn = true;
+            row.label = L"文档";
+        } else if (!desk.empty() && PathEquals(path, desk)) {
+            row.builtIn = true;
+            row.label = L"桌面";
+        } else if (!downs.empty() && PathEquals(path, downs)) {
+            row.builtIn = true;
+            row.label = L"下载";
+        } else {
+            row.label = GetLeafName(path);
+            if (row.label.empty()) row.label = path;
+        }
+        m_quickRows.push_back(std::move(row));
     }
+    EnsureDefaultQuickRows();
+    RebuildLeftQuickRows();
 }
 
 void CMainWnd::SaveQuickAccess() const
@@ -439,8 +424,8 @@ void CMainWnd::SaveQuickAccess() const
     if (_wfopen_s(&fp, file.c_str(), L"wb") != 0 || !fp) return;
     const wchar_t bom = 0xFEFF;
     fwrite(&bom, sizeof(bom), 1, fp);
-    for (const auto& item : m_quickAccess) {
-        fwrite(item.path.c_str(), sizeof(wchar_t), item.path.size(), fp);
+    for (const auto& row : m_quickRows) {
+        fwrite(row.path.c_str(), sizeof(wchar_t), row.path.size(), fp);
         const wchar_t nl = L'\n';
         fwrite(&nl, sizeof(nl), 1, fp);
     }
@@ -449,8 +434,8 @@ void CMainWnd::SaveQuickAccess() const
 
 bool CMainWnd::IsQuickAccessPinned(const std::wstring& path) const
 {
-    for (const auto& item : m_quickAccess)
-        if (PathEquals(item.path, path)) return true;
+    for (const auto& row : m_quickRows)
+        if (!row.isThisPc && PathEquals(row.path, path)) return true;
     return false;
 }
 
@@ -460,22 +445,25 @@ bool CMainWnd::PinQuickAccess(const std::wstring& path)
     if (normalized.empty() || IsThisPcPath(normalized) || IsQuickAccessPinned(normalized)) return false;
     DWORD attrs = ::GetFileAttributesW(normalized.c_str());
     if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) return false;
-    FavoriteItem item{ normalized, GetLeafName(normalized) };
-    if (item.displayName.empty()) item.displayName = normalized;
-    m_quickAccess.push_back(std::move(item));
+    QuickRow row;
+    row.path = normalized;
+    row.label = GetLeafName(normalized);
+    if (row.label.empty()) row.label = normalized;
+    m_quickRows.push_back(std::move(row));
     SaveQuickAccess();
-    RebuildLeftPinnedFavorites();
+    RebuildLeftQuickRows();
     return true;
 }
 
 bool CMainWnd::UnpinQuickAccess(const std::wstring& path)
 {
-    const auto end = std::remove_if(m_quickAccess.begin(), m_quickAccess.end(),
-        [&](const FavoriteItem& item) { return PathEquals(item.path, path); });
-    if (end == m_quickAccess.end()) return false;
-    m_quickAccess.erase(end, m_quickAccess.end());
+    // The four built-in rows are permanent; only user-pinned folders can be removed.
+    const auto end = std::remove_if(m_quickRows.begin(), m_quickRows.end(),
+        [&](const QuickRow& row) { return !row.builtIn && !row.isThisPc && PathEquals(row.path, path); });
+    if (end == m_quickRows.end()) return false;
+    m_quickRows.erase(end, m_quickRows.end());
     SaveQuickAccess();
-    RebuildLeftPinnedFavorites();
+    RebuildLeftQuickRows();
     return true;
 }
 
@@ -669,21 +657,66 @@ void CMainWnd::RebuildFavoritesBar()
     UpdateFavoritesHighlight();
 }
 
-void CMainWnd::RebuildLeftPinnedFavorites()
+void CMainWnd::EnsureDefaultQuickRows()
 {
-    if (!m_pLeftFavPins) return;
-    m_pLeftFavPins->RemoveAll();
-    m_pLeftFavPins->SetVisible(!m_quickAccess.empty());
+    const std::wstring docs = GetKnownFolderPath(CSIDL_PERSONAL);
+    const std::wstring desk = GetKnownFolderPath(CSIDL_DESKTOPDIRECTORY);
+    const std::wstring downs = GetDownloadsPath();
+
+    // Missing built-ins are inserted after the built-ins that are already there, so an
+    // existing (possibly reordered) list keeps its rows in place.
+    int insertAt = 0;
+    auto addIfMissing = [&](bool isThisPc, const std::wstring& path, const wchar_t* label) {
+        bool found = false;
+        for (const auto& row : m_quickRows) {
+            if (isThisPc ? row.isThisPc : (!row.isThisPc && PathEquals(row.path, path))) {
+                found = true;
+                break;
+            }
+        }
+        if (found) {
+            ++insertAt;
+            return;
+        }
+        QuickRow row;
+        row.isThisPc = isThisPc;
+        row.builtIn = true;
+        row.path = isThisPc ? kThisPcPath : path;
+        row.label = label;
+        if (insertAt > static_cast<int>(m_quickRows.size()))
+            insertAt = static_cast<int>(m_quickRows.size());
+        m_quickRows.insert(m_quickRows.begin() + insertAt, std::move(row));
+        ++insertAt;
+    };
+
+    addIfMissing(true, std::wstring(), L"此电脑");
+    if (!docs.empty()) addIfMissing(false, docs, L"文档");
+    if (!desk.empty()) addIfMissing(false, desk, L"桌面");
+    if (!downs.empty()) addIfMissing(false, downs, L"下载");
+}
+
+void CMainWnd::BuildDefaultQuickRows()
+{
+    m_quickRows.clear();
+    EnsureDefaultQuickRows();
+}
+
+// Runtime rows for the 快速访问 list. The four built-in folders and the user's pins are one
+// ordered list, so a vertical drag can put any row anywhere and the order is persisted.
+void CMainWnd::RebuildLeftQuickRows()
+{
+    if (!m_pLeftQuickRows) return;
+    m_pLeftQuickRows->RemoveAll();
     const int iconPx = DpiScale(UiTokens::NavIconPx);
     const int rowH = DpiScale(UiTokens::NavRowH);
-    for (size_t i = 0; i < m_quickAccess.size(); ++i) {
-        const auto& entry = m_quickAccess[i];
+    for (size_t i = 0; i < m_quickRows.size(); ++i) {
+        const QuickRow& row = m_quickRows[i];
         auto* btn = new CButtonUI;
         CDuiString name;
-        name.Format(_T("fav_dyn_%d"), (int)i);
+        name.Format(_T("fav_row_%d"), static_cast<int>(i));
         btn->SetName(name);
-        btn->SetText(entry.displayName.c_str());
-        btn->SetUserData(entry.path.c_str());
+        btn->SetText(row.label.c_str());
+        btn->SetUserData(row.path.c_str());
         btn->SetFixedHeight(rowH);
         btn->SetAttribute(_T("align"), _T("left"));
         btn->SetAttribute(_T("valign"), _T("vcenter"));
@@ -692,20 +725,126 @@ void CMainWnd::RebuildLeftPinnedFavorites()
         btn->SetAttribute(_T("hotbkcolor"), UiTokens::ColorNavHover);
         btn->SetAttribute(_T("pushedbkcolor"), UiTokens::ColorNavSelected);
         btn->SetAttribute(_T("textcolor"), UiTokens::ColorTextPrimary);
+        btn->SetAttribute(_T("bordercolor"), UiTokens::ColorTransparent);
+        btn->SetAttribute(_T("bordersize"), _T("0"));
         btn->SetBorderRound({ DpiScale(UiTokens::RadiusControl), DpiScale(UiTokens::RadiusControl) });
-        std::wstring icon = GetShellIconBmp(entry.path, true, iconPx);
+        // The row also carries the path as its tooltip so a truncated label stays readable.
+        btn->SetToolTip(row.isThisPc ? L"此电脑" : row.path.c_str());
+
+        std::wstring icon;
+        if (row.isThisPc)
+            icon = GetStockIconBmp(SIID_DESKTOPPC, iconPx);
+        else
+            icon = GetShellIconBmp(row.path, true, iconPx);
         if (icon.empty()) icon = GetStockIconBmp(SIID_FOLDER, iconPx);
         ApplyQuickAccessRow(btn, icon);
-        m_pLeftFavPins->Add(btn);
+        m_pLeftQuickRows->Add(btn);
     }
-    const int minimum = UiTokens::LeftQuickMinH + static_cast<int>(m_quickAccess.size()) * UiTokens::NavRowH;
+
+    const int minimum = UiTokens::LeftQuickMinH
+        + static_cast<int>(m_quickRows.size()) * UiTokens::NavRowH;
     if (m_pLeftQuick)
         m_pLeftQuick->SetMinHeight(DpiScale(minimum));
     if (m_leftQuickDesignH < minimum)
         ApplyLeftNavSplitterHeight(minimum);
     UpdateLeftQuickAccessSpacing();
-    m_pLeftFavPins->NeedUpdate();
+    UpdateQuickRowHighlight();
+    m_pLeftQuickRows->NeedUpdate();
     if (m_pLeftQuick) m_pLeftQuick->NeedUpdate();
+}
+
+// Highlights the row that matches the folder being shown (This PC matches the Computer view).
+void CMainWnd::UpdateQuickRowHighlight()
+{
+    if (!m_pLeftQuickRows) return;
+    const int n = m_pLeftQuickRows->GetCount();
+    for (int i = 0; i < n && i < static_cast<int>(m_quickRows.size()); ++i) {
+        CControlUI* c = m_pLeftQuickRows->GetItemAt(i);
+        if (!c) continue;
+        const QuickRow& row = m_quickRows[i];
+        const bool active = row.isThisPc
+            ? IsThisPcPath(m_currentPath)
+            : PathEquals(m_currentPath, row.path);
+        c->SetAttribute(_T("bkcolor"),
+            active ? UiTokens::ColorNavSelected : UiTokens::ColorSurface);
+        c->SetAttribute(_T("textcolor"), UiTokens::ColorTextPrimary);
+        c->SetAttribute(_T("bordercolor"), UiTokens::ColorTransparent);
+        c->SetAttribute(_T("bordersize"), _T("0"));
+        c->Invalidate();
+    }
+}
+
+int CMainWnd::HitTestQuickRow(POINT ptClient) const
+{
+    if (!m_pLeftQuickRows || !m_pLeftQuickRows->IsVisible()) return -1;
+    const int n = m_pLeftQuickRows->GetCount();
+    for (int i = 0; i < n; ++i) {
+        CControlUI* c = m_pLeftQuickRows->GetItemAt(i);
+        if (!c || !c->IsVisible()) continue;
+        const RECT r = c->GetPos();
+        if (ptClient.x >= r.left && ptClient.x < r.right
+            && ptClient.y >= r.top && ptClient.y < r.bottom)
+            return i;
+    }
+    return -1;
+}
+
+void CMainWnd::ActivateQuickRow(int index)
+{
+    if (index < 0 || index >= static_cast<int>(m_quickRows.size())) return;
+    const QuickRow& row = m_quickRows[index];
+    OpenQuickAccessTab(row.isThisPc ? std::wstring(kThisPcPath) : row.path);
+}
+
+void CMainWnd::MoveQuickRow(int from, int to)
+{
+    if (from < 0 || to < 0
+        || from >= static_cast<int>(m_quickRows.size())
+        || to >= static_cast<int>(m_quickRows.size())
+        || from == to)
+        return;
+    QuickRow moved = m_quickRows[from];
+    m_quickRows.erase(m_quickRows.begin() + from);
+    m_quickRows.insert(m_quickRows.begin() + to, std::move(moved));
+    // Keep the drag anchored to the row under the cursor after the list is rebuilt.
+    m_quickDragIndex = to;
+    RebuildLeftQuickRows();
+}
+
+// Native Shell menu for a quick-access row (Explorer shows the same verbs for these folders),
+// with FastFile's own entries for the rows this app owns.
+void CMainWnd::ShowQuickRowContextMenu(int index, POINT ptScreen)
+{
+    if (index < 0 || index >= static_cast<int>(m_quickRows.size())) return;
+    const QuickRow row = m_quickRows[index];
+
+    if (row.isThisPc) {
+        // The Computer folder has its own native verbs (查看 / 排序 / 刷新 / 属性 …).
+        if (!ShowShellBackgroundContextMenu(kThisPcPath, ptScreen))
+            UpdateStatus(_T("此电脑没有可用的右键菜单"));
+        return;
+    }
+
+    std::vector<std::wstring> paths{ row.path };
+    std::vector<std::pair<UINT, std::wstring>> extra;
+    extra.emplace_back(static_cast<UINT>(kCmdQuickOpen), L"打开");
+    if (!row.builtIn)
+        extra.emplace_back(static_cast<UINT>(kCmdQuickUnpin), L"从快速访问中取消固定");
+
+    UINT picked = 0;
+    if (!ShowShellContextMenu(paths, ptScreen, &extra, &picked)) {
+        ClipboardItem item;
+        item.path = row.path;
+        item.isDir = true;
+        ShowFallbackContextMenu({ item }, ptScreen);
+        return;
+    }
+    if (picked == static_cast<UINT>(kCmdQuickOpen)) {
+        ActivateQuickRow(index);
+    } else if (picked == static_cast<UINT>(kCmdQuickUnpin)) {
+        if (UnpinQuickAccess(row.path))
+            UpdateStatus(_T("已从快速访问中取消固定"));
+    }
 }
 
 void CMainWnd::OnPinnedFavoriteClick(CControlUI* btn)

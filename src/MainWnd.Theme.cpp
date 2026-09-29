@@ -235,21 +235,8 @@ void CMainWnd::ApplyUiChromeTokens()
             h->SetAttribute(_T("padding"), pad);
         }
     }
-    for (LPCTSTR favName : {
-        _T("fav_thispc"), _T("fav_documents"), _T("fav_desktop"), _T("fav_downloads")
-    }) {
-        if (CControlUI* b = m_PaintManager.FindControl(favName)) {
-            b->SetFixedHeight(DpiScale(UiTokens::NavRowH));
-            b->SetAttribute(_T("font"), _T("4"));
-            b->SetAttribute(_T("bkcolor"), surf);
-            b->SetAttribute(_T("hotbkcolor"), UiTokens::ColorNavHover);
-            b->SetAttribute(_T("pushedbkcolor"), UiTokens::ColorNavSelected);
-            b->SetAttribute(_T("textcolor"), UiTokens::ColorTextPrimary);
-            CDuiString pad;
-            pad.Format(_T("%d,0,%d,0"), DpiScale(UiTokens::NavIconPad), DpiScale(UiTokens::NavIconPad));
-            b->SetAttribute(_T("padding"), pad);
-        }
-    }
+    // (the four built-in quick-access rows are created at runtime by RebuildLeftQuickRows,
+    // which applies the same row metrics through ApplyQuickAccessRow)
 
     // Phase 3: preview pane density + Surface header chrome; status bar density
     // (the rail owns the pane's left edge; preview_body holds the content inset)

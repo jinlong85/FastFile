@@ -117,11 +117,10 @@
           <VerticalLayout name="left_quick" height="160" minheight="160" maxheight="720" sepheight="9" sepimm="true" bkcolor="#FFF3F3F3" padding="8,16,2,16">
           <Label name="nav_hdr_quick" text="快速访问" font="0" textcolor="#FF5A5A5A" height="0" visible="false" />
           <Control height="0" visible="false" />
-          <Button name="fav_thispc" text="此电脑" height="28" align="left" textcolor="#FF1A1A1A" bkcolor="#FFF3F3F3" hotbkcolor="#FFE8F4FC" pushedbkcolor="#FFCCE8FF" padding="4,0,4,0" />
-          <Button name="fav_documents" text="文档" height="28" align="left" textcolor="#FF1A1A1A" bkcolor="#FFF3F3F3" hotbkcolor="#FFE8F4FC" pushedbkcolor="#FFCCE8FF" padding="4,0,4,0" />
-          <Button name="fav_desktop" text="桌面" height="28" align="left" textcolor="#FF1A1A1A" bkcolor="#FFF3F3F3" hotbkcolor="#FFE8F4FC" pushedbkcolor="#FFCCE8FF" padding="4,0,4,0" />
-          <Button name="fav_downloads" text="下载" height="28" align="left" textcolor="#FF1A1A1A" bkcolor="#FFF3F3F3" hotbkcolor="#FFE8F4FC" pushedbkcolor="#FFCCE8FF" padding="4,0,4,0" />
-          <VerticalLayout name="left_fav_pins" visible="false" />
+          <!-- Quick access rows are created at runtime (RebuildLeftQuickRows): the four
+               built-in folders plus the user's pins share one ordered list, so the rows can
+               be dragged into any order and the order survives in quick_access.txt. -->
+          <VerticalLayout name="left_quick_rows" />
           <Control name="left_nav_grip" height="0" visible="false" />
         </VerticalLayout>
           <!-- Inset hairline between the independent Quick Access and This PC areas.

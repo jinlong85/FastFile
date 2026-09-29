@@ -288,11 +288,19 @@ void CMainWnd::TidyMenuSeparators(HMENU hMenu)
 }
 
 bool CMainWnd::TrackPopupShellMenu(IContextMenu* pMenu, HMENU hMenu, POINT ptScreen,
-    UINT idCmdFirst, UINT idShellMax, bool appendHiddenToggle)
+    UINT idCmdFirst, UINT idShellMax, bool appendHiddenToggle,
+    const std::vector<std::pair<UINT, std::wstring>>* extraItems, UINT* outExtraCmd)
 {
     if (!pMenu || !hMenu)
         return false;
 
+    // FastFile entries appended below the Shell verbs (quick-access rows use this for
+    // 打开 / 从快速访问中取消固定). Their ids sit far above the Shell's range.
+    if (extraItems && !extraItems->empty()) {
+        ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+        for (const auto& item : *extraItems)
+            ::AppendMenuW(hMenu, MF_STRING, item.first, item.second.c_str());
+    }
     if (appendHiddenToggle) {
         ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
         UINT flags = MF_STRING | (m_showHidden ? MF_CHECKED : MF_UNCHECKED);
@@ -319,6 +327,15 @@ bool CMainWnd::TrackPopupShellMenu(IContextMenu* pMenu, HMENU hMenu, POINT ptScr
     if (pcm3) pcm3->Release();
     if (pcm2) pcm2->Release();
 
+    if (outExtraCmd) *outExtraCmd = 0;
+    if (extraItems) {
+        for (const auto& item : *extraItems) {
+            if (cmd != 0 && cmd == item.first) {
+                if (outExtraCmd) *outExtraCmd = item.first;
+                return true;
+            }
+        }
+    }
     if (cmd == kCmdToggleHidden) {
         ToggleShowHidden();
         return true;
@@ -552,7 +569,8 @@ void CMainWnd::ShowItemContextMenu(CControlUI* /*pItem*/, POINT ptScreen)
         ShowFallbackContextMenu(items, ptScreen);
 }
 
-bool CMainWnd::ShowShellContextMenu(const std::vector<std::wstring>& paths, POINT ptScreen)
+bool CMainWnd::ShowShellContextMenu(const std::vector<std::wstring>& paths, POINT ptScreen,
+    const std::vector<std::pair<UINT, std::wstring>>* extraItems, UINT* outExtraCmd)
 {
     if (paths.empty()) return false;
 
@@ -685,7 +703,8 @@ bool CMainWnd::ShowShellContextMenu(const std::vector<std::wstring>& paths, POIN
     PruneShellMenu(pMenu, hMenu, idCmdFirst, idShellMax, false);
     // Full Shell menu with owner-draw / cascaded submenus via IContextMenu2/3
     m_shellMenuPaths = paths;
-    TrackPopupShellMenu(pMenu, hMenu, ptScreen, idCmdFirst, idShellMax, false);
+    TrackPopupShellMenu(pMenu, hMenu, ptScreen, idCmdFirst, idShellMax, false,
+        extraItems, outExtraCmd);
     m_shellMenuPaths.clear();
 
     ::DestroyMenu(hMenu);
