@@ -901,6 +901,34 @@ Plowshares」→「太平年」；纯中文 / 纯英文 / 中文+数字不动。
 
 ## 当前顶部结构（自上而下）
 
+## 第十七批 未完成项（下次开工只需读这一节）
+
+现状：`HEAD` 干净可编译，Release 产物 `build\Release\FastFile.exe`，程序正常启动。
+已验收行为（不要回退）：标签最小宽 120 + 溢出横滚、单标签与收藏行连体且「+」紧贴最后
+可见标签（4 逻辑间距、不靠系统按钮）、树与路径同步、每目录视图模式、收藏芯片中文短名
+清洗、地址栏点空白进 Edit（带 `#FF0078D4` 焦点框）、「此电脑」不再双高亮、细滚动条
+（`ScrollBarW/SidePaneScrollBarW = 4` 逻辑）、磁盘条 6 逻辑圆角 + 20%/10% 橙红阈值。
+
+待办（按顺序，都不需要再问用户）：
+
+1. **平铺/图标视图键盘导航**（`MainWnd.Views.cpp`）：焦点在 `file_icons`（`TileLayout`）
+   时，方向键按当前列数移动选中，Enter/Space 打开。现有方向键逻辑只覆盖详细信息视图
+   （`DetailsMoveCursor`）；选中态分散在 `m_iconAnchor`、tile `GetTag()&0x100`、
+   `SetIconSelected` / `ApplyIconSelectionVisuals` 几处，改前先读这三处保证单击选中不坏。
+2. **不要动**：`CTabStripUI::RecalcRects()` 的"按标题实测宽度 + 夹紧 [120|148,200] + 溢出
+   横滚"是上一轮按用户纠正重做的，禁止退回 `avail/n` 均分。
+3. **滚动条 hover 加宽**（用户口径未定，默认跳过）：需新增
+   `CFluentScrollBarUI : CScrollBarUI`（`DoPaint` 画 6→12 物理圆角滑块，
+   `UIEVENT_MOUSEENTER/LEAVE` 切宽度），替换列表/树/预览三处滚动条类。会覆盖更早
+   "滚动条统一 12 设计像素"的要求，开工前确认。
+4. **命令栏图标重画**（`MainWnd.Icons.cpp` 的 `GetCommandIconBmp`）：10 条 `GraphicsPath`
+   改成系统那种实心/双色，保持图标 16 逻辑、热区 32×32 逻辑不变，改完必须逐张截图看重量。
+
+**回归截图脚本要点**（踩过坑）：`Start-Process` 起来的新进程会被单实例转发吃掉并立即退出，
+不要按新进程 PID 找窗口；直接枚举已运行实例的 `FastFile_MainWnd`（宽度 > 800）取 HWND。
+改宽前必须先 `ShowWindow(SW_RESTORE)` 并确认 `IsZoomed=false`（在最大化态 `SetWindowPos`
+会截到命令行）；抓屏前确认屏幕未锁。四张必测：还原 1 标签 / 还原 8 标签 / 最大化 / 还原后改宽。
+
 1. **标题行 = 标题栏**（`titlebar`，32px）：标签栏（自绘卡片）+“+” + 弹性空白 + 窗口按钮
 2. **收藏栏**（`favorites_bar`，26px，白底，与选中标签卡片连通）
 3. **地址栏**（`address_bar`，28px）：后退/前进/上级/刷新 + 路径（面包屑↔编辑）+ 搜索 + 含子目录
