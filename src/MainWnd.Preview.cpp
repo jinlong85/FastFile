@@ -566,6 +566,23 @@ void CMainWnd::SyncLayoutDependents()
             ReloadPreviewForWidth();
         }
     }
+
+    // The central viewport changes when either side pane is dragged.  Rebuild the
+    // small This PC drive collection only after its width has actually changed, so
+    // its responsive cards immediately reflow without needlessly refreshing normal
+    // folders or re-enumerating the file system.
+    if (m_pIconTiles && IsThisPcPath(m_currentPath) && m_viewMode == ViewMode::Tiles
+        && m_hasListingCache) {
+        const int width = static_cast<int>(m_pIconTiles->GetWidth());
+        const int threshold = DpiScale(8);
+        if (width > 8 && (m_thisPcTilesLayoutW <= 0
+            || ::abs(width - m_thisPcTilesLayoutW) >= threshold)) {
+            m_thisPcTilesLayoutW = width;
+            RebuildCurrentViewFromCache();
+        }
+    } else {
+        m_thisPcTilesLayoutW = 0;
+    }
 }
 
 void CMainWnd::ReloadPreviewForWidth()

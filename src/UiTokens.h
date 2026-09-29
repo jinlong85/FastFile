@@ -130,7 +130,7 @@ inline constexpr const wchar_t* ColorScrollThumb   = L"#FFC4C4C4";
 inline constexpr const wchar_t* ColorCloseHot      = L"#FFE81123";
 
 // ---- Phase 3: preview pane + status bar (Win11 Explorer density) ----
-constexpr int PreviewPaneW = 320;
+constexpr int PreviewPaneW = 344;
 constexpr int PreviewPad = 24;            // white details pane: give text an Explorer-like inset
 constexpr int PreviewRound = 0;
 constexpr int PreviewImageRound = 0;
@@ -141,7 +141,7 @@ constexpr int PreviewIconCompactH = 80;  // folders / generic: compact icon area
 constexpr int PreviewIconPx = 48;        // folder/generic icon design size
 constexpr int PreviewImageGap = 16;
 constexpr int PreviewMetaRowH = 22;
-constexpr int PreviewMetaLabelW = 76;
+constexpr int PreviewMetaLabelW = 84;
 constexpr int PreviewActionH = 34;
 constexpr int PreviewActionW = 96;
 constexpr int PreviewTextGap = SpaceMd;   // before text body

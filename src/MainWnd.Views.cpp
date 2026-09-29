@@ -389,6 +389,24 @@ void CMainWnd::GetViewMetrics(int& tileW, int& tileH, int& iconPx, int& childPad
     tileH = DpiScale(tileH);
     iconPx = DpiScale(iconPx);
     childPad = DpiScale(childPad);
+
+    // Drive cards are the one tile type whose content benefits from consuming the
+    // full central canvas.  A fixed 280px card left a large unused strip whenever
+    // the preview pane was wide.  Pick 1–4 columns from the live tile viewport and
+    // distribute the remaining width evenly, while retaining an Explorer-like gap.
+    if (IsThisPcPath(m_currentPath) && m_viewMode == ViewMode::Tiles && m_pIconTiles) {
+        const int viewportW = static_cast<int>(m_pIconTiles->GetWidth());
+        const int gap = DpiScale(18);
+        const int minCardW = DpiScale(250);
+        if (viewportW >= minCardW) {
+            int columns = viewportW / (minCardW + gap);
+            if (columns < 1) columns = 1;
+            if (columns > 4) columns = 4;
+            tileW = (viewportW - (columns - 1) * gap) / columns;
+            if (tileW < minCardW) tileW = minCardW;
+            childPad = gap;
+        }
+    }
     // maxLabel stays character count (not pixels)
 }
 

@@ -570,6 +570,7 @@ private:
     int m_leftQuickDesignH = UiTokens::LeftQuickDefaultH; // @96 DPI, persisted
     int m_leftPanelDesignW = 220;                         // sidebar width @96 DPI
     int m_previewPaneDesignW = UiTokens::PreviewPaneW;    // preview width @96 DPI
+    int m_thisPcTilesLayoutW = 0;                         // physical central viewport width
     int m_paneDragKind = 0;          // 0 = none, 1 = sidebar, 2 = preview
     int m_paneDragStartX = 0;
     int m_paneDragStartLeft = 0;
