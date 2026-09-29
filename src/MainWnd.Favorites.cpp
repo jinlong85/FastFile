@@ -297,8 +297,18 @@ bool CMainWnd::IsPreviewScrollBarHit(int clientX, int clientY) const
         return clientX >= r.left && clientX < r.right
             && clientY >= r.top && clientY < r.bottom;
     };
-    return contains(m_pPreviewBody->GetVerticalScrollBar())
-        || contains(m_pPreviewBody->GetHorizontalScrollBar());
+    if (contains(m_pPreviewBody->GetVerticalScrollBar())
+        || contains(m_pPreviewBody->GetHorizontalScrollBar()))
+        return true;
+
+    // When no content overflows, Preview.cpp reserves a pale rail of the same
+    // width. Treat that reserved rail as the same gesture surface so adjusting
+    // the preview never depends on whether a scrollbar happens to be visible.
+    const RECT body = m_pPreviewBody->GetPos();
+    const int railW = DpiScale(UiTokens::SidePaneScrollBarW);
+    return body.right > body.left && body.bottom > body.top
+        && clientX >= body.right - railW && clientX < body.right
+        && clientY >= body.top && clientY < body.bottom;
 }
 
 void CMainWnd::ApplyPaneDragWidth(int kind, int physicalWidth)

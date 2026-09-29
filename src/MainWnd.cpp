@@ -529,13 +529,18 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             ::SetCapture(m_hWnd);
             return 0;
         }
-        // The preview rail intentionally has a dual gesture: a normal vertical
-        // drag is left to DuiLib's scrollbar, while a horizontal drag resizes the
-        // preview pane.  Delay the decision until movement makes the intent clear.
+        // The preview rail intentionally owns both gestures. Delay the decision
+        // until movement makes the intended axis clear: vertical scrolls content,
+        // horizontal resizes the preview pane.
         if (IsPreviewScrollBarHit(px, py)) {
-            m_previewScrollResizePending = true;
+            m_previewRailGesture = 1;
             m_paneDragStartX = px;
             m_paneDragStartPreview = m_pPreviewPane ? m_pPreviewPane->GetFixedWidth() : 0;
+            m_previewRailLastY = py;
+            m_dragTracking = true;
+            m_dragStartPt = { px, py };
+            ::SetCapture(m_hWnd);
+            return 0;
         }
         m_dragTracking = true;
         m_dragStartPt.x = (short)LOWORD(lParam);
@@ -550,21 +555,30 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         ApplyPaneDragWidth(m_paneDragKind, w);
         return 0;
     }
-    if (uMsg == WM_MOUSEMOVE && m_previewScrollResizePending
+    if (uMsg == WM_MOUSEMOVE && m_previewRailGesture != 0
         && (wParam & MK_LBUTTON) != 0) {
         const int x = (short)LOWORD(lParam);
         const int y = (short)HIWORD(lParam);
-        const int dx = x - m_paneDragStartX;
-        const int dy = y - m_dragStartPt.y;
-        const int threshold = DpiScale(3);
-        if (::abs(dx) >= threshold || ::abs(dy) >= threshold) {
-            m_previewScrollResizePending = false;
+        if (m_previewRailGesture == 1) {
+            const int dx = x - m_paneDragStartX;
+            const int dy = y - m_dragStartPt.y;
+            const int threshold = DpiScale(3);
+            if (::abs(dx) < threshold && ::abs(dy) < threshold)
+                return 0;
             if (::abs(dx) > ::abs(dy)) {
+                m_previewRailGesture = 0;
                 m_paneDragKind = 2;
-                ::SetCapture(m_hWnd);
                 ApplyPaneDragWidth(2, m_paneDragStartPreview - dx);
                 return 0;
             }
+            m_previewRailGesture = 2;
+        }
+        if (m_previewRailGesture == 2 && m_pPreviewBody) {
+            SIZE scroll = m_pPreviewBody->GetScrollPos();
+            scroll.cy += y - m_previewRailLastY;
+            m_pPreviewBody->SetScrollPos(scroll);
+            m_previewRailLastY = y;
+            return 0;
         }
     }
     if (uMsg == WM_SETCURSOR && LOWORD(lParam) == HTCLIENT) {
@@ -575,7 +589,7 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         POINT pt = {};
         ::GetCursorPos(&pt);
         ::ScreenToClient(m_hWnd, &pt);
-        if (IsPreviewScrollBarHit(pt.x, pt.y)) {
+        if (m_previewRailGesture != 0 || IsPreviewScrollBarHit(pt.x, pt.y)) {
             ::SetCursor(::LoadCursor(nullptr, IDC_SIZEWE));
             return TRUE;
         }
@@ -586,16 +600,19 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     }
     if (uMsg == WM_LBUTTONUP && m_paneDragKind != 0) {
         m_paneDragKind = 0;
+        m_previewRailGesture = 0;
         ::ReleaseCapture();
         CapturePaneWidthsIfChanged();
         return 0;
     }
-    if (uMsg == WM_CAPTURECHANGED && m_paneDragKind != 0) {
-        m_paneDragKind = 0;
+    if (uMsg == WM_CAPTURECHANGED) {
+        if (m_paneDragKind != 0)
+            m_paneDragKind = 0;
+        m_previewRailGesture = 0;
     }
     if (uMsg == WM_LBUTTONUP || uMsg == WM_RBUTTONDOWN) {
         m_dragTracking = false;
-        m_previewScrollResizePending = false;
+        m_previewRailGesture = 0;
     }
     if (uMsg == WM_LBUTTONUP) {
         CaptureLeftNavSplitterIfChanged();

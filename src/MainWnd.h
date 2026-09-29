@@ -577,7 +577,9 @@ private:
     int m_paneDragStartX = 0;
     int m_paneDragStartLeft = 0;
     int m_paneDragStartPreview = 0;
-    bool m_previewScrollResizePending = false;
+    // 0 = idle, 1 = waiting for drag direction, 2 = vertical rail scrolling.
+    int m_previewRailGesture = 0;
+    int m_previewRailLastY = 0;
     std::vector<FavoriteItem> m_favorites;
     std::vector<FavoriteItem> m_quickAccess;
     std::vector<std::wstring> m_shellMenuPaths;

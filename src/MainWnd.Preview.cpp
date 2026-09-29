@@ -558,9 +558,18 @@ void CMainWnd::SyncLayoutDependents()
         const bool hasScrollBar = m_pPreviewBody && m_pPreviewBody->GetVerticalScrollBar()
             && m_pPreviewBody->GetVerticalScrollBar()->IsVisible();
         if (m_pPreviewBody) {
-            m_pPreviewBody->SetAttribute(_T("bordercolor"),
-                hasScrollBar ? _T("#00000000") : UiTokens::ColorBorder);
-            m_pPreviewBody->SetAttribute(_T("bordersize"), hasScrollBar ? _T("0") : _T("0,0,1,0"));
+            if (hasScrollBar) {
+                m_pPreviewBody->SetAttribute(_T("bordercolor"), _T("#00000000"));
+                m_pPreviewBody->SetAttribute(_T("bordersize"), _T("0"));
+            } else {
+                // Reserve a full-width pale rail rather than a one-pixel line. It
+                // is intentionally the same width as the left navigation scrollbar,
+                // so the preview edge does not visually jump when a thumb appears.
+                CDuiString rail;
+                rail.Format(_T("0,0,%d,0"), DpiScale(UiTokens::SidePaneScrollBarW));
+                m_pPreviewBody->SetAttribute(_T("bordercolor"), UiTokens::ColorScrollTrack);
+                m_pPreviewBody->SetAttribute(_T("bordersize"), rail.GetData());
+            }
         }
 
         const int w = static_cast<int>(m_pPreviewPane->GetWidth());
