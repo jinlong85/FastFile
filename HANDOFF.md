@@ -3,6 +3,24 @@
 更新日期：2026-09-29（Asia/Shanghai）
 
 > 2026-09-28：已纳入 Git 版本管理；原 8000 行单文件 `src\MainWnd.cpp` 已拆分为 14 个编译单元（见「源码结构」）。
+>
+> 2026-09-29：完成「第二批～第十批」共 9 轮修复/打磨（含安装程序、应用图标、右键菜单、崩溃修复）。
+> 面向使用者的版本记录见 [CHANGELOG.md](CHANGELOG.md)；下面的「开发日志」按批次保留完整细节。
+
+## 开发日志索引（2026-09-29）
+
+| 批次 | 提交 | 主题 |
+|---|---|---|
+| 第一批 | `864fc2c` | 图标/缩略图锯齿：按 DPI 选真实尺寸的系统图标列表 + GDI+ 高质量缩放 |
+| 第二批 | `506b31c` `453292b` | 驱动器磁贴自绘、面包屑自适应、列表视图竖排+自适应列宽、缩略图按长宽比、预览窗格可拖宽 |
+| 第三批 | `2934696` `320ccd8` | 平铺文字版式、侧栏/预览分隔条（含加宽热区+光标提示）、严格列排序、矩形进度条 |
+| 第四批 | `2b06599` | 三个视图 bug（图标模式驱动器版式 / 切换视图文字重叠 / 真实文件类型）+ **自包含安装程序** |
+| 第五批 | `46b64c1` | 关最后一个标签即退出、非详细信息视图文件夹在前、关闭耗时 14s→0.2s |
+| 第六批 | `973db58` | 应用图标（System Folder ico）、启动固定「此电脑」 |
+| 第七批 | `b8ea2bc` | **进入目录崩溃（DuiLib Invalidate 释放后使用）**：导航改为延迟派发；崩溃日志加调用栈；图标换 Plex hdd-windows |
+| 第八批 | `46d67ea` | 右键菜单清理：去掉旧版 PowerShell 动词、第三方「用 X 打开」、空子菜单 |
+| 第九批 | `fd1a154` | 驱动器右键改走原生 Shell 菜单；删项后多余分隔线 |
+| 第十批 | `61674ab` | 磁盘「属性」作用于选中路径（SHObjectProperties）；磁盘根绑定走桌面+完整路径 |
 
 ## 目标
 
@@ -54,9 +72,13 @@
 - 工具链：CMake + VS 2022 Build Tools，**Release x64**
 - 改 `main.xml` 后务必重建或确保 `build\Release\skin\` 与源 skin 同步，否则会「加载资源文件失败」或跑旧皮肤
 - 发布后建议：结束 `FastFile` 进程 → 清 `%TEMP%\FastFileIconCache` → 再启动 exe
-- 图标缓存版本：`_v7.png`（HICON → PNG 真透明）；改导出逻辑时升版本并清缓存
+- 图标缓存版本：`_v8.png`（HICON → PNG 真透明）；改导出逻辑时升版本并清缓存
+- 安装程序：`powershell -ExecutionPolicy Bypass -File installer\build_installer.ps1 -Version 1.0.6`
+  （只用系统自带的 .NET `csc.exe`，不需要 Inno/NSIS/WiX；产物在 `dist\`，`dist/` 已在 .gitignore）
+- 应用图标：`res\FastFile.ico` + `res\FastFile.rc`（资源 id 1）。**换图标后要 touch 一下 .ico**，
+  否则 MSBuild 认为 rc 不需要重编（`Copy-Item` 会保留源文件的旧时间戳）
 
-## 图标 / 缩略图渲染管线（2026-09-29 修锯齿）
+## 第一批：图标 / 缩略图渲染管线（修锯齿）
 
 症状：任何视图的列表图标、以及右侧预览的缩略图，边缘都有锯齿 / 发糊。
 结论：**不是底层（Shell 图标本身清晰），是取图与缩放的渲染问题**。三处原因：
@@ -80,7 +102,7 @@
 另外 `PreviewIconCompactH`(80 设计) 与 `PreviewIconPx`(48 设计) 现在只作下限，
 预览小图标实际按 120 物理像素取图。
 
-## 2026-09-29 第二批：视图/布局问题（6 项）
+## 第二批：视图/布局问题（6 项）
 
 ### 1. 此电脑的驱动器磁贴（图1）
 `DriveTileButtonUI` 改为自绘：第一行盘名、中间胶囊形占用条、第三行「X 可用，共 Y」。
@@ -129,7 +151,7 @@ DuiLib 的 `CTileLayoutUI` 增加 `columnfirst` 属性（本项目对 third_part
   图片/文件夹图标/视频帧都按新宽度重取，不会拉伸模糊或穿模）。
   `m_previewFromSelection` 用来区分「选中项的预览」和「当前目录概览」。
 
-## 2026-09-29 第三批：磁贴文字 / 可拖动分隔条 / 排序 / 进度条
+## 第三批：磁贴文字 / 可拖动分隔条 / 排序 / 进度条
 
 ### 平铺视图的文件名
 磁贴改成 230×72（设计）：文件名最多两行，大小单独一行，不再被裁掉。
@@ -183,7 +205,7 @@ DuiLib 的 `CTileLayoutUI` 增加 `columnfirst` 属性（本项目对 third_part
 高度改成 UI 字体的行高（`GetTextMetrics` 实测，约等于文字高度），形状改成矩形
 （`FillRect`，不再 RoundRect）。
 
-## 2026-09-29 第四批：三个视图 bug + 安装程序
+## 第四批：三个视图 bug + 安装程序
 
 ### 超大/大/中图标下的“此电脑”
 驱动器磁贴改成自绘文字后，图标视图里也套用了“平铺”的版式（文字在图标右侧 + 进度条 +
@@ -225,7 +247,7 @@ powershell -ExecutionPolicy Bypass -File installer\build_installer.ps1
 所以最终改成 csc 方案；`install.cmd/install.ps1/uninstall.ps1` 是那版残留，留着参考。
 
 
-## 2026-09-29 第五批：标签关闭 / 视图排序分组 / 关闭速度
+## 第五批：标签关闭 / 视图排序分组 / 关闭速度
 
 ### 关掉最后一个标签 = 关闭程序
 `CloseTab()` 原来在只剩一个标签时只提示「至少保留一个标签」。现在改为
@@ -261,7 +283,7 @@ if (m_viewMode != ViewMode::Details && a.isDir != b.isDir)
 `DisplayVersion`、安装完成提示三处永远一致。
 
 
-## 2026-09-29 第六批：应用图标 + 固定从“此电脑”启动
+## 第六批：应用图标 + 固定从“此电脑”启动
 
 ### 应用图标
 1. `res\FastFile.ico`（用户提供的 System Folder 图标，内含 16/32/48/128/256 多尺寸）；
@@ -287,7 +309,7 @@ if (m_viewMode != ViewMode::Details && a.isDir != b.isDir)
 不再回到上次的目录；状态栏提示也从「已恢复上次会话」改成「已就绪」。
 
 
-## 2026-09-29 第七批：进入目录时的崩溃（UAF）+ 换图标
+## 第七批：进入目录时的崩溃（UAF）+ 换图标
 
 ### 崩溃：`CControlUI::Invalidate` 访问违例（0xC0000005）
 用户报「进入 `C:\Users\JINLONG\图片\GIRLS\刘亦菲`（233 项）时崩溃」。崩溃日志
@@ -325,7 +347,7 @@ if (m_viewMode != ViewMode::Details && a.isDir != b.isDir)
 `build\Release\FastFile.rc.res` 再构建。
 
 
-## 2026-09-29 第八批：右键菜单（去掉 PowerShell / “用 X 打开” / 空子菜单）
+## 第八批：右键菜单（去掉 PowerShell / “用 X 打开” / 空子菜单）
 
 ### 菜单来源（用户要求核实）
 文件夹空白处右键走的就是 **Windows 原生 Shell 接口**：
@@ -366,7 +388,7 @@ SHGetDesktopFolder → IShellFolder::BindToObject
 那个隐藏的 Shell 视图而不是 FastFile 自己）。
 
 
-## 2026-09-29 第九批：驱动器右键走原生菜单 + 分隔线合并
+## 第九批：驱动器右键走原生菜单 + 分隔线合并
 
 ### 磁盘根目录右键没有走 Shell
 症状：在「此电脑」里右键某个盘（如 Ventoy (I:)），弹出的是 FastFile 自己的兜底菜单
@@ -394,7 +416,7 @@ Explorer 把驱动器交给「此电脑」文件夹处理，桌面的 `ParseDisp
 `TidyMenuSeparators(HMENU)`，`PruneShellMenu()` 末尾调用一次，**插入完自己的项之后再调用一次**。
 
 
-## 2026-09-29 第十批：磁盘属性弹成“系统关于”
+## 第十批：磁盘属性弹成“系统关于”
 
 ### 已确证的结论
 在「此电脑」右键某个盘（Ventoy (I:)）时，我们**确实**拿到并显示了 Shell 的原生磁盘菜单。
@@ -442,11 +464,14 @@ SHObjectProperties(m_hWnd, SHOP_FILEPATH, path, nullptr);
 - **复制与移动共用同一套后台任务引擎**：状态栏进度（项数/字节/百分比/当前文件）+ 取消按钮；
   同盘移动走原子改名（瞬时），跨盘移动走"带进度复制 + 删源"，不再弹系统 SHFileOperation 对话框
 - **撤销（Ctrl+Z，也挂在「更多」菜单里）**：新建文件夹、移动（整批一次还原）、直达重命名路径
-- Shell 右键（IContextMenu2/3）、卷标、隐藏项开关
-- 左树 + 快速访问、多标签与路径记忆、前进后退
-- 六种视图、异步缩略图、拖放、递归搜索
-- 右侧预览（元数据 + 图/视频帧）；空选时尽量空白
-- DPI PerMonitorV2；`UiTokens.h` 设计令牌
+- Shell 右键全部走原生接口（选中项 / 文件夹背景 / **磁盘**三套菜单）+ 隐藏项开关；
+  背景菜单额外补 查看 / 排序方式 / 刷新 / 粘贴，并屏蔽 Shell 里多余或空的项
+- 左树 + 快速访问、多标签、前进后退；**启动固定进入「此电脑」**（不再恢复上次目录）
+- 六种视图、异步缩略图（按长宽比自适应）、拖放、递归搜索
+- 右侧预览（元数据 + 图/视频帧），窗格宽度可拖拽，面包屑/缩略图按宽度自适应
+- 排序：图标/列表/平铺视图文件夹在前；详细信息视图严格按列排序
+- DPI PerMonitorV2；`UiTokens.h` 设计令牌；应用图标见 `res\`
+- 会话/设置的持久化、每文件夹视图记忆；安装程序见 `installer\`（当前 1.0.6）
 - 详细信息：名称列 Shell 小图标（`bkimage`，勿用 `CControlUI`+`foreimage`）
 - 图标：PNG alpha；文件夹/盘符/工具栏用 HICON，勿对文件夹用 `SIIGBF_ICONONLY`（会黑框）
 
@@ -519,6 +544,19 @@ SHObjectProperties(m_hWnd, SHOP_FILEPATH, path, nullptr);
     否则列表视图会退回横向排布
 19. **DuiLib 的 splitter 只有在控件本身是固定宽/高时才有效**（拖动改的是 `m_cxyFixed`），
     且 `sepwidth/sepheight` 为负表示热区在左侧/上部
+20. **`small`/`near`/`far` 是 Windows 头文件里的宏**（`rpcndr.h` 里 `#define small char`）。
+    局部变量叫 `small` 会变成 `HFONT char = ...` 这种诡异编译错误（本项目踩过两次），
+    命名请用 `smallIcon` 之类
+21. **导航会销毁正在派发点击事件的控件**：`NavigateTo()` 必须走延迟派发
+    （`kMsgDeferredNav` → `NavigateToNow()`）。直接在按钮通知里 `RemoveAll()` 会让
+    DuiLib 之后对已释放控件调用 `Invalidate()`（0xC0000005，崩在
+    `CControlUI::Invalidate` 的第一条虚调用上）
+22. **原生菜单里的 offset 动词（含“属性”）由菜单绑定在哪个文件夹对象上决定**：磁盘/
+    特殊项不要用 `InvokeCommand(idCmdFirst+n)`，用 `SHObjectProperties(SHOP_FILEPATH, 路径)`
+    之类直接指向对象的 API 更稳
+23. **Shell 菜单要先转储再决定怎么改**：`GetMenuStringW` 拿文本、`GetCommandString(GCS_VERBW)`
+    拿动词。文件夹对象菜单（`CreateViewObject`）与视图菜单（`SHCreateShellFolderView` +
+    `SVGIO_BACKGROUND`）内容不同，前者缺少查看/排序/刷新，得自己补
 
 ## 崩溃排查流程
 
@@ -553,7 +591,17 @@ dumpbin /DISASM /NOBYTES build\Release\FastFile.exe > disasm.txt
 - 继续对齐资源管理器 / 360 密度与图标风格（自有 Shell 图标）
 - 预览窗格继续打磨（视频首帧质量取决于 Shell 缩略图缓存；可考虑自绘取帧）
 - 设置面板（用户明确推迟：等程序成熟后再做"取代资源管理器"）
-- 安装包 / 发布流程
+- 安装程序已完成（`installer\`，当前版本 1.0.6）；后续可做自动更新 / 代码签名（现在 exe 无签名，
+  首次运行可能触发 SmartScreen）
+- 右键菜单的“屏蔽名单”目前是硬编码（PowerShell 动词 + “用 X 打开”），若用户想自定义，
+  可放到设置面板里
+
+## 验收口径（这批之后形成习惯）
+
+- 每个界面改动都用 `PrintWindow` 截图 + 1:1 裁剪对比给用户看，而不是只说“改好了”
+- 涉及原生 Shell 行为的（右键菜单等），先把 Shell 给的数据转储出来对比，再决定怎么改
+- 崩溃一律先看 `%LOCALAPPDATA%\FastFile\last_crash.txt`（现在是异常码 + 模块内 RVA + 调用栈），
+  再配合 `build\Release\FastFile.map` 反查函数
 
 ## 给新 AI 的工作方式
 
