@@ -487,6 +487,7 @@ private:
     int PaneDividerBandPx() const;
     int HitTestPaneDivider(int clientX, int clientY) const;
     bool IsPaneScrollBarHit(int clientX, int clientY) const;
+    bool IsPreviewScrollBarHit(int clientX, int clientY) const;
     void ApplyPaneDragWidth(int kind, int physicalWidth);
 
     // Drag-drop
@@ -576,6 +577,7 @@ private:
     int m_paneDragStartX = 0;
     int m_paneDragStartLeft = 0;
     int m_paneDragStartPreview = 0;
+    bool m_previewScrollResizePending = false;
     std::vector<FavoriteItem> m_favorites;
     std::vector<FavoriteItem> m_quickAccess;
     std::vector<std::wstring> m_shellMenuPaths;

@@ -285,8 +285,20 @@ bool CMainWnd::IsPaneScrollBarHit(int clientX, int clientY) const
     if (m_pDirTree && (contains(m_pDirTree->GetVerticalScrollBar())
         || contains(m_pDirTree->GetHorizontalScrollBar())))
         return true;
-    return m_pPreviewBody && (contains(m_pPreviewBody->GetVerticalScrollBar())
-        || contains(m_pPreviewBody->GetHorizontalScrollBar()));
+    return IsPreviewScrollBarHit(clientX, clientY);
+}
+
+bool CMainWnd::IsPreviewScrollBarHit(int clientX, int clientY) const
+{
+    if (!m_pPreviewBody) return false;
+    const auto contains = [clientX, clientY](CScrollBarUI* bar) {
+        if (!bar || !bar->IsVisible()) return false;
+        const RECT r = bar->GetPos();
+        return clientX >= r.left && clientX < r.right
+            && clientY >= r.top && clientY < r.bottom;
+    };
+    return contains(m_pPreviewBody->GetVerticalScrollBar())
+        || contains(m_pPreviewBody->GetHorizontalScrollBar());
 }
 
 void CMainWnd::ApplyPaneDragWidth(int kind, int physicalWidth)

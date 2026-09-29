@@ -529,6 +529,14 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             ::SetCapture(m_hWnd);
             return 0;
         }
+        // The preview rail intentionally has a dual gesture: a normal vertical
+        // drag is left to DuiLib's scrollbar, while a horizontal drag resizes the
+        // preview pane.  Delay the decision until movement makes the intent clear.
+        if (IsPreviewScrollBarHit(px, py)) {
+            m_previewScrollResizePending = true;
+            m_paneDragStartX = px;
+            m_paneDragStartPreview = m_pPreviewPane ? m_pPreviewPane->GetFixedWidth() : 0;
+        }
         m_dragTracking = true;
         m_dragStartPt.x = (short)LOWORD(lParam);
         m_dragStartPt.y = (short)HIWORD(lParam);
@@ -542,6 +550,23 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         ApplyPaneDragWidth(m_paneDragKind, w);
         return 0;
     }
+    if (uMsg == WM_MOUSEMOVE && m_previewScrollResizePending
+        && (wParam & MK_LBUTTON) != 0) {
+        const int x = (short)LOWORD(lParam);
+        const int y = (short)HIWORD(lParam);
+        const int dx = x - m_paneDragStartX;
+        const int dy = y - m_dragStartPt.y;
+        const int threshold = DpiScale(3);
+        if (::abs(dx) >= threshold || ::abs(dy) >= threshold) {
+            m_previewScrollResizePending = false;
+            if (::abs(dx) > ::abs(dy)) {
+                m_paneDragKind = 2;
+                ::SetCapture(m_hWnd);
+                ApplyPaneDragWidth(2, m_paneDragStartPreview - dx);
+                return 0;
+            }
+        }
+    }
     if (uMsg == WM_SETCURSOR && LOWORD(lParam) == HTCLIENT) {
         if (m_paneDragKind != 0) {
             ::SetCursor(::LoadCursor(nullptr, IDC_SIZEWE));
@@ -550,6 +575,10 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         POINT pt = {};
         ::GetCursorPos(&pt);
         ::ScreenToClient(m_hWnd, &pt);
+        if (IsPreviewScrollBarHit(pt.x, pt.y)) {
+            ::SetCursor(::LoadCursor(nullptr, IDC_SIZEWE));
+            return TRUE;
+        }
         if (HitTestPaneDivider(pt.x, pt.y) != 0) {
             ::SetCursor(::LoadCursor(nullptr, IDC_SIZEWE));
             return TRUE;
@@ -566,6 +595,7 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     }
     if (uMsg == WM_LBUTTONUP || uMsg == WM_RBUTTONDOWN) {
         m_dragTracking = false;
+        m_previewScrollResizePending = false;
     }
     if (uMsg == WM_LBUTTONUP) {
         CaptureLeftNavSplitterIfChanged();
