@@ -57,7 +57,12 @@ void CMainWnd::StyleTreeNode(CTreeNodeUI* node, const std::wstring& title, bool 
         int level = 0;
         for (CTreeNodeUI* p = node->GetParentNode(); p; p = p->GetParentNode())
             ++level;
-        if (level > 0) {
+        if (level == 0) {
+            // "此电脑" is a group header, not a peer of the drives: minimal indent and no
+            // selection highlight (see SyncTreeToPath).
+            dotted->SetFixedWidth(DpiScale(2));
+            dotted->SetVisible(true);
+        } else {
             dotted->SetFixedWidth(DpiScale(2 + level * UiTokens::TreeIndent));
             dotted->SetVisible(true);
         }
@@ -299,7 +304,17 @@ void CMainWnd::SyncTreeToPath(const std::wstring& path)
         CTreeNodeUI* root = FindTreeNodeByPath(nullptr, kThisPcPath);
         if (root) {
             ExpandTreeNode(root, false);
-            root->Select(true);
+            // The tree root is a group header: the quick-access row owns the "This PC"
+            // selection, so the root never paints a selected background (double highlight).
+            root->Select(false);
+        }
+        // Entering This PC: show the drive list from the top.
+        if (m_pDirTree) {
+            SIZE scroll = m_pDirTree->GetScrollPos();
+            if (scroll.cy != 0) {
+                scroll.cy = 0;
+                m_pDirTree->SetScrollPos(scroll);
+            }
         }
         m_syncingTree = false;
         return;

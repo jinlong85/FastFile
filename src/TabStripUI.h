@@ -80,6 +80,7 @@ private:
         int  iconPx = 16;
         RECT body = {};
         RECT close = {};
+        int  singleWidth = 0;  // non-zero when this is the only tab (card spans the strip)
         DWORD born = 0;        // tick of creation (slide-in)
     };
 

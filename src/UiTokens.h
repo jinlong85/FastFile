@@ -64,10 +64,10 @@ constexpr int FavLabelBaselineLift = 4; // design px to raise the CJK "★ 收�
                                         // Latin baseline of the chips beside it
 constexpr int AddressBarH = 36;       // Explorer address row
 constexpr int FieldRound = 4;         // path / search field corner radius (Explorer)
-constexpr int FieldH = 28;             // path / search field height (centred in the address row)
+constexpr int FieldH = 32;             // path / search field height (centred in the address row)
 constexpr int AddressBarPadY = 4;
-constexpr int SearchBoxH = 28;   // matches the path field
-constexpr int SearchBoxW = 220;        // search box width (design)
+constexpr int SearchBoxH = 32;   // matches the path field
+constexpr int SearchBoxW = 260;        // search box width (design), never stretched
 constexpr int SearchChkW = 100;        // ☐ 含子目录
 // One scrollbar thickness for the whole window: the file views sit right next to the
 // preview rail (and the rail sits next to the file list), so a thinner list bar made the
@@ -152,7 +152,7 @@ inline constexpr const wchar_t* ColorTabActiveHot  = L"#FFF7F7F7";
 inline constexpr const wchar_t* ColorTabActiveBorder = L"#FFE5E5E5";
 inline constexpr const wchar_t* ColorChromeDivider = L"#FFDCDCDC";  // band separators
 inline constexpr const wchar_t* ColorFieldBg       = L"#FFFFFFFF";  // path / search field
-inline constexpr const wchar_t* ColorFieldBorder   = L"#FFD6D6D6";
+inline constexpr const wchar_t* ColorFieldBorder   = L"#FFE5E5E5";
 inline constexpr const wchar_t* ColorTransparent   = L"#00FFFFFF";
 inline constexpr const wchar_t* ColorDanger        = L"#FFB91C1C";
 inline constexpr const wchar_t* ColorDangerHover   = L"#FFFEE2E2";
@@ -164,7 +164,7 @@ inline constexpr const wchar_t* ColorScrollThumb   = L"#FFC4C4C4";
 inline constexpr const wchar_t* ColorCloseHot      = L"#FFE81123";
 
 // ---- Phase 3: preview pane + status bar (Win11 Explorer density) ----
-constexpr int PreviewPaneW = 344;
+constexpr int PreviewPaneW = 280;         // Fluent pass: details pane stays ~1/5 of the window
 constexpr int PreviewPad = 24;            // white details pane: give text an Explorer-like inset
 constexpr int PreviewRound = 0;
 constexpr int PreviewImageRound = 0;

@@ -602,11 +602,20 @@ void CMainWnd::SetSearchPlaceholder(bool show)
     if (!m_pSearchEdit) return;
     m_searchPlaceholder = show;
     if (show) {
-        m_pSearchEdit->SetText(L"搜索");
+        // ExplPrer names the scope: "搜索此电脑" on This PC, "搜索 <文件夹名>" inside a folder.
+        std::wstring tip = L"搜索";
+        if (IsThisPcPath(m_currentPath)) {
+            tip = L"搜索此电脑";
+        } else if (!m_currentPath.empty()) {
+            std::wstring leaf = GetLeafName(m_currentPath);
+            if (!leaf.empty()) tip = L"搜索 " + leaf;
+        }
+        m_pSearchEdit->SetText(tip.c_str());
         m_pSearchEdit->SetAttribute(_T("textcolor"), _T("#FFB0B0B0"));
     } else {
         // Clear placeholder glyph; keep any real typed text.
-        if (std::wstring(m_pSearchEdit->GetText().GetData()) == L"搜索")
+        const std::wstring cur = m_pSearchEdit->GetText().GetData();
+        if (cur == L"搜索" || cur.compare(0, 3, L"搜索 ") == 0 || cur == L"搜索此电脑")
             m_pSearchEdit->SetText(_T(""));
         m_pSearchEdit->SetAttribute(_T("textcolor"), UiTokens::ColorTextPrimary);
     }

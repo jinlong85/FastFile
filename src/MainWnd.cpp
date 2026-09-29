@@ -623,6 +623,18 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             }
         }
     }
+    if (uMsg == WM_MOUSEWHEEL && m_pFavoritesBar && m_pFavoritesBar->IsVisible()) {
+        // WM_MOUSEWHEEL carries screen coordinates.
+        POINT sp = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
+        POINT mp = sp;
+        ::ScreenToClient(m_hWnd, &mp);
+        const RECT fav = m_pFavoritesBar->GetPos();
+        if (::PtInRect(&fav, mp)) {
+            const int delta = (short)HIWORD(wParam);
+            ScrollFavoritesBy(delta > 0 ? -DpiScale(60) : DpiScale(60));
+            return 0;
+        }
+    }
     if (uMsg == WM_LBUTTONDOWN && !m_inDoDragDrop) {
         // Pane dividers own a generous grab band that straddles the divider line: the
         // cursor turns into a left/right arrow there and the press starts a drag.

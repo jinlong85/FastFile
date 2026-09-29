@@ -54,14 +54,14 @@
       <Button name="btn_up" text="" width="32" height="32" tooltip="上级" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
       <Button name="btn_refresh" text="" width="32" height="32" tooltip="刷新" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
       <Control name="gap_address_nav" width="4" />
-      <HorizontalLayout name="path_host" height="28" bkcolor="#FFFFFFFF" bordercolor="#33000000" bordersize="1" borderround="4,4" padding="6,0,6,0" childvalign="vcenter">
+      <HorizontalLayout name="path_host" height="32" bkcolor="#FFFFFFFF" bordercolor="#FFE5E5E5" bordersize="1" borderround="4,4" padding="6,0,6,0" childvalign="vcenter">
         <HorizontalLayout name="breadcrumb" childpadding="0" childvalign="vcenter" />
         <HorizontalLayout name="address_edit_host" visible="false" padding="4,0,4,0" childvalign="vcenter">
           <Edit name="edit_address" text="" textcolor="#FF1A1A1A" nativebkcolor="#FFFFFFFF" bkcolor="#FFFFFFFF" tipvalue="地址栏 · 输入路径后回车跳转" padding="0,0,0,0" />
         </HorizontalLayout>
       </HorizontalLayout>
       <Control width="4" />
-      <HorizontalLayout name="search_box" width="220" height="28" bkcolor="#FFFFFFFF" bordercolor="#33000000" bordersize="1" borderround="4,4" padding="6,0,6,0" childvalign="vcenter" tooltip="输入即筛选；勾选「含子目录」后按回车开始递归搜索">
+      <HorizontalLayout name="search_box" width="260" height="32" bkcolor="#FFFFFFFF" bordercolor="#FFE5E5E5" bordersize="1" borderround="4,4" padding="6,0,6,0" childvalign="vcenter" tooltip="输入即筛选；勾选「含子目录」后按回车开始递归搜索">
         <Edit name="edit_search" text="" textcolor="#FFB0B0B0" nativebkcolor="#FFFFFFFF" bkcolor="#FFFFFFFF" tipvalue="搜索" padding="0,0,0,0" />
       </HorizontalLayout>
       <Option name="chk_recursive" text="☐ 含子目录" width="100" height="28" font="0" textcolor="#FF5A5A5A" selected="false" align="left" valign="vcenter" textpadding="4,0,4,0" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" selectedbkcolor="#00FFFFFF" padding="6,0,0,0" tooltip="在当前文件夹及子文件夹中搜索" />

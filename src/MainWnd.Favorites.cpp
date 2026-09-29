@@ -771,28 +771,42 @@ void CMainWnd::RefitFavoritesChips()
     const RECT bar = m_pFavoritesBar->GetPos();
     const int barW = static_cast<int>(bar.right - bar.left);
     if (barW <= DpiScale(UiTokens::FavLabelW) + DpiScale(24)) return;   // layout not ready
-    if (barW == m_favBarFitW) return;
-    m_favBarFitW = barW;
 
-    const int chipGap = DpiScale(UiTokens::FavChipGap);
-    const int minChipW = DpiScale(72);
-    int availW = barW - DpiScale(8) * 2 - DpiScale(UiTokens::FavLabelW);
-    if (availW < minChipW) availW = minChipW;
-    const int count = static_cast<int>(m_favChipNatural.size());
-    int per = (availW - chipGap * (count - 1)) / count;
-    if (per < minChipW) per = minChipW;
-
+    // Content width, never an equal split: a chip is as wide as its own label needs
+    // (72..168 design px). When the row runs out of space the strip scrolls instead of
+    // chopping every name down to two glyphs.
+    const int availW = (std::max)(DpiScale(72),
+        barW - DpiScale(8) * 2 - DpiScale(UiTokens::FavLabelW));
     int total = 0;
-    for (int i = 0; i < count; ++i) {
-        int w = m_favChipNatural[i];
-        if (w > per) w = per;
-        if (CControlUI* c = m_pFavoritesStrip->GetItemAt(i))
-            c->SetFixedWidth(w);
-        total += w;
+    for (int w : m_favChipNatural) total += w;
+    total += DpiScale(UiTokens::FavChipGap) * (static_cast<int>(m_favChipNatural.size()) - 1);
+
+    const int maxScroll = (std::max)(0, total - availW);
+    if (m_favScrollX > maxScroll) m_favScrollX = maxScroll;
+    if (m_favScrollX < 0) m_favScrollX = 0;
+
+    if (barW != m_favBarFitW || m_favScrollX != m_favScrollApplied) {
+        m_favBarFitW = barW;
+        m_favScrollApplied = m_favScrollX;
+        // Negative inset shifts the chips left inside the clipped row - DuiLib does not offer
+        // a scrollable horizontal container here, and this keeps every chip at its own width.
+        CDuiString inset;
+        inset.Format(_T("%d,0,0,0"), -m_favScrollX);
+        m_pFavoritesStrip->SetAttribute(_T("inset"), inset);
+        m_pFavoritesStrip->SetFixedWidth((std::max)(DpiScale(1), total));
+        m_pFavoritesStrip->NeedUpdate();
+        if (m_pFavoritesBar) m_pFavoritesBar->NeedUpdate();
     }
-    m_pFavoritesStrip->SetFixedWidth((std::max)(DpiScale(1), total));
-    m_pFavoritesStrip->NeedUpdate();
-    if (m_pFavoritesBar) m_pFavoritesBar->NeedUpdate();
+}
+
+// Wheel over the favourites row scrolls the chips horizontally (Explorer scrolls the strip).
+void CMainWnd::ScrollFavoritesBy(int dx)
+{
+    if (m_favChipNatural.empty()) return;
+    m_favScrollX += dx;
+    RefitFavoritesChips();
+    m_favScrollApplied = -1;          // force the re-apply even if the value clamped back
+    RefitFavoritesChips();
 }
 
 void CMainWnd::EnsureDefaultQuickRows()

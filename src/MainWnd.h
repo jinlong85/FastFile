@@ -176,6 +176,7 @@ private:
     void SaveFavorites() const;
     void RebuildFavoritesBar();
     void RefitFavoritesChips();          // squeeze chips into the favourites row width
+    void ScrollFavoritesBy(int dx);      // wheel over the favourites row
     bool PinFavorite(const std::wstring& path);
     bool UnpinFavorite(const std::wstring& path);
     bool IsFavoritePinned(const std::wstring& path) const;
@@ -630,6 +631,8 @@ private:
     CHorizontalLayoutUI* m_pFavoritesBar = nullptr;
     std::vector<int> m_favChipNatural;   // natural chip widths (design px, physical)
     int m_favBarFitW = 0;                // row width the chips were last fitted to
+    int m_favScrollX = 0;                // horizontal chip scroll (overflow)
+    int m_favScrollApplied = -1;
     CHorizontalLayoutUI* m_pFavoritesStrip = nullptr;
     CVerticalLayoutUI* m_pLeftQuickRows = nullptr;   // runtime rows (built-ins + pins)
     CVerticalLayoutUI* m_pLeftQuick = nullptr;
