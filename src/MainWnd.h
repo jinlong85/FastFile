@@ -479,6 +479,7 @@ private:
     void SaveLeftNavSplitter() const;
     void ApplyLeftNavSplitterHeight(int designHeight);
     void CaptureLeftNavSplitterIfChanged();
+    void UpdateLeftQuickAccessSpacing();
     // Sidebar / preview pane widths (design units, persisted in left_nav.ini)
     void ApplyPaneWidths(int leftDesignW, int previewDesignW);
     void CapturePaneWidthsIfChanged();

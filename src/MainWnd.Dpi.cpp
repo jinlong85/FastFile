@@ -169,6 +169,7 @@ void CMainWnd::ApplyDpiScaledChrome()
         m_pLeftQuick->SetMaxHeight(DpiScale(720));
         if (m_leftQuickDesignH > 0)
             m_pLeftQuick->SetFixedHeight(DpiScale(m_leftQuickDesignH));
+        UpdateLeftQuickAccessSpacing();
     }
     ScaleNamedFixed(m_PaintManager, _T("fav_bar_label"), UiTokens::FavLabelW, 0, m_dpi);
     ScaleNamedFixed(m_PaintManager, _T("fav_bar_hint"), 180, 0, m_dpi);

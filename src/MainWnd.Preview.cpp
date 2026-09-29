@@ -549,6 +549,9 @@ void CMainWnd::SyncLayoutDependents()
         }
     }
     if (m_pPreviewPane && m_previewVisible && m_pPreviewPane->IsVisible()) {
+        // Reapply the shared side-pane rail after DuiLib lays out the preview body.
+        // This keeps its track and thumb exactly as wide as the navigation scrollbar.
+        StyleSidePaneScrollBars(m_pPreviewBody);
         // When content does not need to scroll, retain a quiet hairline precisely where
         // preview_body's vertical scrollbar would appear (inside the pane padding).
         // A visible scrollbar already provides that edge.

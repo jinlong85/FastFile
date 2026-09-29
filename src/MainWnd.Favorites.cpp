@@ -115,8 +115,35 @@ void CMainWnd::ApplyLeftNavSplitterHeight(int designHeight)
         m_pLeftQuick->SetMinHeight(DpiScale(UiTokens::LeftQuickMinH));
         m_pLeftQuick->SetMaxHeight(DpiScale(720));
         m_pLeftQuick->SetFixedHeight(DpiScale(designHeight));
+        UpdateLeftQuickAccessSpacing();
         m_pLeftQuick->NeedParentUpdate();
     }
+}
+
+// Keep the built-in Quick Access rows visually centred in their resizable region.
+// In the old top-aligned layout all spare height accumulated below the last item,
+// so “此电脑” looked glued to the top while the final folder floated far above the
+// section divider. This also adapts when users add their own quick-access folders.
+void CMainWnd::UpdateLeftQuickAccessSpacing()
+{
+    if (!m_pLeftQuick) return;
+    int rowCount = 4; // This PC, Documents, Desktop, Downloads
+    if (m_pLeftFavPins && m_pLeftFavPins->IsVisible())
+        rowCount += m_pLeftFavPins->GetCount();
+
+    const int rowHeight = DpiScale(UiTokens::NavRowH);
+    const int height = m_pLeftQuick->GetFixedHeight();
+    if (height <= 0 || rowHeight <= 0) return;
+    const int slack = (std::max)(0, height - rowCount * rowHeight);
+    const int top = slack / 2;
+    const int bottom = slack - top;
+    const int left = DpiScale(UiTokens::NavIconPad);
+    const int right = DpiScale(2);
+    const RECT old = m_pLeftQuick->GetPadding();
+    if (old.left == left && old.top == top && old.right == right && old.bottom == bottom)
+        return;
+    m_pLeftQuick->SetPadding({ left, top, right, bottom });
+    m_pLeftQuick->NeedParentUpdate();
 }
 
 void CMainWnd::LoadLeftNavSplitter()
@@ -264,7 +291,7 @@ bool CMainWnd::IsPaneScrollBarHit(int clientX, int clientY) const
 
 void CMainWnd::ApplyPaneDragWidth(int kind, int physicalWidth)
 {
-    const int minD = (kind == 1) ? 150 : 180;
+    const int minD = (kind == 1) ? 150 : 260;
     const int maxD = (kind == 1) ? 520 : 760;
     int w = physicalWidth;
     if (w < DpiScale(minD)) w = DpiScale(minD);
@@ -305,6 +332,7 @@ void CMainWnd::CaptureLeftNavSplitterIfChanged()
     const int design = (std::max)(UiTokens::LeftQuickMinH, ::MulDiv(phy, 96, static_cast<int>(m_dpi)));
     if (design != m_leftQuickDesignH) {
         m_leftQuickDesignH = design;
+        UpdateLeftQuickAccessSpacing();
         SaveLeftNavSplitter();
     }
 }
@@ -634,8 +662,11 @@ void CMainWnd::RebuildLeftPinnedFavorites()
         m_pLeftFavPins->Add(btn);
     }
     const int minimum = UiTokens::LeftQuickMinH + static_cast<int>(m_quickAccess.size()) * UiTokens::NavRowH;
+    if (m_pLeftQuick)
+        m_pLeftQuick->SetMinHeight(DpiScale(minimum));
     if (m_leftQuickDesignH < minimum)
         ApplyLeftNavSplitterHeight(minimum);
+    UpdateLeftQuickAccessSpacing();
     m_pLeftFavPins->NeedUpdate();
     if (m_pLeftQuick) m_pLeftQuick->NeedUpdate();
 }

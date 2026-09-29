@@ -65,7 +65,7 @@ constexpr int LeftPanelPad = SpaceSm;
 constexpr int LeftNavGripH = 6;
 constexpr int LeftNavSepH = SpaceSm;
 constexpr int LeftQuickMinH = 160;     // four built-in rows plus breathing room; section label is hidden
-constexpr int LeftQuickDefaultH = 168;
+constexpr int LeftQuickDefaultH = 160;
 
 // ---- Phase 2: details list ----
 constexpr int DetailsHeaderH = 28;
