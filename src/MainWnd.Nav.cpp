@@ -199,7 +199,6 @@ void CMainWnd::SyncShellViewSelection()
         m_recentShellSelection.erase(m_recentShellSelection.begin(), m_recentShellSelection.end() - 32);
     m_shellSelectionSnapshot.swap(snapshot);
     m_shellBrowser->EnsureSelectionVisible();
-    UpdatePreviewForSelection();
     UpdateCommandBarState();
     {
         CDuiString status;
@@ -208,6 +207,23 @@ void CMainWnd::SyncShellViewSelection()
             static_cast<int>(selected.size()));
         UpdateStatus(status.GetData());
     }
+    // The selection frame is drawn by the list (and FastFile's large-icon custom draw) on
+    // its next WM_PAINT, which Windows only delivers once the queue is empty. Updating the
+    // details pane here (Shell properties, a 160-384 px Shell icon scaled and encoded to PNG)
+    // delayed that frame noticeably for folders in 大图标 / 超大图标. Paint first, then let the
+    // pane follow on a short timer (coalesces rapid clicks); folder icons load off-thread.
+    m_selectionPreviewPending = true;
+    if (!m_deferSelectionPreview) { FlushSelectionPreview(); return; }
+    m_shellBrowser->FlushPaint();
+    ::SetTimer(m_hWnd, kTimerSelectionPreview, kSelectionPreviewDelayMs, nullptr);
+}
+
+void CMainWnd::FlushSelectionPreview()
+{
+    if (m_hWnd) ::KillTimer(m_hWnd, kTimerSelectionPreview);
+    if (!m_selectionPreviewPending) return;
+    m_selectionPreviewPending = false;
+    UpdatePreviewForSelection();
 }
 
 void CMainWnd::GoUp()

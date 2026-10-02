@@ -32,6 +32,7 @@ CMainWnd::~CMainWnd()
     CancelThumbJobs();
     StopThumbWorker();
     StopCopyThread(true);
+    JoinPreviewIconThreads();
 }
 
 CDuiString CMainWnd::GetSkinFolder()
@@ -525,6 +526,10 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         SyncShellViewSelection();
         return 0;
     }
+    if (uMsg == kMsgPreviewIconReady) {
+        OnPreviewIconReady(reinterpret_cast<PreviewIconJob*>(lParam));
+        return 0;
+    }
     if (uMsg == kMsgCommitInlineRename) { CommitInlineRename(); return 0; }
     if (uMsg == kMsgCancelInlineRename) { CancelInlineRename(); return 0; }
     if (uMsg == WM_COMMAND && m_renameEdit
@@ -692,6 +697,7 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             ::KillTimer(m_hWnd, kTimerColWidth);
             ::KillTimer(m_hWnd, kTimerDetailsSync);
             ::KillTimer(m_hWnd, kTimerLayoutSync);
+            ::KillTimer(m_hWnd, kTimerSelectionPreview);
         }
         StopDetailsFill();
         SaveFavorites();
@@ -730,6 +736,7 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         if (wParam == kTimerColWidth) { CaptureColumnWidths(); return 0; }
         if (wParam == kTimerDetailsSync) { UpdateDetailsWindow(false); return 0; }
         if (wParam == kTimerLayoutSync) { SyncLayoutDependents(); SyncShellViewSelection(); return 0; }
+        if (wParam == kTimerSelectionPreview) { FlushSelectionPreview(); return 0; }
     }
     if (uMsg == WM_MBUTTONDOWN) {
         // Middle click on a tab closes it (Explorer behaviour).

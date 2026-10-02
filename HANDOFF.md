@@ -7,12 +7,12 @@
 本节是最新状态入口。下方按日期保留开发历史；旧章节中的「当前」、测试数量、默认打开行为和待办仅代表当时状态，冲突时以本节及随后两节修复记录为准，再核对实际源码。协作要求见 [AGENTS.md](AGENTS.md)，功能说明见 [README.md](README.md)，面向用户的变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 - 技术栈仍为 C++ / Win32 / DuiLib，普通文件区由 Windows ExplorerBrowser 承载。不要改换 UI 框架。
-- 本地工作区包含大量未提交修改及未跟踪的源码、测试；接手先检查工作区，不要用 reset / clean 或只复制 Git 已跟踪文件的方式丢弃当前实现。本次未提交或推送代码。
+- 本地工作区包含大量未提交修改及未跟踪的源码、测试；接手先检查工作区，不要用 reset / clean 或只复制 Git 已跟踪文件的方式丢弃当前实现。本次改动已在本地提交，未推送。
 - [VERSION](VERSION) 仍为 **1.0.9**。安装包已于 2026-10-02 16:44 重新生成（`dist/FastFile-Setup-1.0.9.exe`，1,444,864 字节，SHA-256 `4002CEDD2A8B97E71031C59530925B216A2B5E0A7920154DA2301079A3D9FC9A`），包含 2026-10-02 全部设置、视图和打开行为修复。打包前核对常用 exe 哈希等于下述已验证快照且其后无产品源码修改，故未重新构建；用反射读取安装包内嵌资源，FastFile.exe 与 skin/main.xml 哈希与常用产物一致。旧包备份为 `dist/FastFile-Setup-1.0.9.before-20261002.exe`。下方各节「未重建安装包」的说明由此取代。
-- 最新完整验证（2026-10-02 18:47，原生文件操作进度与原生背景菜单，见下一节）：Release x64 构建成功，CTest **7/7 一次运行全部通过，107.68 秒**。构建日志 `build-ui/nativeops-build.log`、`build-ui/nativeops-final-build.log`，测试日志 `build-ui/nativeops-final-tests.log`。这些日志和二进制属于本地忽略产物，换机器后需重新生成。
+- 最新完整验证（2026-10-02 20:07，右键菜单重命名与大图标选中框延迟，见下一节）：Release x64 构建成功，CTest **7/7 一次运行全部通过，120.84 秒**（主窗口回归 101.12 秒，其单项超时为 120 秒，比上一轮 88 秒多出的部分主要是新增的选中延迟测量；再增加主窗口测试时注意余量）。构建日志 `build-ui/ctxrename-final-build.log`，测试日志 `build-ui/ctxrename-final-tests.log`，旧实现模拟失败日志 `build-ui/ctxrename-before-tests.log`。这些日志和二进制属于本地忽略产物，换机器后需重新生成。上一轮（18:47，原生文件操作）为 7/7、107.68 秒，日志 `build-ui/nativeops-final-tests.log`。
 - 此前一次完整运行因 explorer.exe 会话撤销服务被一个隐藏的「已完成 95%」资源管理器操作卡住而失败（未修改的 HEAD 基线同样失败）；经用户同意重启资源管理器后，原生重命名撤销记录恢复可用，随后的完整运行通过。主窗口回归中的原生撤销 / 重做检查依赖该服务，再遇到同类连锁失败先检查是否有卡住的资源管理器操作。
-- 测试通过后才将 `build-ui/Release` 的 exe、map 和 skin 更新到常用 `build/Release`。两处 exe 的 SHA-256 已核对一致：`B57D75E406E8B3385451B5D9E3C8E7A94887D4B6C21F2734B5FC13CFF59CF1D0`（map `58645806…9684F`、skin/main.xml `3F2D4B6E…384BE` 亦一致）。这是本次交付快照，后续重构建应重新核对。
-- 交付时保留用户正在运行的旧窗口（PID 43608）；旧进程不能热更新。旧文件改名备份为 `build/Release/FastFile.before-native-fileops.exe`（SHA-256 `737DD155…176AB`，即 shell-activation 版本），它不是新版启动入口；用户需退出旧窗口并重新启动。更早的备份 `FastFile.before-shell-activation.exe` 保留。安装包未重建，`dist/FastFile-Setup-1.0.9.exe` 不含本次改动。
+- 测试通过后才将 `build-ui/Release` 的 exe、map 和 skin 更新到常用 `build/Release`。两处 exe 的 SHA-256 已核对一致：`DCF493389BA5F27788E08AE7F8736B72C9C72F07FFA7A871A7CB4381C945DE7A`（map `E1BE4DCA…20EF650AA6`、skin/main.xml `3F2D4B6E…384BE` 亦一致）。这是本次交付快照，后续重构建应重新核对。
+- 本次交付时用户先前运行的 FastFile（PID 43608）已不在运行（本轮未结束该进程，只结束过挂起的回归测试进程）。上一版改名备份为 `build/Release/FastFile.before-ctx-rename.exe`（SHA-256 `B57D75E4…9CF1D0`，即原生文件操作版本），它不是新版启动入口；更早的 `FastFile.before-native-fileops.exe`、`FastFile.before-shell-activation.exe` 保留。安装包未重建，`dist/FastFile-Setup-1.0.9.exe` 不含原生文件操作及本次改动。
 
 ### 本轮修改应从哪里读
 
@@ -25,6 +25,7 @@
 | [src/MainWnd.Menus.cpp](src/MainWnd.Menus.cpp) | 保留原生 Shell 菜单；文件夹 / 磁盘的新窗口、新标签命令转为 FastFile 新标签，缺少入口时补充中文命令。 |
 | [src/MainWnd.Nav.cpp](src/MainWnd.Nav.cpp)、[src/MainWnd.Tabs.cpp](src/MainWnd.Tabs.cpp) | 目标目录视图状态、标签导航与复用；显式新标签强制新建并保留原标签，过期完成通知不能改写当前标签。 |
 | [src/ShellFileOperation.cpp](src/ShellFileOperation.cpp)、[src/ShellFileOperation.h](src/ShellFileOperation.h) | 复制 / 移动 / 回收 / 永久删除的 IFileOperation 引擎（含 SHFileOperation 回退）、操作标志生成与进度接收器结果核对。生产标志不得加入 FOF_SILENT / FOF_NOERRORUI / FOFX_NOMINIMIZEBOX；复制 / 移动不得加 FOFX_ADDUNDORECORD。 |
+| [src/MainWnd.Preview.cpp](src/MainWnd.Preview.cpp)、[src/MainWnd.Nav.cpp](src/MainWnd.Nav.cpp) `SyncShellViewSelection` | 选中处理只做快照、命令栏和状态栏，随后 `FlushPaint` 并以 `kTimerSelectionPreview`（30 ms）延迟更新详情；文件夹大图标由 `LoadPreviewShellIconAsync` 在 STA 后台线程提取，`kMsgPreviewIconReady`（WM_APP+0x458，勿与 WM_USER+103 的 kMsgThumbReady 重复）回到 UI 线程按序号丢弃过期结果。不要把详情更新放回选中处理里同步执行。 |
 | [src/ShellMenuUtil.h](src/ShellMenuUtil.h) | Shell 菜单分隔线规范化（按 MFT_SEPARATOR / 空文本判断，不按 id）与按 verb 查找菜单项。 |
 | [src/MainWnd.FileOps.cpp](src/MainWnd.FileOps.cpp) | StartFileOperation：每项操作一个 STA 后台线程（附着主窗口桌面），完成后 kMsgFileOpFinished 回到 UI 线程写入历史；状态栏只显示结果摘要。 |
 | [tests/MainWndRegressionTests.cpp](tests/MainWndRegressionTests.cpp)、[tests/ShellBrowserHostTests.cpp](tests/ShellBrowserHostTests.cpp) | 本轮回归、真实 Shell 视图与菜单、隔离桌面及生产入口多进程启动测试。测试登记见 [CMakeLists.txt](CMakeLists.txt)。 |
@@ -48,11 +49,22 @@ if ($LASTEXITCODE -ne 0) { throw "回归失败" }
 
 ### 尚未完成的本轮验收
 
+- 右键重命名与选中框：在正常桌面对单个文件 / 文件夹右键，确认出现「重命名(M)」、点击后原位编辑、回车生效且 Ctrl+Z 可撤销；在 `C:\Users\JINLONG\图片`（GIRLS、屏幕截图）切换 大图标 / 超大图标 点击文件夹，确认选中框即时出现、右侧详情随后更新。自动测试在隔离桌面以真实按键消息验证，未经用户目视确认。
 - 原生文件操作：在正常桌面复制一个大文件，确认出现资源管理器原生进度窗口（暂停 / 取消 / 剩余时间），同名冲突时出现替换 / 跳过对话框，操作期间 FastFile 窗口可继续浏览；剪切粘贴、拖放、Delete / Shift+Delete 同样检查。自动测试只能在隔离桌面验证调用路径与标志，无法目视确认进度窗口。
 - 原生背景菜单：在正常桌面右键文件区空白处，确认 粘贴 / 粘贴快捷方式 / 撤销 / 分组依据 等出现、没有叠在一起的分隔线、查看 / 排序方式 作用于 FastFile 视图；Shift+右键显示扩展项。
 - 用户正常桌面上逐项点击系统右键「使用 FastFile 打开」，分别检查已有窗口和完全退出后的首次启动，覆盖文件夹与磁盘。自动测试已覆盖真实注册命令、进程启动与转发；尚未收到用户重启新版后的实际使用确认。
 - 正常界面中检查鼠标 / 键盘右键的新标签入口、重复目录和子目录保留原标签，以及列表 / 详细信息往返时首帧间距。相关自动运行回归已通过，本轮未人工逐项点选菜单验收。
 - 安装包已重新打包，但未实际安装 / 卸载验证：setup.cs 的安装流程（含 `--quiet --dir`）会结束正在运行的 FastFile 并写入开始菜单快捷方式与当前用户卸载项，不适合在用户正在使用的开发机上测试。仍需在合适时机验证安装路径、注册命令、卸载恢复及安装后运行。
+
+## 右键菜单重命名与大图标选中框延迟（2026-10-02）
+
+- 需求一：文件区单个项目的原生右键菜单缺少「重命名(M)」。原因：`QueryContextMenu` 未传 `CMF_CANRENAME`，Shell 因宿主未声明可原位重命名而省略该项。修复：`BuildShellItemMenu`（由 ShowShellContextMenu 拆出）仅在单项、`SFGAO_CANRENAME`、且其父目录就是当前可见 Shell 视图目录时传入 `CMF_CANRENAME`；`HandleRoutedShellVerb` 截获 verb `rename`（不区分大小写，非背景菜单、单项、`CanRenameInShellView`），调用 `BeginShellRename` → `ShellBrowserHost::BeginRenameItem`（IFolderView2::SelectItem 带 SVSI_EDIT | SVSI_SELECT | SVSI_FOCUSED | SVSI_DESELECTOTHERS | SVSI_ENSUREVISIBLE）进入原生原位编辑，并设置 `m_pendingShellRename`，改名通知照常并入 FastFile 撤销历史。FastFile 搜索结果列表自带的「重命名」（kCmdShellRename）未改。
+- 需求二：大图标 / 超大图标 左键点击文件夹后选中框明显滞后。根因：ExplorerBrowser 选中变化（DISPID_SELECTIONCHANGED / LVN_ITEMCHANGED）以投递消息通知主窗口，`SyncShellViewSelection` 在该消息里同步调用 `UpdatePreviewForSelection`。投递消息先于 WM_PAINT 处理，所以列表（及大图标自绘 `DrawIconItem`）的选中框要等详情面板做完 ReadProperties、显示名、`ExtractShellIconSized`（SHGetFileInfo + 256/384 像素 JUMBO 图像列表 + GDI+ 缩放并编码 PNG 写盘）才绘出；自定义图标文件夹和 Win11 缩略图文件夹的提取更慢，首次 / 冷缓存时尤甚。
+- 修复：选中处理只做快照、EnsureSelectionVisible、命令栏和状态栏，然后 `ShellBrowserHost::FlushPaint()`（列表可见时 UpdateWindow）立即绘出选中框，再以 `kTimerSelectionPreview` 30 ms 延迟调用 `FlushSelectionPreview` 更新详情（连续点击合并）。文件夹详情图标经 `LoadPreviewShellIconAsync` 在 STA 后台线程提取到 `preview_icon_<序号>.png`，`OnPreviewIconReady` 回到 UI 线程 join 线程，仅当序号、选中来源和路径仍匹配时显示，否则删除文件；提取失败回退同步的库存图标。析构时 `JoinPreviewIconThreads`，WM_CLOSE 结束计时器。`m_deferSelectionPreview` / `m_asyncPreviewIcons` 默认开启，仅供测试对比旧行为。
+- 开发中踩坑：新消息最初取 WM_USER+103，与已有 `kMsgThumbReady` 冲突，回归测试在 OnPreviewIconReady 中访问违例崩溃；已改为 WM_APP+0x458 并在 MainWnd.h 加 static_assert。回归测试进程同时加入未处理异常过滤器，崩溃时打印模块 + RVA 和展开的调用栈（可配合 `LINK=/MAP` 生成测试 map 定位）。
+- 测量（本机，`ctxrename-final-tests.log`）：真实列表消息路径（向列表投递 WM_LBUTTONDOWN / UP，宿主绘制探针记录首次画出选中项的 QPC 时间）从点击到选中框绘出：用户图片目录 GIRLS / Screenshots，大图标 旧 11.3–11.4 ms → 新 0.9–1.4 ms，超大图标 旧 11.9–14.0 ms → 新 0.8–0.9 ms；夹具目录 新 1.0–1.1 ms。选中处理函数本身：旧同步详情 6.9–7.0 ms → 新 0.18 ms，延后的详情更新 2.1–2.2 ms（图标在后台线程）。按住 150 ms 再松开的点击同样在按住期间绘出选中框，列表的拖动检测循环不是原因。本机热缓存下旧延迟约 12 ms；用户感知到的明显滞后可能来自冷缓存的大图标提取，测试无法复现冷系统图标缓存。
+- 回归（MainWndRegressionTests）：CheckShellMenus 新增单文件菜单含 `rename` 且无叠线、多选无 `rename`、`HandleRoutedShellVerb(L"Rename")` 进入原位编辑（列表编辑框存在、仅该项选中、设置 m_pendingShellRename，取消后文件保留）、背景菜单不路由 `rename`。新增 CheckSelectionLatency：大 / 超大图标下直接调用选中处理，断言详情被延后（pending 且标题未变）且耗时 < 50 ms；随后详情与后台图标到达；过期图标结果被丢弃；真实点击能画出选中框；打印上述测量。临时恢复旧实现（去掉 CMF_CANRENAME 与 rename 路由、选中处理同步更新详情）时 4 项按预期失败（`build-ui/ctxrename-before-tests.log`）。
+- 未验证：正常桌面目视确认（见上方「尚未完成的本轮验收」）。
 
 ## 原生文件操作进度与原生背景菜单（2026-10-02）
 

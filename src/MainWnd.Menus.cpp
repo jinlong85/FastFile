@@ -468,6 +468,13 @@ bool CMainWnd::HandleRoutedShellVerb(const std::wstring& verb)
 {
     if (_wcsicmp(verb.c_str(), L"undo") == 0) { OnUndo(); return true; }
     if (_wcsicmp(verb.c_str(), L"redo") == 0) { OnRedo(); return true; }
+    // 重命名(M): in-place edit in the Shell view, same path as F2 / 命令栏重命名 (the
+    // pending rename makes the change notification join FastFile's undo history).
+    if (!m_shellMenuBackground && _wcsicmp(verb.c_str(), L"rename") == 0 && m_shellMenuPaths.size() == 1
+        && CanRenameInShellView(m_shellMenuPaths.front())) {
+        if (!BeginShellRename(m_shellMenuPaths.front())) UpdateStatus(_T("无法启动 Windows 原生重命名"));
+        return true;
+    }
     if (m_shellMenuBackground && _wcsicmp(verb.c_str(), L"refresh") == 0) { RefreshListing(); return true; }
     if (m_shellMenuBackground && _wcsicmp(verb.c_str(), L"paste") == 0) {
         std::vector<ClipboardItem> items; bool cut = false;
@@ -813,9 +820,44 @@ void CMainWnd::ShowItemContextMenu(CControlUI* /*pItem*/, POINT ptScreen)
         OnRenameClicked();
 }
 
+bool CMainWnd::CanRenameInShellView(const std::wstring& path) const
+{
+    if (path.empty() || IsThisPcPath(path) || ParentPath(path).empty()) return false;
+    if (!m_shellBrowser || !m_shellBrowser->IsCreated() || !m_shellBrowser->IsVisible()) return false;
+    const std::wstring shown = m_shellBrowser->CurrentPath();
+    return !shown.empty() && !IsThisPcPath(shown) && PathEquals(ParentPath(path), shown);
+}
+
+bool CMainWnd::BeginShellRename(const std::wstring& path)
+{
+    if (!CanRenameInShellView(path)) return false;
+    m_pendingShellRename = path;
+    if (m_shellBrowser->BeginRenameItem(path)) return true;
+    m_pendingShellRename.clear();
+    return false;
+}
+
 bool CMainWnd::ShowShellContextMenu(const std::vector<std::wstring>& paths, POINT ptScreen,
     const std::vector<std::pair<UINT, std::wstring>>* extraItems, UINT* outExtraCmd)
 {
+    IContextMenu* pMenu = nullptr;
+    HMENU hMenu = nullptr;
+    UINT idShellMax = 0;
+    if (!BuildShellItemMenu(paths, &pMenu, &hMenu, &idShellMax)) return false;
+    // Full Shell menu with owner-draw / cascaded submenus via IContextMenu2/3
+    m_shellMenuPaths = paths;
+    TrackPopupShellMenu(pMenu, hMenu, ptScreen, 1, idShellMax, false, extraItems, outExtraCmd);
+    m_shellMenuPaths.clear();
+    ::DestroyMenu(hMenu);
+    pMenu->Release();
+    return true;
+}
+
+bool CMainWnd::BuildShellItemMenu(const std::vector<std::wstring>& paths, IContextMenu** outMenu,
+    HMENU* outPopup, UINT* outShellMax)
+{
+    if (!outMenu || !outPopup || !outShellMax) return false;
+    *outMenu = nullptr; *outPopup = nullptr; *outShellMax = 0;
     if (paths.empty()) return false;
 
     HRESULT hrInit = S_OK;
@@ -912,8 +954,16 @@ bool CMainWnd::ShowShellContextMenu(const std::vector<std::wstring>& paths, POIN
         return false;
 
     IContextMenu* pMenu = nullptr;
+    bool canRename = false;
     if (ok && !pidlChildren.empty()) {
         std::vector<LPCITEMIDLIST> pidlArgs(pidlChildren.begin(), pidlChildren.end());
+        // Explorer offers 重命名(M) for one renamable item; FastFile can only edit names
+        // in place inside the Shell view, so the flag is limited to items shown there.
+        if (pidlArgs.size() == 1 && CanRenameInShellView(paths.front())) {
+            SFGAOF attributes = SFGAO_CANRENAME;
+            canRename = SUCCEEDED(pFolder->GetAttributesOf(1, pidlArgs.data(), &attributes))
+                && (attributes & SFGAO_CANRENAME);
+        }
         const HRESULT hrMenu = pFolder->GetUIObjectOf(m_hWnd,
             static_cast<UINT>(pidlArgs.size()),
             pidlArgs.data(),
@@ -936,7 +986,7 @@ bool CMainWnd::ShowShellContextMenu(const std::vector<std::wstring>& paths, POIN
     const UINT idCmdFirst = 1;
     const UINT idCmdLast = 0x7FFF;
     HRESULT hr = pMenu->QueryContextMenu(hMenu, 0, idCmdFirst, idCmdLast,
-        CMF_NORMAL | CMF_EXPLORE);
+        CMF_NORMAL | CMF_EXPLORE | (canRename ? CMF_CANRENAME : 0));
     if (FAILED(hr)) {
         ::DestroyMenu(hMenu);
         pMenu->Release();
@@ -946,14 +996,10 @@ bool CMainWnd::ShowShellContextMenu(const std::vector<std::wstring>& paths, POIN
     const UINT idShellMax = idCmdFirst + static_cast<UINT>(HRESULT_CODE(hr));
     PruneShellMenu(pMenu, hMenu, idCmdFirst, idShellMax, false);
     AddInternalFolderOpenMenu(pMenu,hMenu,idCmdFirst,idShellMax,paths);
-    // Full Shell menu with owner-draw / cascaded submenus via IContextMenu2/3
-    m_shellMenuPaths = paths;
-    TrackPopupShellMenu(pMenu, hMenu, ptScreen, idCmdFirst, idShellMax, false,
-        extraItems, outExtraCmd);
-    m_shellMenuPaths.clear();
-
-    ::DestroyMenu(hMenu);
-    pMenu->Release();
+    TidyMenuSeparators(hMenu);
+    *outMenu = pMenu;
+    *outPopup = hMenu;
+    *outShellMax = idShellMax;
     return true;
 }
 

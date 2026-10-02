@@ -571,6 +571,12 @@ private:
         const std::vector<std::pair<UINT, std::wstring>>* extraItems = nullptr,
         UINT* outExtraCmd = nullptr);
     bool ShowShellBackgroundContextMenu(const std::wstring& folderPath, POINT ptScreen);
+    // Builds the Shell item menu for paths (QueryContextMenu + prune + FastFile entries).
+    // CMF_CANRENAME is passed for a single renamable item shown in the Shell view.
+    bool BuildShellItemMenu(const std::vector<std::wstring>& paths, IContextMenu** menu, HMENU* popup,
+        UINT* shellMax);
+    bool CanRenameInShellView(const std::wstring& path) const;
+    bool BeginShellRename(const std::wstring& path);
     void ShowFallbackContextMenu(const std::vector<ClipboardItem>& items, POINT ptScreen);
     void ShowTreeContextMenu(CTreeNodeUI* node, POINT ptScreen);
     void ShowBlankAreaContextMenu(POINT ptScreen);
@@ -876,11 +882,35 @@ private:
     static constexpr int kPumpEvery = 200;
     static constexpr UINT kMsgReactivate = WM_USER + 100;
     static constexpr UINT kMsgFileOpFinished = WM_USER + 102;   // wParam job id, lParam Result*
+    static constexpr UINT kMsgPreviewIconReady = WM_APP + 0x458; // lParam PreviewIconJob* (WM_USER+103 is kMsgThumbReady)
+    // Selection changes repaint the native view first; the details pane follows on this timer.
+    static constexpr UINT_PTR kTimerSelectionPreview = 0x4605;
+    static constexpr UINT kSelectionPreviewDelayMs = 30;
+    struct PreviewIconJob {
+        unsigned serial = 0;
+        std::wstring path;
+        std::wstring png;
+        int px = 0;
+        bool isDir = true;
+        bool ok = false;
+        std::thread::id thread;
+    };
+    std::vector<std::thread> m_previewIconThreads;
+    bool m_selectionPreviewPending = false;
+    bool m_deferSelectionPreview = true; // false = legacy synchronous pane update (timing comparison)
+    bool m_asyncPreviewIcons = true;     // folder icons for the details pane load off the UI thread
+    void FlushSelectionPreview();
+    bool LoadPreviewShellIconAsync(const std::wstring& path, bool isDir, int iconPx);
+    void OnPreviewIconReady(PreviewIconJob* job);
+    void JoinPreviewIconThreads();
+    int PreviewIconRequestPx(int iconPx);
     static constexpr UINT kMsgThumbReady = WM_USER + 103;
     static constexpr UINT kMsgVirtSync = WM_USER + 104;
     static constexpr UINT kMsgDetailsFill = WM_USER + 105;
     static constexpr UINT kMsgDeferredNav = WM_USER + 106;
     static constexpr UINT kMsgOpenExternalPaths = WM_USER + 107;
+    static_assert(kMsgPreviewIconReady != kMsgThumbReady && kMsgPreviewIconReady != kMsgFileOpFinished
+        && kMsgPreviewIconReady != kMsgShellContextMenu, "private window messages must be unique");
     static constexpr int kDetailsVirtOverscan = 8;
     static constexpr UINT_PTR kTimerDetailsSync = 0x4603;
     static constexpr int kUiBatchSize = 40;

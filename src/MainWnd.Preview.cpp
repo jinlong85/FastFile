@@ -509,6 +509,10 @@ void CMainWnd::UpdatePreviewPath(const std::wstring& path, bool isDir)
     if (isDir) {
         // Folders: HICON->PNG true alpha (never SIIGBF black pocket).
         const int ip = DpiScale(UiTokens::PreviewIconPx);
+        if (m_asyncPreviewIcons && LoadPreviewShellIconAsync(path, true, ip)) {
+            if (m_pPreviewText) m_pPreviewText->SetText(_T(""));
+            return;
+        }
         if (LoadPreviewShellIcon(path, true, ip)) {
             if (m_pPreviewText) m_pPreviewText->SetText(_T(""));
             return;
@@ -846,6 +850,91 @@ bool CMainWnd::LoadPreviewStockIcon(int siid, int iconPx)
     return true;
 }
 
+int CMainWnd::PreviewIconRequestPx(int iconPx)
+{
+    // Request the icon at the exact size the compact frame will show it. Asking for a
+    // smaller PNG left DuiLib upscaling it with AlphaBlend (unfiltered) — that is why
+    // the folder preview looked mushy. Worst case the Shell hands back the 384px JUMBO
+    // icon and we downscale it once with GDI+ HighQualityBicubic.
+    const int boxH = DpiScale(UiTokens::PreviewIconCompactH);
+    int ctrlW = m_pPreviewImage ? m_pPreviewImage->GetWidth() : 0;
+    if (ctrlW <= 8) ctrlW = DpiScale(UiTokens::PreviewThumbW);
+    int ip = (std::min)(ctrlW, boxH);
+    if (ip < iconPx) ip = iconPx;
+    if (ip < 16) ip = 16;
+    if (ip > 384) ip = 384;
+    return ip;
+}
+
+// Same result as LoadPreviewShellIcon, but the Shell icon lookup (desktop.ini custom icons,
+// Win11 folder thumbnails, 384 px JUMBO list) and the GDI+ scale / PNG encode run on a
+// worker STA. The pane shows the new title / metadata at once; the icon follows through
+// kMsgPreviewIconReady and is dropped if the selection moved on meanwhile.
+bool CMainWnd::LoadPreviewShellIconAsync(const std::wstring& path, bool isDir, int iconPx)
+{
+    if (!m_pPreviewImage || path.empty() || !m_hWnd || !EnsureGdiplus()) return false;
+    if (!m_previewBmp.empty()) {
+        m_PaintManager.RemoveImage(m_previewBmp.c_str());
+        ::DeleteFileW(m_previewBmp.c_str());
+        m_previewBmp.clear();
+    }
+    m_pPreviewImage->SetBkImage(_T(""));
+    auto job = std::make_unique<PreviewIconJob>();
+    job->serial = ++m_previewSerial;
+    job->path = path;
+    job->isDir = isDir;
+    job->px = PreviewIconRequestPx(iconPx);
+    wchar_t leaf[64] = {};
+    swprintf_s(leaf, L"preview_icon_%u.png", job->serial);
+    job->png = m_iconCacheDir + leaf;
+    PreviewIconJob* raw = job.release();
+    const HWND owner = m_hWnd;
+    try {
+        m_previewIconThreads.emplace_back([raw, owner]() {
+            raw->thread = std::this_thread::get_id();
+            const HRESULT com = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+            raw->ok = ExtractShellIconSized(raw->path, raw->isDir, raw->px, raw->png);
+            if (SUCCEEDED(com)) ::CoUninitialize();
+            if (!::PostMessageW(owner, kMsgPreviewIconReady, 0, reinterpret_cast<LPARAM>(raw))) {
+                ::DeleteFileW(raw->png.c_str());
+                delete raw;
+            }
+        });
+    } catch (...) {
+        delete raw;
+        return false;
+    }
+    return true;
+}
+
+void CMainWnd::OnPreviewIconReady(PreviewIconJob* job)
+{
+    if (!job) return;
+    std::unique_ptr<PreviewIconJob> owned(job);
+    for (auto it = m_previewIconThreads.begin(); it != m_previewIconThreads.end(); ++it) {
+        if (it->get_id() == job->thread) { it->join(); m_previewIconThreads.erase(it); break; }
+    }
+    const bool current = job->serial == m_previewSerial && m_previewFromSelection
+        && PathEquals(m_previewPath, job->path) && m_pPreviewImage;
+    if (!current) { ::DeleteFileW(job->png.c_str()); return; }
+    if (!job->ok) {
+        // Stock folder / document fallback, as in the synchronous path.
+        LoadPreviewShellIcon(job->path, job->isDir, DpiScale(UiTokens::PreviewIconPx));
+        return;
+    }
+    m_previewBmp = job->png;
+    m_PaintManager.RemoveImage(m_previewBmp.c_str());
+    ApplyPreviewImageBk(m_previewBmp, job->px, job->px, UiTokens::PreviewIconCompactH);
+}
+
+void CMainWnd::JoinPreviewIconThreads()
+{
+    for (auto& thread : m_previewIconThreads)
+        if (thread.joinable()) thread.join();
+    m_previewIconThreads.clear();
+    // Results posted after the window went away are freed with the queue by their thread.
+}
+
 bool CMainWnd::LoadPreviewShellIcon(const std::wstring& path, bool isDir, int iconPx)
 {
     if (!m_pPreviewImage || path.empty()) return false;
@@ -855,18 +944,7 @@ bool CMainWnd::LoadPreviewShellIcon(const std::wstring& path, bool isDir, int ic
         m_previewBmp.clear();
     }
     m_pPreviewImage->SetBkImage(_T(""));
-
-    // Request the icon at the exact size the compact frame will show it. Asking for a
-    // smaller PNG left DuiLib upscaling it with AlphaBlend (unfiltered) — that is why
-    // the folder preview looked mushy. Worst case the Shell hands back the 384px JUMBO
-    // icon and we downscale it once with GDI+ HighQualityBicubic.
-    const int boxH = DpiScale(UiTokens::PreviewIconCompactH);
-    int ctrlW = m_pPreviewImage->GetWidth();
-    if (ctrlW <= 8) ctrlW = DpiScale(UiTokens::PreviewThumbW);
-    int ip = (std::min)(ctrlW, boxH);
-    if (ip < iconPx) ip = iconPx;
-    if (ip < 16) ip = 16;
-    if (ip > 384) ip = 384;
+    const int ip = PreviewIconRequestPx(iconPx);
 
     ++m_previewSerial;
     wchar_t leaf[64] = {};

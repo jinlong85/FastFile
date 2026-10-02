@@ -438,6 +438,32 @@ bool ShellBrowserHost::BeginRename()
     return SUCCEEDED(hr);
 }
 
+bool ShellBrowserHost::BeginRenameItem(const std::wstring& path)
+{
+    if (!m_browser || path.empty())
+        return false;
+    IFolderView2* view = nullptr;
+    if (FAILED(m_browser->GetCurrentView(IID_PPV_ARGS(&view))) || !view)
+        return false;
+    int count = 0, index = -1;
+    view->ItemCount(SVGIO_ALLVIEW, &count);
+    for (int i = 0; i < count && index < 0; ++i) {
+        IShellItem* item = nullptr;
+        if (FAILED(view->GetItem(i, IID_PPV_ARGS(&item))) || !item) continue;
+        PWSTR name = nullptr;
+        if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &name)) && name) {
+            if (::CompareStringOrdinal(name, -1, path.c_str(), -1, TRUE) == CSTR_EQUAL) index = i;
+            ::CoTaskMemFree(name);
+        }
+        item->Release();
+    }
+    HRESULT hr = E_FAIL;
+    if (index >= 0)
+        hr = view->SelectItem(index, SVSI_EDIT | SVSI_SELECT | SVSI_FOCUSED | SVSI_DESELECTOTHERS | SVSI_ENSUREVISIBLE);
+    view->Release();
+    return SUCCEEDED(hr);
+}
+
 bool ShellBrowserHost::InvokeHistory(bool redo, bool invoke)
 {
     if (!m_browser) return false;
@@ -952,6 +978,9 @@ LRESULT ShellBrowserHost::DrawIconItem(NMLVCUSTOMDRAW* draw)
     HBRUSH fill = CreateSolidBrush(selected ? RGB(0xE5,0xF1,0xFB) : hot ? RGB(0xF5,0xF5,0xF5) : RGB(255,255,255));
     FillRect(dc, &cell, fill); DeleteObject(fill);
     if (selected) {
+        if (index == m_probeItem && !m_probeTick) {
+            LARGE_INTEGER tick{}; QueryPerformanceCounter(&tick); m_probeTick = tick.QuadPart;
+        }
         HPEN pen = CreatePen(PS_SOLID, MulDiv(1, m_dpi, 96), RGB(0x99,0xD1,0xFF));
         auto oldPen = SelectObject(dc, pen); auto oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
         Rectangle(dc, cell.left, cell.top, cell.right, cell.bottom);
@@ -1074,6 +1103,11 @@ void ShellBrowserHost::EnsureSelectionVisible()
             view->SelectItem(index, SVSI_SELECT | SVSI_ENSUREVISIBLE);
         view->Release();
     }
+}
+
+void ShellBrowserHost::FlushPaint()
+{
+    if (m_listWindow && ::IsWindowVisible(m_listWindow)) ::UpdateWindow(m_listWindow);
 }
 
 void ShellBrowserHost::PaintScrollBar(HWND window)

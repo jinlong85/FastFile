@@ -26,6 +26,9 @@ public:
     bool Navigate(const std::wstring& path);
     void Refresh();
     bool BeginRename();
+    // Starts the view's in-place name edit on the item with this file-system path
+    // (SVSI_EDIT | SVSI_SELECT | SVSI_FOCUSED | SVSI_DESELECTOTHERS), like F2 in Explorer.
+    bool BeginRenameItem(const std::wstring& path);
     bool SelectAll();
     bool ClearSelection();
     bool Focus();
@@ -43,6 +46,9 @@ public:
     bool SetShowHidden(bool show);
     bool SetViewMode(FOLDERVIEWMODE mode, int iconSize = -1);
     void EnsureSelectionVisible();
+    // Paints pending invalidations of the native list now (selection frame / highlight)
+    // instead of after FastFile's queued work.
+    void FlushPaint();
     bool SetSort(int column, bool ascending);
     bool SetGrouping(int mode);
     bool GetSelection(std::vector<std::pair<std::wstring, bool>>& paths) const;
@@ -71,6 +77,9 @@ private:
     HWND m_viewWindow = nullptr;
     int m_iconSlot = 0;
     int m_hotItem = -1;
+    // Paint probe for tests: first QPC tick at which m_probeItem was custom-drawn selected.
+    int m_probeItem = -1;
+    LONGLONG m_probeTick = 0;
     UINT m_dpi = 96;
     LVTILEVIEWINFO m_originalTileInfo{};
     bool m_customTileHeight = false;

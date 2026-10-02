@@ -106,6 +106,15 @@ LRESULT CALLBACK ConfirmFixtureDelete(int code, WPARAM wParam, LPARAM lParam) {
 }
 
 struct ShellBrowserHostTestAccess {
+    static HWND EditControl(ShellBrowserHost& host) {
+        return host.m_listWindow ? ListView_GetEditControl(host.m_listWindow) : nullptr;
+    }
+    static void CancelEdit(ShellBrowserHost& host) {
+        if (host.m_listWindow) ListView_CancelEditLabel(host.m_listWindow);
+    }
+    static HWND ListWindow(ShellBrowserHost& host) { return host.m_listWindow; }
+    static void Probe(ShellBrowserHost& host, int item) { host.m_probeItem = item; host.m_probeTick = 0; }
+    static LONGLONG ProbeTick(ShellBrowserHost& host) { return host.m_probeTick; }
     static bool MediaAspectRatio(ShellBrowserHost& host,const std::wstring& path,int sourceW,int sourceH) {
         // These drawing tests use a synthetic root layout; view switches may
         // recreate a native child before the host's normal layout pass.
@@ -1387,6 +1396,185 @@ struct MainWndRegressionAccess {
         window.RebuildTabStrip();
         return failures;
     }
+    // Clicking a folder in 大图标 / 超大图标 must repaint the selection frame at once: the
+    // selection handler may not run the details-pane work (Shell properties, large Shell
+    // icon -> PNG) synchronously; it is deferred and the folder icon loads off-thread.
+    static int CheckSelectionLatency(CMainWnd& window, const std::wstring& folder) {
+        int failures = 0;
+        auto check = [&](bool ok, const char* name) { if (!ok) { ++failures; std::cerr << "FAIL " << name << '\n'; } };
+        auto pump = [&](DWORD ms) {
+            const DWORD until = GetTickCount() + ms;
+            do {
+                MSG message;
+                while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                    if (message.message != WM_QUIT && !CPaintManagerUI::TranslateMessage(&message)) {
+                        ::TranslateMessage(&message); DispatchMessageW(&message);
+                    }
+                }
+                Sleep(5);
+            } while (GetTickCount() < until);
+        };
+        LARGE_INTEGER frequency{}; QueryPerformanceFrequency(&frequency);
+        auto now = [&]() { LARGE_INTEGER c{}; QueryPerformanceCounter(&c); return double(c.QuadPart) * 1000.0 / double(frequency.QuadPart); };
+        auto select = [&](const std::wstring& path) {
+            IFolderView2* view = ShellBrowserHostTestAccess::View(*window.m_shellBrowser);
+            if (!view) return false;
+            int count = 0, index = -1; view->ItemCount(SVGIO_ALLVIEW, &count);
+            for (int i = 0; i < count && index < 0; ++i) {
+                IShellItem* item = nullptr; PWSTR name = nullptr;
+                if (SUCCEEDED(view->GetItem(i, IID_PPV_ARGS(&item)))) {
+                    if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &name))) {
+                        if (_wcsicmp(name, path.c_str()) == 0) index = i;
+                        CoTaskMemFree(name);
+                    }
+                    item->Release();
+                }
+            }
+            const bool ok = index >= 0 && SUCCEEDED(view->SelectItem(index, SVSI_SELECT | SVSI_DESELECTOTHERS | SVSI_FOCUSED));
+            view->Release(); return ok;
+        };
+        auto title = [&]() { return window.m_pPreviewTitle ? std::wstring(window.m_pPreviewTitle->GetText().GetData()) : std::wstring(); };
+        // Click -> first paint of the selected frame, through the real message path: the list
+        // handles the posted button messages, posts our selection message, then paints.
+        // Click -> first paint of the selected frame, through the real message path: the list
+        // handles the button messages (its drag-detect loop runs while the button is held),
+        // posts our selection message, then paints. A thread timer releases the button so the
+        // release also reaches the list's nested loop.
+        static HWND clickList = nullptr; static LPARAM clickPoint = 0;
+        auto clickToFrameMs = [&](const std::wstring& path, UINT holdMs) {
+            HWND list = ShellBrowserHostTestAccess::ListWindow(*window.m_shellBrowser);
+            IFolderView2* view = ShellBrowserHostTestAccess::View(*window.m_shellBrowser);
+            if (!list || !view) { if (view) view->Release(); return -1.0; }
+            int count = 0, index = -1; view->ItemCount(SVGIO_ALLVIEW, &count);
+            for (int i = 0; i < count && index < 0; ++i) {
+                IShellItem* item = nullptr; PWSTR name = nullptr;
+                if (SUCCEEDED(view->GetItem(i, IID_PPV_ARGS(&item)))) {
+                    if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &name))) {
+                        if (_wcsicmp(name, path.c_str()) == 0) index = i;
+                        CoTaskMemFree(name);
+                    }
+                    item->Release();
+                }
+            }
+            view->SelectItem(-1, SVSI_DESELECTOTHERS); view->Release();
+            if (index < 0) return -1.0;
+            pump(150);
+            RECT icon{}; ListView_GetItemRect(list, index, &icon, LVIR_ICON);
+            clickList = list;
+            clickPoint = MAKELPARAM((icon.left + icon.right) / 2, (icon.top + icon.bottom) / 2);
+            SendMessageW(list, WM_MOUSEMOVE, 0, clickPoint); pump(30);
+            window.m_previewPath.clear();
+            ShellBrowserHostTestAccess::Probe(*window.m_shellBrowser, index);
+            LARGE_INTEGER frequency{}, begin{}; QueryPerformanceFrequency(&frequency); QueryPerformanceCounter(&begin);
+            PostMessageW(list, WM_LBUTTONDOWN, MK_LBUTTON, clickPoint);
+            const UINT_PTR release = SetTimer(nullptr, 0, (std::max)(static_cast<UINT>(USER_TIMER_MINIMUM), holdMs),
+                [](HWND, UINT, UINT_PTR timer, DWORD) { KillTimer(nullptr, timer); PostMessageW(clickList, WM_LBUTTONUP, 0, clickPoint); });
+            const double start = now();
+            while (now() - start < 1500.0 && !ShellBrowserHostTestAccess::ProbeTick(*window.m_shellBrowser)) pump(1);
+            KillTimer(nullptr, release);
+            if (GetCapture() == list) PostMessageW(list, WM_LBUTTONUP, 0, clickPoint);
+            pump(50);
+            const LONGLONG tick = ShellBrowserHostTestAccess::ProbeTick(*window.m_shellBrowser);
+            ShellBrowserHostTestAccess::Probe(*window.m_shellBrowser, -1);
+            return tick ? double(tick - begin.QuadPart) * 1000.0 / double(frequency.QuadPart) : -2.0;
+        };
+        const bool previewWasVisible = window.m_previewVisible;
+        const auto previousMode = window.m_viewMode;
+        if (!previewWasVisible) window.SetPreviewVisible(true);
+        window.NavigateToNow(folder, true); pump(500);
+        const auto target = folder + L"\\Battle.net";
+        for (auto mode : {CMainWnd::ViewMode::LargeIcons, CMainWnd::ViewMode::ExtraLargeIcons}) {
+            window.SetViewMode(mode); pump(400);
+            select(folder + L"\\115Chrome"); pump(400);
+            check(select(target), "large icon fixture folder can be selected");
+            // Run the handler directly, before the queue (and the view's WM_PAINT) is pumped.
+            const double start = now();
+            window.SyncShellViewSelection();
+            const double handler = now() - start;
+            const bool deferred = window.m_selectionPreviewPending && title() != L"Battle.net";
+            std::cout << "selection handler " << (mode == CMainWnd::ViewMode::LargeIcons ? "large" : "extra-large")
+                << ": " << handler << " ms\n";
+            check(deferred, "large icon selection defers the details pane instead of loading it in the selection handler");
+            check(handler < 50.0, "large icon selection handler returns quickly");
+            const DWORD deadline = GetTickCount() + 3000;
+            while ((title() != L"Battle.net" || window.m_previewBmp.empty()) && GetTickCount() < deadline) pump(20);
+            check(title() == L"Battle.net" && !window.m_previewBmp.empty() && window.m_previewIconThreads.empty(),
+                "deferred details pane and off-thread folder icon arrive for the selected folder");
+            // Real click through the list: the selected frame is painted, and before the pane.
+            const bool wasShown = IsWindowVisible(window.m_hWnd) != FALSE;
+            if (!wasShown) { ShowWindow(window.m_hWnd, SW_SHOWNOACTIVATE); pump(300); }
+            const double frame = clickToFrameMs(target, 0);
+            std::cout << "click->frame fixture " << (mode == CMainWnd::ViewMode::LargeIcons ? "large" : "extra-large")
+                << ": " << frame << " ms\n";
+            check(frame >= 0.0, "a real click paints the large icon selection frame");
+            pump(200);
+            check(title() == L"Battle.net", "the clicked folder still reaches the details pane");
+            if (!wasShown) { ShowWindow(window.m_hWnd, SW_HIDE); pump(150); }
+        }
+        {   // A stale icon result (selection moved on) is discarded, not shown.
+            window.m_previewPath.clear();
+            select(target); window.SyncShellViewSelection(); window.FlushSelectionPreview();
+            const unsigned serial = window.m_previewSerial;
+            select(folder + L"\\115Chrome"); window.SyncShellViewSelection(); window.FlushSelectionPreview();
+            const DWORD deadline = GetTickCount() + 3000;
+            while (!window.m_previewIconThreads.empty() && GetTickCount() < deadline) pump(20);
+            pump(100);
+            check(window.m_previewSerial == serial + 1 && title() == L"115Chrome" &&
+                window.m_previewBmp.find(L"preview_icon_" + std::to_wstring(serial + 1)) != std::wstring::npos,
+                "only the newest folder icon is applied");
+        }
+        // Timing on the user's real Pictures folder (read-only): the legacy synchronous handler
+        // versus the deferred one, as click -> selected frame painted and as handler cost.
+        // Printed for the report; not asserted (machine and data dependent).
+        PWSTR pictures = nullptr;
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Pictures, 0, nullptr, &pictures))) {
+            const std::wstring root = pictures; CoTaskMemFree(pictures);
+            std::vector<std::wstring> folders;
+            WIN32_FIND_DATAW data{}; HANDLE find = FindFirstFileW((root + L"\\*").c_str(), &data);
+            if (find != INVALID_HANDLE_VALUE) {
+                do {
+                    if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && data.cFileName[0] != L'.' && folders.size() < 3)
+                        folders.push_back(root + L"\\" + data.cFileName);
+                } while (FindNextFileW(find, &data));
+                FindClose(find);
+            }
+            window.NavigateToNow(root, true); pump(800);
+            const bool wasShown = IsWindowVisible(window.m_hWnd) != FALSE;
+            if (!wasShown) { ShowWindow(window.m_hWnd, SW_SHOWNOACTIVATE); pump(400); }
+            for (auto mode : {CMainWnd::ViewMode::LargeIcons, CMainWnd::ViewMode::ExtraLargeIcons}) {
+                window.SetViewMode(mode); pump(400);
+                for (const auto& path : folders) {
+                    for (bool legacy : {true, false}) {
+                        window.m_deferSelectionPreview = !legacy; window.m_asyncPreviewIcons = !legacy;
+                        const double ms = clickToFrameMs(path, 0);
+                        pump(250);
+                        std::wcout << L"pictures click->frame " << (mode == CMainWnd::ViewMode::LargeIcons ? L"large " : L"xlarge ")
+                            << PathFindFileNameW(path.c_str()) << (legacy ? L" legacy=" : L" new=") << ms << L" ms\n";
+                    }
+                }
+                window.m_deferSelectionPreview = true; window.m_asyncPreviewIcons = true;
+            }
+            if (!wasShown) { ShowWindow(window.m_hWnd, SW_HIDE); pump(200); }
+            window.SetViewMode(CMainWnd::ViewMode::LargeIcons); pump(300);
+            for (const auto& path : folders) {
+                if (!select(path)) continue;
+                window.m_previewPath.clear(); window.m_asyncPreviewIcons = false;
+                double t0 = now(); window.UpdatePreviewForSelection(); const double oldCost = now() - t0;
+                window.m_previewPath.clear(); window.m_asyncPreviewIcons = true;
+                window.m_shellSelectionSnapshot.clear();
+                t0 = now(); window.SyncShellViewSelection(); const double newHandler = now() - t0;
+                t0 = now(); window.FlushSelectionPreview(); const double deferredCost = now() - t0;
+                pump(250);
+                std::wcout << L"pictures handler " << PathFindFileNameW(path.c_str()) << L": sync-old=" << oldCost
+                    << L" ms, new-handler=" << newHandler << L" ms, deferred-ui=" << deferredCost << L" ms\n";
+            }
+            window.ClearFileSelection(); pump(200);
+        }
+        window.NavigateToNow(folder, true); pump(400);
+        window.SetViewMode(previousMode); pump(300);
+        if (!previewWasVisible) window.SetPreviewVisible(false);
+        return failures;
+    }
     // Shell menus use separators with ids 0, -1 and private ids (0x7FFD / 0x7FFE). The old
     // tidy pass only recognised id 0, so pruning 授予访问权限 left two stacked lines.
     static int CheckShellMenus(CMainWnd& window, const std::wstring& folder) {
@@ -1457,8 +1645,36 @@ struct MainWndRegressionAccess {
             DestroyMenu(popup); menu->Release();
             window.ReleaseRetiredShellMenus();
         }
+        {
+            // Item menus must offer Explorer's 重命名(M) (CMF_CANRENAME) for one renamable
+            // item in the Shell view, and the verb must start the view's in-place edit.
+            const auto sample = folder + L"\\sample.txt";
+            IContextMenu* itemMenu = nullptr; HMENU itemPopup = nullptr; UINT itemMax = 0;
+            const bool itemBuilt = window.BuildShellItemMenu({sample}, &itemMenu, &itemPopup, &itemMax);
+            check(itemBuilt && ShellMenuUtil::FindVerb(itemMenu, itemPopup, 1, itemMax, L"rename") >= 0,
+                "single file item menu contains native rename");
+            check(itemBuilt && !stacked(itemPopup), "item menu has no leading, trailing or stacked separators");
+            if (itemBuilt) { DestroyMenu(itemPopup); itemMenu->Release(); }
+            const bool multiBuilt = window.BuildShellItemMenu({sample, folder + L"\\Battle.net"}, &itemMenu, &itemPopup, &itemMax);
+            check(multiBuilt && ShellMenuUtil::FindVerb(itemMenu, itemPopup, 1, itemMax, L"rename") < 0,
+                "multi-selection item menu does not offer rename");
+            if (multiBuilt) { DestroyMenu(itemPopup); itemMenu->Release(); }
+            window.m_shellMenuPaths = {sample};
+            const bool routed = window.HandleRoutedShellVerb(L"Rename");
+            window.m_shellMenuPaths.clear();
+            HWND edit = nullptr;
+            const DWORD editDeadline = GetTickCount() + 2000;
+            while (routed && !(edit = ShellBrowserHostTestAccess::EditControl(*window.m_shellBrowser)) && GetTickCount() < editDeadline) pump(20);
+            std::vector<std::pair<std::wstring, bool>> renameSelection; window.m_shellBrowser->GetSelection(renameSelection);
+            check(routed && edit && window.m_pendingShellRename == sample && renameSelection.size() == 1 &&
+                CMainWnd::PathEquals(renameSelection[0].first, sample), "context menu rename starts in-place edit on the item");
+            ShellBrowserHostTestAccess::CancelEdit(*window.m_shellBrowser); pump(100);
+            window.m_pendingShellRename.clear();
+            check(GetFileAttributesW(sample.c_str()) != INVALID_FILE_ATTRIBUTES, "cancelled in-place rename keeps the name");
+        }
         window.m_shellMenuBackground = true; window.m_shellMenuFolder = folder;
         check(window.HandleRoutedShellVerb(L"refresh"), "background refresh is routed to FastFile refresh");
+        check(!window.HandleRoutedShellVerb(L"rename"), "background menu never routes rename");
         check(!window.HandleRoutedShellVerb(L"pastelink") && !window.HandleRoutedShellVerb(L"properties"),
             "other native background verbs stay with Windows");
         window.m_shellMenuBackground = false; window.m_shellMenuFolder.clear();
@@ -1756,6 +1972,7 @@ struct MainWndRegressionAccess {
         check(window.m_tabs.size() == tabCount + 2 && window.m_currentPath == siblingPrefix,
             "a sibling sharing the parent name prefix is not a descendant");
         check(DuiLib::TabStripRegressionAccess::Check(*window.m_pTabStrip), "150 percent tab title retains preferred width, idle/active equal, plus follows last tab");
+        failures += CheckSelectionLatency(window, fixture);
         failures += CheckShellMenus(window, fixture);
         failures += CheckFileOperationEngine(window.ParentPath(fixture));
         failures += CheckHandlers(window);
@@ -1765,7 +1982,38 @@ struct MainWndRegressionAccess {
     }
 };
 
+static LONG WINAPI ReportCrash(EXCEPTION_POINTERS* info) {
+    // Print the faulting module offset so a crash in CI is diagnosable without a debugger.
+    HMODULE module = nullptr; wchar_t name[MAX_PATH]{};
+    void* address = info->ExceptionRecord->ExceptionAddress;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        static_cast<LPCWSTR>(address), &module);
+    if (module) GetModuleFileNameW(module, name, MAX_PATH);
+    fwprintf(stderr, L"CRASH code=0x%08lX module=%ls rva=0x%llX\n", info->ExceptionRecord->ExceptionCode, name,
+        static_cast<unsigned long long>(reinterpret_cast<const char*>(address) - reinterpret_cast<const char*>(module)));
+    CONTEXT context = *info->ContextRecord;
+    for (int frame = 0; frame < 24 && context.Rip; ++frame) {
+        HMODULE frameModule = nullptr; wchar_t frameName[MAX_PATH]{};
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(context.Rip), &frameModule);
+        if (frameModule) GetModuleFileNameW(frameModule, frameName, MAX_PATH);
+        const wchar_t* shortName = wcsrchr(frameName, L'\\');
+        fwprintf(stderr, L"  #%d %ls+0x%llX\n", frame, shortName ? shortName + 1 : frameName,
+            static_cast<unsigned long long>(context.Rip - reinterpret_cast<DWORD64>(frameModule)));
+        DWORD64 imageBase = 0;
+        PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(context.Rip, &imageBase, nullptr);
+        if (!function) { context.Rip = *reinterpret_cast<DWORD64*>(context.Rsp); context.Rsp += 8; continue; }
+        void* handlerData = nullptr; DWORD64 establisher = 0;
+        RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, context.Rip, function, &context, &handlerData, &establisher, nullptr);
+    }
+    fwprintf(stderr, L"  thread=%lu\n", GetCurrentThreadId());
+    fflush(stderr);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 int main(int argc, char** argv) {
+    std::cout << std::unitbuf;
+    SetUnhandledExceptionFilter(ReportCrash);
     if(argc>1 && strcmp(argv[1],"--shell-activation-launcher")==0) {
         wchar_t desktopName[256]{},hiveName[256]{};
         GetEnvironmentVariableW(L"FASTFILE_TEST_DESKTOP",desktopName,_countof(desktopName));
