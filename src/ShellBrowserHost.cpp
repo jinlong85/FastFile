@@ -7,6 +7,8 @@
 #include <shlobj.h>
 #include <shlwapi.h>
 #include <propkey.h>
+#include <propvarutil.h>
+#include <commoncontrols.h>
 #include <new>
 #include <utility>
 #include <vector>
@@ -188,6 +190,7 @@ public:
     HRESULT STDMETHODCALLTYPE OnViewCreated(IShellView* view) override
     {
         if (m_owner) {
+            m_owner->CancelThumbRequests();
             m_owner->AttachViewFilter(view);
             IFolderView2* folderView=nullptr;
             if(SUCCEEDED(view->QueryInterface(IID_PPV_ARGS(&folderView)))) {
@@ -241,6 +244,7 @@ bool ShellBrowserHost::Create(HWND parent, const RECT& bounds,
     if (m_browser || !parent)
         return false;
     m_parent = parent;
+    m_uiThread = GetCurrentThreadId();
     m_navigationMessage = navigationMessage;
     m_selectionMessage = selectionMessage;
     m_folderOpenMessage = folderOpenMessage;
@@ -287,6 +291,7 @@ bool ShellBrowserHost::Create(HWND parent, const RECT& bounds,
 void ShellBrowserHost::Destroy()
 {
     RestoreListSpacing();
+    StopThumbWorker();
     ClearItemImages();
     if (m_listWindow) RemoveWindowSubclass(m_listWindow, ListSubclass, reinterpret_cast<UINT_PTR>(this));
     if (m_viewWindow) RemoveWindowSubclass(m_viewWindow, ViewSubclass, reinterpret_cast<UINT_PTR>(this));
@@ -333,7 +338,8 @@ void ShellBrowserHost::SetBounds(const RECT& bounds)
 
 bool ShellBrowserHost::Navigate(const std::wstring& path)
 {
-    ClearItemImages();
+    // Drop queued thumbnails of the old folder; cached ones stay (keyed by item + size).
+    CancelThumbRequests();
     if (!m_browser || path.empty())
         return false;
     const std::wstring target = _wcsicmp(path.c_str(), kThisPcPath) == 0
@@ -369,7 +375,6 @@ bool ShellBrowserHost::Navigate(const std::wstring& path)
 void ShellBrowserHost::Refresh()
 {
     ++m_counters.refreshes;
-    ClearItemImages();
     if (!m_browser)
         return;
     IShellView* view = nullptr;
@@ -748,7 +753,10 @@ bool ShellBrowserHost::ApplyViewMode(IFolderView2* view)
     const int previousSlot = m_iconSlot;
     m_iconSlot = mode == FVM_ICON && (iconSize == MulDiv(128, m_dpi, 96)
         || iconSize == MulDiv(160, m_dpi, 96)) ? iconSize : 0;
-    if (m_iconSlot != previousSlot) ClearItemImages();
+    // A new slot only drops queued requests: thumbnails of other sizes stay cached,
+    // so returning to a size draws from memory without any extraction.
+    if (m_iconSlot != previousSlot) CancelThumbRequests();
+    if (dpiChanged) m_badges.clear();
     if (dpiChanged) m_spacingList = nullptr;
     StyleNativeView(view);
     if (mode == FVM_DETAILS && _wcsicmp(m_lastNavigation.c_str(), kThisPcPath) != 0) {
@@ -774,6 +782,8 @@ bool ShellBrowserHost::ApplyViewMode(IFolderView2* view)
         m_redrawBatch=nullptr;
         if (IsWindow(batch)) {
             SendMessageW(batch,WM_SETREDRAW,TRUE,0);
+            // Measured: an extra RDW_UPDATENOW here only moved the paint into the switch
+            // call (longer sync, same busy time), so the repaint stays asynchronous.
             RedrawWindow(batch,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_FRAME);
         }
         if (m_listWindow && m_listWindow!=batch) InvalidateRect(m_listWindow,nullptr,TRUE);
@@ -966,29 +976,329 @@ HBITMAP ShellBrowserHost::NormalizeImageAlpha(HBITMAP bitmap)
 
 void ShellBrowserHost::ClearItemImages()
 {
+    CancelThumbRequests();
     for(const auto& icon:m_associatedIcons)if(icon.second)DestroyIcon(icon.second);
     m_associatedIcons.clear();
-    for (const auto& image : m_itemImages) if (image.second) DeleteObject(image.second);
-    m_itemImages.clear();
+    m_badges.clear();
+    for (const auto& icon : m_placeholderIcons) if (icon.second) DestroyIcon(icon.second);
+    m_placeholderIcons.clear();
+    for (const auto& entry : m_thumbLru) if (entry.bitmap) DeleteObject(entry.bitmap);
+    m_thumbLru.clear();
+    m_thumbIndex.clear();
+    m_thumbBytes = 0;
 }
 
-HBITMAP ShellBrowserHost::ItemImage(IShellItem* item, const std::wstring& path)
+void ShellBrowserHost::SetThumbnailCacheLimits(size_t maxBytes, size_t maxEntries)
 {
-    const auto found = m_itemImages.find(path);
-    if (found != m_itemImages.end()) return found->second;
-    if (m_itemImages.size() >= 128) ClearItemImages();
+    m_thumbMaxBytes = maxBytes;
+    m_thumbMaxEntries = maxEntries ? maxEntries : 1;
+    TrimThumbs();
+}
+
+bool ShellBrowserHost::LookupThumb(const std::wstring& key, HBITMAP& bitmap)
+{
+    const auto found = m_thumbIndex.find(key);
+    if (found == m_thumbIndex.end()) return false;
+    if (found->second != m_thumbLru.begin()) m_thumbLru.splice(m_thumbLru.begin(), m_thumbLru, found->second);
+    bitmap = found->second->bitmap;
+    return true;
+}
+
+void ShellBrowserHost::StoreThumb(const std::wstring& key, HBITMAP bitmap)
+{
+    size_t bytes = 64;
+    BITMAP info{};
+    if (bitmap && GetObjectW(bitmap, sizeof(info), &info)) bytes += size_t(info.bmWidth) * size_t(info.bmHeight) * 4;
+    const auto found = m_thumbIndex.find(key);
+    if (found != m_thumbIndex.end()) {
+        if (found->second->bitmap && found->second->bitmap != bitmap) DeleteObject(found->second->bitmap);
+        m_thumbBytes -= found->second->bytes;
+        m_thumbLru.erase(found->second);
+        m_thumbIndex.erase(found);
+    }
+    m_thumbLru.push_front({key, bitmap, bytes});
+    m_thumbIndex[key] = m_thumbLru.begin();
+    m_thumbBytes += bytes;
+    TrimThumbs();
+}
+
+void ShellBrowserHost::TrimThumbs()
+{
+    // Least recently drawn first; the newest entry always stays.
+    while (m_thumbLru.size() > 1 && (m_thumbBytes > m_thumbMaxBytes || m_thumbLru.size() > m_thumbMaxEntries)) {
+        const ThumbEntry& last = m_thumbLru.back();
+        if (last.bitmap) DeleteObject(last.bitmap);
+        m_thumbBytes -= last.bytes;
+        m_thumbIndex.erase(last.key);
+        m_thumbLru.pop_back();
+        ++m_counters.thumbEvictions;
+    }
+}
+
+std::wstring ShellBrowserHost::ThumbKey(IShellItem* item, const std::wstring& path, int size)
+{
+    // Identity + requested size + the size / modified time the view enumerated, so an
+    // edited file (re-enumerated by the view) gets a fresh thumbnail. Fast properties
+    // come from the item id itself: no file or property-handler access on paint.
+    ULONGLONG bytes = 0, written = 0;
+    IShellItem2* item2 = nullptr;
+    if (item && SUCCEEDED(item->QueryInterface(IID_PPV_ARGS(&item2)))) {
+        IPropertyStore* store = nullptr;
+        if (SUCCEEDED(item2->GetPropertyStore(GPS_FASTPROPERTIESONLY, IID_PPV_ARGS(&store)))) {
+            PROPVARIANT value; PropVariantInit(&value);
+            if (SUCCEEDED(store->GetValue(PKEY_Size, &value)) && value.vt == VT_UI8) bytes = value.uhVal.QuadPart;
+            PropVariantClear(&value);
+            if (SUCCEEDED(store->GetValue(PKEY_DateModified, &value)) && value.vt == VT_FILETIME)
+                written = (ULONGLONG(value.filetime.dwHighDateTime) << 32) | value.filetime.dwLowDateTime;
+            PropVariantClear(&value);
+            store->Release();
+        }
+        item2->Release();
+    }
+    wchar_t tail[80]{};
+    swprintf_s(tail, L"|%d|%llx|%llx", size, bytes, written);
+    return path + tail;
+}
+
+HBITMAP ShellBrowserHost::ExtractThumb(PCIDLIST_ABSOLUTE pidl, int size)
+{
+    if (GetCurrentThreadId() == m_uiThread) ++m_counters.syncExtractions;
     IShellItemImageFactory* factory = nullptr;
     HBITMAP bitmap = nullptr;
-    if (SUCCEEDED(item->QueryInterface(IID_PPV_ARGS(&factory)))) {
-        const SIZE size{m_iconSlot,m_iconSlot};
+    if (pidl && SUCCEEDED(SHCreateItemFromIDList(pidl, IID_PPV_ARGS(&factory)))) {
+        const SIZE request{size, size};
         // Ask Shell for the physical-size thumbnail, never a stretched 16px icon.
-        if (FAILED(factory->GetImage(size, SIIGBF_THUMBNAILONLY, &bitmap)))
-            factory->GetImage(size, SIIGBF_ICONONLY, &bitmap);
+        if (FAILED(factory->GetImage(request, SIIGBF_THUMBNAILONLY, &bitmap)))
+            factory->GetImage(request, SIIGBF_ICONONLY, &bitmap);
         factory->Release();
     }
-    bitmap=NormalizeImageAlpha(bitmap);
-    m_itemImages[path] = bitmap;
-    return bitmap;
+    return NormalizeImageAlpha(bitmap);
+}
+
+namespace {
+constexpr UINT kThumbReadyMessage = WM_APP + 0x51;
+constexpr wchar_t kThumbWindowClass[] = L"FastFileThumbnailSink";
+}
+
+LRESULT CALLBACK ShellBrowserHost::ThumbWindowProc(HWND window, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (msg == kThumbReadyMessage) {
+        if (auto* host = reinterpret_cast<ShellBrowserHost*>(GetWindowLongPtrW(window, GWLP_USERDATA))) host->OnThumbsReady();
+        return 0;
+    }
+    return DefWindowProcW(window, msg, wp, lp);
+}
+
+void ShellBrowserHost::StartThumbWorker()
+{
+    if (m_thumbThread.joinable()) return;
+    if (!m_thumbWindow) {
+        WNDCLASSEXW wc{sizeof(wc)};
+        wc.lpfnWndProc = ThumbWindowProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = kThumbWindowClass;
+        RegisterClassExW(&wc); // a second registration fails harmlessly
+        m_thumbWindow = CreateWindowExW(0, kThumbWindowClass, nullptr, 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, wc.hInstance, nullptr);
+        if (!m_thumbWindow) return;
+        SetWindowLongPtrW(m_thumbWindow, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+    }
+    if (!m_uiThread) m_uiThread = GetCurrentThreadId();
+    {
+        std::lock_guard<std::mutex> lock(m_thumbMutex);
+        m_thumbStop = false;
+    }
+    m_thumbThread = std::thread(ThumbWorkerMain, this);
+}
+
+void ShellBrowserHost::StopThumbWorker()
+{
+    {
+        std::lock_guard<std::mutex> lock(m_thumbMutex);
+        m_thumbStop = true;
+    }
+    m_thumbCv.notify_all();
+    if (m_thumbThread.joinable()) m_thumbThread.join();
+    std::lock_guard<std::mutex> lock(m_thumbMutex);
+    for (auto& request : m_thumbQueue) CoTaskMemFree(request.pidl);
+    m_thumbQueue.clear();
+    for (auto& result : m_thumbResults) if (result.bitmap) DeleteObject(result.bitmap);
+    m_thumbResults.clear();
+    m_thumbPosted = false;
+    m_thumbPending.clear();
+    if (m_thumbWindow) { DestroyWindow(m_thumbWindow); m_thumbWindow = nullptr; }
+}
+
+void ShellBrowserHost::CancelThumbRequests()
+{
+    // A new folder or slot: queued requests and in-flight results of the old one are
+    // dropped (the memory cache itself is kept; its keys include item and size).
+    ++m_thumbGeneration;
+    m_thumbPending.clear();
+    std::lock_guard<std::mutex> lock(m_thumbMutex);
+    for (auto& request : m_thumbQueue) CoTaskMemFree(request.pidl);
+    m_counters.staleDropped += int(m_thumbQueue.size());
+    m_thumbQueue.clear();
+}
+
+void ShellBrowserHost::RequestThumb(IShellItem* item, const std::wstring& key, const std::wstring& path, int index)
+{
+    if (m_thumbPending.count(key)) {
+        // Already queued: just mark it as painted (visible) again.
+        ++m_counters.coalesced;
+        std::lock_guard<std::mutex> lock(m_thumbMutex);
+        for (auto& request : m_thumbQueue) if (request.key == key) { request.paintSeq = m_paintSeq; request.item = index; break; }
+        return;
+    }
+    PIDLIST_ABSOLUTE pidl = nullptr;
+    if (FAILED(SHGetIDListFromObject(item, &pidl)) || !pidl) return;
+    StartThumbWorker();
+    if (!m_thumbThread.joinable()) { CoTaskMemFree(pidl); return; }
+    m_thumbPending.insert(key);
+    ++m_counters.thumbRequests;
+    {
+        std::lock_guard<std::mutex> lock(m_thumbMutex);
+        ThumbRequest request;
+        request.key = key; request.path = path; request.pidl = pidl;
+        request.size = m_iconSlot; request.item = index;
+        request.generation = m_thumbGeneration.load(); request.paintSeq = m_paintSeq;
+        m_thumbQueue.push_back(std::move(request));
+    }
+    m_thumbCv.notify_one();
+}
+
+void ShellBrowserHost::ThumbWorkerMain(ShellBrowserHost* self)
+{
+    const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    for (;;) {
+        ThumbRequest request;
+        {
+            std::unique_lock<std::mutex> lock(self->m_thumbMutex);
+            self->m_thumbCv.wait(lock, [self] { return self->m_thumbStop || !self->m_thumbQueue.empty(); });
+            if (self->m_thumbStop) break;
+            const UINT generation = self->m_thumbGeneration.load();
+            auto best = self->m_thumbQueue.end();
+            for (auto it = self->m_thumbQueue.begin(); it != self->m_thumbQueue.end();) {
+                if (it->generation != generation) {
+                    CoTaskMemFree(it->pidl); ++self->m_thumbDroppedQueued;
+                    it = self->m_thumbQueue.erase(it);
+                    best = self->m_thumbQueue.end();
+                    continue;
+                }
+                ++it;
+            }
+            // Most recently painted first (what is on screen now); FIFO among equals.
+            for (auto it = self->m_thumbQueue.begin(); it != self->m_thumbQueue.end(); ++it)
+                if (best == self->m_thumbQueue.end() || it->paintSeq > best->paintSeq) best = it;
+            if (best == self->m_thumbQueue.end()) continue;
+            request = std::move(*best);
+            self->m_thumbQueue.erase(best);
+        }
+        HBITMAP bitmap = self->ExtractThumb(request.pidl, request.size);
+        CoTaskMemFree(request.pidl);
+        bool post = false;
+        {
+            std::lock_guard<std::mutex> lock(self->m_thumbMutex);
+            if (self->m_thumbStop) { if (bitmap) DeleteObject(bitmap); break; }
+            self->m_thumbResults.push_back({request.key, request.path, bitmap, request.item, request.generation});
+            if (!self->m_thumbPosted) self->m_thumbPosted = post = true;
+        }
+        if (post && !PostMessageW(self->m_thumbWindow, kThumbReadyMessage, 0, 0)) {
+            std::lock_guard<std::mutex> lock(self->m_thumbMutex);
+            self->m_thumbPosted = false;
+        }
+    }
+    if (SUCCEEDED(com)) CoUninitialize();
+}
+
+void ShellBrowserHost::OnThumbsReady()
+{
+    std::vector<ThumbResult> results;
+    {
+        std::lock_guard<std::mutex> lock(m_thumbMutex);
+        results.swap(m_thumbResults);
+        m_thumbPosted = false;
+        m_counters.staleDropped += m_thumbDroppedQueued;
+        m_thumbDroppedQueued = 0;
+    }
+    const UINT generation = m_thumbGeneration.load();
+    IFolderView2* view = nullptr;
+    bool wholeList = false;
+    for (auto& result : results) {
+        ++m_counters.thumbExtractions;
+        if (result.generation != generation) {
+            ++m_counters.staleDropped;
+            if (result.bitmap) DeleteObject(result.bitmap);
+            continue;
+        }
+        m_thumbPending.erase(result.key);
+        StoreThumb(result.key, result.bitmap);
+        if (!m_listWindow || !m_iconSlot || wholeList) continue;
+        // Repaint only that cell; the item may have moved (sort / refresh) meanwhile.
+        bool same = false;
+        if (!view && m_browser) m_browser->GetCurrentView(IID_PPV_ARGS(&view));
+        IShellItem* item = nullptr;
+        if (view && result.item >= 0 && SUCCEEDED(view->GetItem(result.item, IID_PPV_ARGS(&item)))) {
+            PWSTR name = nullptr;
+            if (SUCCEEDED(item->GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING, &name))) {
+                same = result.path == name; CoTaskMemFree(name);
+            }
+            item->Release();
+        }
+        if (same) { InvalidateIconCell(result.item); ++m_counters.itemInvalidations; }
+        else { InvalidateRect(m_listWindow, nullptr, FALSE); wholeList = true; }
+    }
+    if (view) view->Release();
+}
+
+bool ShellBrowserHost::IconCell(int index, RECT& cell) const
+{
+    POINT point{};
+    if (!m_listWindow || !m_iconSlot || !ListView_GetItemPosition(m_listWindow, index, &point)) return false;
+    const int pad = MulDiv(8, m_dpi, 96);
+    cell = {point.x, point.y, point.x + m_iconSlot + 2 * pad, point.y + m_iconSlot + MulDiv(36, m_dpi, 96)};
+    return true;
+}
+
+void ShellBrowserHost::InvalidateIconCell(int index)
+{
+    RECT cell{};
+    if (IconCell(index, cell)) InvalidateRect(m_listWindow, &cell, FALSE);
+}
+
+HICON ShellBrowserHost::PlaceholderIcon(int systemIndex)
+{
+    if (systemIndex < 0) return nullptr;
+    const auto found = m_placeholderIcons.find(systemIndex);
+    if (found != m_placeholderIcons.end()) return found->second;
+    HICON icon = nullptr;
+    IImageList* jumbo = nullptr;
+    if (SUCCEEDED(SHGetImageList(SHIL_JUMBO, IID_PPV_ARGS(&jumbo)))) {
+        jumbo->GetIcon(systemIndex, ILD_TRANSPARENT, &icon);
+        jumbo->Release();
+    }
+    m_placeholderIcons[systemIndex] = icon;
+    return icon;
+}
+
+void ShellBrowserHost::DrawPlaceholder(HDC dc, const std::wstring& path, const RECT& cell, bool folder)
+{
+    // While the thumbnail loads: the generic Shell icon of the item's type (folder / file
+    // extension, resolved from the registry only, never from the file), 256-px source.
+    int index = -1;
+    if (folder) {
+        if (m_folderIcon < 0) {
+            SHSTOCKICONINFO stock{sizeof(stock)};
+            if (SUCCEEDED(SHGetStockIconInfo(SIID_FOLDER, SHGSI_SYSICONINDEX, &stock))) m_folderIcon = stock.iSysImageIndex;
+        }
+        index = m_folderIcon;
+    } else {
+        index = Badge(path).systemIcon;
+    }
+    HICON icon = PlaceholderIcon(index);
+    if (!icon) return;
+    const int pad = MulDiv(8, m_dpi, 96);
+    DrawIconEx(dc, cell.left + pad, cell.top + pad, icon, m_iconSlot, m_iconSlot, 0, nullptr, DI_NORMAL);
 }
 
 HICON ShellBrowserHost::AssociatedAppIcon(const std::wstring& path)
@@ -1018,10 +1328,42 @@ HICON ShellBrowserHost::AssociatedAppIcon(const std::wstring& path)
     }
     m_associatedIcons[extension]=icon;return icon;
 }
+
+const ShellBrowserHost::BadgeInfo& ShellBrowserHost::Badge(const std::wstring& path)
+{
+    // One perceived-type / association / icon-size lookup per extension per session
+    // (kept across view switches, refreshes and folders).
+    std::wstring extension = PathFindExtensionW(path.c_str());
+    CharLowerBuffW(extension.data(), DWORD(extension.size()));
+    const auto found = m_badges.find(extension);
+    if (found != m_badges.end()) return found->second;
+    ++m_counters.badgeResolves;
+    BadgeInfo badge;
+    PERCEIVED perceived = PERCEIVED_TYPE_UNSPECIFIED;
+    PERCEIVEDFLAG flags = 0;
+    AssocGetPerceivedType(extension.c_str(), &perceived, &flags, nullptr);
+    badge.media = perceived == PERCEIVED_TYPE_IMAGE || perceived == PERCEIVED_TYPE_VIDEO || perceived == PERCEIVED_TYPE_AUDIO;
+    SHFILEINFOW type{};
+    if (SHGetFileInfoW(extension.empty() ? L"file" : extension.c_str(), FILE_ATTRIBUTE_NORMAL, &type, sizeof(type),
+            SHGFI_SYSICONINDEX | SHGFI_USEFILEATTRIBUTES))
+        badge.systemIcon = type.iIcon;
+    if (badge.media) {
+        badge.icon = AssociatedAppIcon(path);
+        ICONINFO info{}; BITMAP bitmap{};
+        if (badge.icon && GetIconInfo(badge.icon, &info)) {
+            if (info.hbmColor && GetObjectW(info.hbmColor, sizeof(bitmap), &bitmap))
+                badge.size = (std::min)(int(bitmap.bmWidth), MulDiv(20, m_dpi, 96));
+            if (info.hbmColor) DeleteObject(info.hbmColor);
+            if (info.hbmMask) DeleteObject(info.hbmMask);
+        }
+    }
+    return m_badges.emplace(extension, badge).first->second;
+}
+
 LRESULT ShellBrowserHost::DrawIconItem(NMLVCUSTOMDRAW* draw)
 {
     if (!m_iconSlot) return CDRF_DODEFAULT;
-    if (draw->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
+    if (draw->nmcd.dwDrawStage == CDDS_PREPAINT) { ++m_paintSeq; return CDRF_NOTIFYITEMDRAW; }
     if (draw->dwItemType != LVCDI_ITEM) return CDRF_DODEFAULT;
     if (draw->nmcd.dwDrawStage != CDDS_ITEMPREPAINT) return CDRF_DODEFAULT;
     const int index = static_cast<int>(draw->nmcd.dwItemSpec);
@@ -1031,9 +1373,7 @@ LRESULT ShellBrowserHost::DrawIconItem(NMLVCUSTOMDRAW* draw)
     GetClientRect(m_listWindow, &viewport);
     if (!IntersectRect(&visible, &cell, &viewport)) return CDRF_SKIPDEFAULT;
     const int pad = MulDiv(8, m_dpi, 96);
-    POINT point{}; ListView_GetItemPosition(m_listWindow, index, &point);
-    cell = {point.x, point.y, point.x + m_iconSlot + 2 * pad,
-        point.y + m_iconSlot + MulDiv(36, m_dpi, 96)};
+    IconCell(index, cell);
     const bool selected = (ListView_GetItemState(m_listWindow, index, LVIS_SELECTED) & LVIS_SELECTED) != 0;
     const bool hot = m_hotItem == index;
     HDC dc = draw->nmcd.hdc;
@@ -1057,11 +1397,16 @@ LRESULT ShellBrowserHost::DrawIconItem(NMLVCUSTOMDRAW* draw)
             PWSTR name = nullptr;
             PWSTR fullPath = nullptr;
             if (SUCCEEDED(shellItem->GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING, &fullPath))) {
-                PERCEIVED perceived = PERCEIVED_TYPE_UNSPECIFIED;
-                PERCEIVEDFLAG flags = 0;
-                AssocGetPerceivedType(PathFindExtensionW(fullPath), &perceived, &flags, nullptr);
-                const bool media=perceived==PERCEIVED_TYPE_IMAGE || perceived==PERCEIVED_TYPE_VIDEO || perceived==PERCEIVED_TYPE_AUDIO;
-                HBITMAP bitmap=ItemImage(shellItem,fullPath);
+                // Never extract on the UI thread: a cached thumbnail, or the Shell icon
+                // now and the thumbnail from the worker (which repaints just this cell).
+                const std::wstring key = ThumbKey(shellItem, fullPath, m_iconSlot);
+                HBITMAP bitmap = nullptr;
+                if (LookupThumb(key, bitmap)) ++m_counters.thumbHits;
+                else {
+                    ++m_counters.placeholders;
+                    RequestThumb(shellItem, key, fullPath, index);
+                    DrawPlaceholder(dc, fullPath, cell, (attrs & SFGAO_FOLDER) != 0);
+                }
                 if (bitmap) {
                     BITMAP info{}; GetObjectW(bitmap,sizeof(info),&info);
                     HDC source=CreateCompatibleDC(dc);
@@ -1074,19 +1419,10 @@ LRESULT ShellBrowserHost::DrawIconItem(NMLVCUSTOMDRAW* draw)
                         cell.top+pad+(m_iconSlot-height)/2,width,height,
                         source,0,0,info.bmWidth,info.bmHeight,blend);
                     SelectObject(source,old); DeleteDC(source);
-                    if(media) {
-                        HICON badge=AssociatedAppIcon(fullPath);
-                        ICONINFO badgeInfo{};BITMAP badgeBitmap{};
-                        if(badge && GetIconInfo(badge,&badgeInfo)) {
-                            if(badgeInfo.hbmColor && GetObjectW(badgeInfo.hbmColor,sizeof(badgeBitmap),&badgeBitmap)) {
-                                const int badgeSize=(std::min)(int(badgeBitmap.bmWidth),MulDiv(20,m_dpi,96));
-                                DrawIconEx(dc,cell.left+pad+(m_iconSlot+width)/2-badgeSize,
-                                    cell.top+pad+(m_iconSlot+height)/2-badgeSize,badge,badgeSize,badgeSize,0,nullptr,DI_NORMAL);
-                            }
-                            if(badgeInfo.hbmColor)DeleteObject(badgeInfo.hbmColor);
-                            if(badgeInfo.hbmMask)DeleteObject(badgeInfo.hbmMask);
-                        }
-                    }
+                    const BadgeInfo& badge = Badge(fullPath);
+                    if (badge.media && badge.icon && badge.size > 0)
+                        DrawIconEx(dc,cell.left+pad+(m_iconSlot+width)/2-badge.size,
+                            cell.top+pad+(m_iconSlot+height)/2-badge.size,badge.icon,badge.size,badge.size,0,nullptr,DI_NORMAL);
                 }
                 CoTaskMemFree(fullPath);
             }

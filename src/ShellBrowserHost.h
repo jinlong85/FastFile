@@ -9,6 +9,14 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <list>
+#include <deque>
+#include <unordered_map>
+#include <unordered_set>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
 
 class ShellBrowserHost final
 {
@@ -53,6 +61,8 @@ public:
     bool SetGrouping(int mode);
     bool GetSelection(std::vector<std::pair<std::wstring, bool>>& paths) const;
     bool IsCreated() const { return m_browser != nullptr; }
+    // Large / extra-large thumbnail memory cache bounds (LRU; tests shrink them).
+    void SetThumbnailCacheLimits(size_t maxBytes, size_t maxEntries);
 
 private:
     HRESULT DefaultCommand(IShellView* view, BOOL (WINAPI *execute)(SHELLEXECUTEINFOW*) = ShellExecuteExW);
@@ -70,7 +80,36 @@ private:
     void RestoreListSpacing();
     bool InstallListSpacer(HWND list);
     LRESULT DrawListIcon(NMLVCUSTOMDRAW* draw);
-    HBITMAP ItemImage(IShellItem* item, const std::wstring& path);
+    // Thumbnail cache (UI thread): key = item identity + slot size + size / mtime stamp.
+    struct ThumbEntry { std::wstring key; HBITMAP bitmap = nullptr; size_t bytes = 0; };
+    bool LookupThumb(const std::wstring& key, HBITMAP& bitmap);
+    void StoreThumb(const std::wstring& key, HBITMAP bitmap);
+    void TrimThumbs();
+    static std::wstring ThumbKey(IShellItem* item, const std::wstring& path, int size);
+    // Extraction (IShellItemImageFactory) for one item; counts UI-thread calls.
+    HBITMAP ExtractThumb(PCIDLIST_ABSOLUTE pidl, int size);
+    // Async thumbnail worker (STA). Requests are coalesced by key, the most recently
+    // painted (visible) items go first, and a generation bump drops stale ones.
+    struct ThumbRequest {
+        std::wstring key, path; PIDLIST_ABSOLUTE pidl = nullptr;
+        int size = 0, item = -1; UINT generation = 0; ULONGLONG paintSeq = 0;
+    };
+    struct ThumbResult { std::wstring key, path; HBITMAP bitmap = nullptr; int item = -1; UINT generation = 0; };
+    void RequestThumb(IShellItem* item, const std::wstring& key, const std::wstring& path, int index);
+    void CancelThumbRequests();
+    void StartThumbWorker();
+    void StopThumbWorker();
+    void OnThumbsReady();
+    void InvalidateIconCell(int index);
+    bool IconCell(int index, RECT& cell) const;
+    void DrawPlaceholder(HDC dc, const std::wstring& path, const RECT& cell, bool folder);
+    HICON PlaceholderIcon(int systemIndex);
+    static void ThumbWorkerMain(ShellBrowserHost* self);
+    static LRESULT CALLBACK ThumbWindowProc(HWND, UINT, WPARAM, LPARAM);
+    // Per-extension association badge (perceived media type + app icon) and generic type icon,
+    // cached for the session.
+    struct BadgeInfo { bool media = false; HICON icon = nullptr; int size = 0; int systemIcon = -1; };
+    const BadgeInfo& Badge(const std::wstring& path);
     void PaintScrollBar(HWND window);
     static LRESULT CALLBACK ViewSubclass(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
     static LRESULT CALLBACK ListSubclass(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
@@ -88,6 +127,16 @@ private:
         int redrawBatches = 0;   // WM_SETREDRAW off/on around a real change
         int listPaints = 0;      // WM_PAINT reaching the native list
         int fullPaints = 0;      // ... whose update region covers (nearly) the whole list
+        int thumbHits = 0;       // large-icon cell drawn from the memory thumbnail cache
+        int placeholders = 0;    // ... drawn with the Shell icon while its thumbnail loads
+        int thumbRequests = 0;   // queued to the worker
+        int coalesced = 0;       // repeated misses for an already queued item
+        int thumbExtractions = 0;// thumbnails extracted by the worker (results received)
+        int syncExtractions = 0; // thumbnail extractions on the UI thread (must stay 0)
+        int staleDropped = 0;    // results / requests of an old folder or mode dropped
+        int itemInvalidations = 0; // single cell invalidated when its thumbnail arrived
+        int thumbEvictions = 0;  // LRU evictions
+        int badgeResolves = 0;   // per-extension association badge lookups
     };
     ViewCounters m_counters;
     HWND m_redrawBatch = nullptr;    // list with redraw suspended during ApplyViewMode
@@ -106,8 +155,28 @@ private:
     bool m_customTileHeight = false;
     HIMAGELIST m_listSpacer=nullptr;
     HIMAGELIST m_shellSmallImages=nullptr;
-    std::map<std::wstring, HBITMAP> m_itemImages;
+    std::list<ThumbEntry> m_thumbLru;    // front = most recently used
+    std::unordered_map<std::wstring, std::list<ThumbEntry>::iterator> m_thumbIndex;
+    size_t m_thumbBytes = 0;
+    size_t m_thumbMaxBytes = 96u * 1024u * 1024u;
+    size_t m_thumbMaxEntries = 2000;
+    std::unordered_set<std::wstring> m_thumbPending; // queued / in flight (UI thread)
+    std::thread m_thumbThread;
+    std::mutex m_thumbMutex;
+    std::condition_variable m_thumbCv;
+    std::deque<ThumbRequest> m_thumbQueue;     // guarded by m_thumbMutex
+    std::vector<ThumbResult> m_thumbResults;   // guarded by m_thumbMutex
+    bool m_thumbStop = false;                  // guarded by m_thumbMutex
+    bool m_thumbPosted = false;                // guarded by m_thumbMutex
+    int m_thumbDroppedQueued = 0;              // guarded by m_thumbMutex
+    std::atomic<UINT> m_thumbGeneration{1};
+    ULONGLONG m_paintSeq = 0;
+    HWND m_thumbWindow = nullptr;
+    DWORD m_uiThread = 0;
     std::map<std::wstring, HICON> m_associatedIcons;
+    std::unordered_map<std::wstring, BadgeInfo> m_badges;
+    std::map<int, HICON> m_placeholderIcons; // 256-px system icons by system image index
+    int m_folderIcon = -1;
     IConnectionPoint* m_selectionEvents = nullptr;
     DWORD m_selectionCookie = 0;
     IExplorerBrowser* m_browser = nullptr;

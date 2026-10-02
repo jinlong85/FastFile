@@ -17,6 +17,7 @@ public:
 #undef CMainWnd
 #undef wWinMain
 #include <iostream>
+#include <functional>
 #include <sddl.h>
 #pragma comment(lib, "advapi32.lib")
 
@@ -157,7 +158,10 @@ struct ShellBrowserHostTestAccess {
         FillRect(dc,&client,reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
         NMLVCUSTOMDRAW draw{};draw.nmcd.hdc=dc;draw.nmcd.dwItemSpec=index;
         draw.nmcd.dwDrawStage=CDDS_ITEMPREPAINT;
-        host.DrawIconItem(&draw);
+        host.DrawIconItem(&draw);           // placeholder + async request
+        SettleThumbs(host);
+        FillRect(dc,&client,reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+        host.DrawIconItem(&draw);           // cached thumbnail
         POINT point{};ListView_GetItemPosition(host.m_listWindow,index,&point);
         const int pad=MulDiv(8,host.m_dpi,96),size=host.m_iconSlot;
         RECT content{size,size,0,0};int colored=0;
@@ -176,6 +180,102 @@ struct ShellBrowserHostTestAccess {
             abs(width*sourceH-height*sourceW)<=3*(sourceW+sourceH) &&
             abs(content.left-(size-content.right))<=4 && abs(content.top-(size-content.bottom))<=4;
     }
+    // Async thumbnails: pump until the worker has delivered every queued thumbnail.
+    static bool SettleThumbs(ShellBrowserHost& host, DWORD timeout = 6000) {
+        const DWORD deadline = GetTickCount() + timeout;
+        DWORD quietSince = GetTickCount();
+        while (GetTickCount() < deadline) {
+            MSG message;
+            while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                if (message.message == WM_QUIT) continue;
+                TranslateMessage(&message); DispatchMessageW(&message);
+            }
+            if (!host.m_thumbPending.empty()) quietSince = GetTickCount();
+            else if (GetTickCount() - quietSince >= 150) return true;
+            Sleep(5);
+        }
+        return host.m_thumbPending.empty();
+    }
+    static size_t PendingThumbs(ShellBrowserHost& host) { return host.m_thumbPending.size(); }
+    static size_t CachedThumbs(ShellBrowserHost& host) { return host.m_thumbLru.size(); }
+    static std::vector<std::wstring> CachedKeys(ShellBrowserHost& host) {
+        std::vector<std::wstring> keys; for (const auto& entry : host.m_thumbLru) keys.push_back(entry.key); return keys;
+    }
+    static UINT ThumbGeneration(ShellBrowserHost& host) { return host.m_thumbGeneration.load(); }
+    static bool IconCell(ShellBrowserHost& host, int index, RECT& cell) { return host.IconCell(index, cell); }
+    static LRESULT DrawItem(ShellBrowserHost& host, HDC dc, int index) {
+        NMLVCUSTOMDRAW draw{}; draw.nmcd.hdc = dc; draw.nmcd.dwItemSpec = index; draw.nmcd.dwDrawStage = CDDS_ITEMPREPAINT;
+        return host.DrawIconItem(&draw);
+    }
+    // Hands the UI thread a finished thumbnail result as the worker would.
+    static void Deliver(ShellBrowserHost& host, int item, const std::wstring& path, const std::wstring& key, UINT generation) {
+        BITMAPINFO info{}; info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        info.bmiHeader.biWidth = 8; info.bmiHeader.biHeight = -8; info.bmiHeader.biPlanes = 1; info.bmiHeader.biBitCount = 32;
+        void* bits = nullptr;
+        HBITMAP bitmap = CreateDIBSection(nullptr, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+        {
+            std::lock_guard<std::mutex> lock(host.m_thumbMutex);
+            host.m_thumbResults.push_back({key, path, bitmap, item, generation});
+        }
+        host.OnThumbsReady();
+    }
+    static bool HasThumb(ShellBrowserHost& host, const std::wstring& key) { return host.m_thumbIndex.count(key) != 0; }
+    static std::wstring Key(ShellBrowserHost& host, int index, std::wstring* pathOut = nullptr) {
+        IFolderView2* view = View(host); std::wstring key;
+        IShellItem* item = nullptr;
+        if (view && SUCCEEDED(view->GetItem(index, IID_PPV_ARGS(&item)))) {
+            PWSTR path = nullptr;
+            if (SUCCEEDED(item->GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING, &path))) {
+                key = ShellBrowserHost::ThumbKey(item, path, host.m_iconSlot);
+                if (pathOut) *pathOut = path;
+                CoTaskMemFree(path);
+            }
+            item->Release();
+        }
+        if (view) view->Release();
+        return key;
+    }
+    static void Request(ShellBrowserHost& host, int index) {
+        IFolderView2* view = View(host); IShellItem* item = nullptr;
+        if (view && SUCCEEDED(view->GetItem(index, IID_PPV_ARGS(&item)))) {
+            PWSTR path = nullptr;
+            if (SUCCEEDED(item->GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING, &path))) {
+                host.RequestThumb(item, ShellBrowserHost::ThumbKey(item, path, host.m_iconSlot), path, index);
+                CoTaskMemFree(path);
+            }
+            item->Release();
+        }
+        if (view) view->Release();
+    }
+    static void Cancel(ShellBrowserHost& host) { host.CancelThumbRequests(); }
+    static void ClearThumbs(ShellBrowserHost& host) { host.ClearItemImages(); }
+    // LRU on a detached host with synthetic bitmaps (bytes = 64 + w*h*4).
+    static bool LruEviction() {
+        ShellBrowserHost host;
+        auto make = [] {
+            BITMAPINFO info{}; info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            info.bmiHeader.biWidth = 10; info.bmiHeader.biHeight = -10; info.bmiHeader.biPlanes = 1; info.bmiHeader.biBitCount = 32;
+            void* bits = nullptr; return CreateDIBSection(nullptr, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+        };
+        host.SetThumbnailCacheLimits(1u << 20, 3);
+        for (const wchar_t* key : {L"a", L"b", L"c"}) host.StoreThumb(key, make());
+        HBITMAP touched = nullptr;
+        bool ok = host.LookupThumb(L"a", touched) && touched;      // a becomes most recent
+        host.StoreThumb(L"d", make());                             // evicts b (least recent)
+        HBITMAP probe = nullptr;
+        ok = ok && !host.LookupThumb(L"b", probe) && host.LookupThumb(L"a", probe) && host.LookupThumb(L"c", probe)
+            && host.LookupThumb(L"d", probe) && host.m_counters.thumbEvictions == 1 && host.m_thumbLru.size() == 3;
+        // Byte cap: 464 bytes each, 1000-byte cap keeps the two most recent.
+        host.SetThumbnailCacheLimits(1000, 100);
+        ok = ok && host.m_thumbLru.size() == 2 && host.m_thumbBytes <= 1000 && host.LookupThumb(L"d", probe)
+            && host.m_counters.thumbEvictions == 2;
+        // Never a clear-all: 300 entries under a generous cap all stay.
+        host.SetThumbnailCacheLimits(64u << 20, 1000);
+        for (int i = 0; i < 300; ++i) host.StoreThumb(L"k" + std::to_wstring(i), make());
+        ok = ok && host.m_thumbLru.size() == 302 && host.LookupThumb(L"k0", probe);
+        host.ClearItemImages();
+        return ok && host.m_thumbLru.empty() && host.m_thumbBytes == 0;
+    }
     static bool ShellMediaThumbnail(ShellBrowserHost& host,const std::wstring& path) {
         return MediaAspectRatio(host,path,0,0);
     }
@@ -184,7 +284,9 @@ struct ShellBrowserHostTestAccess {
         NMLVCUSTOMDRAW draw{};
         draw.nmcd.dwItemSpec=index;draw.nmcd.dwDrawStage=CDDS_ITEMPREPAINT;
         draw.dwItemType=LVCDI_GROUP;
-        return host.DrawIconItem(&draw)==CDRF_DODEFAULT && host.m_itemImages.empty();
+        const auto before=host.m_counters;
+        return host.DrawIconItem(&draw)==CDRF_DODEFAULT && host.m_thumbLru.empty()
+            && host.m_counters.thumbRequests==before.thumbRequests && host.m_counters.syncExtractions==before.syncExtractions;
     }
     static bool SkipsClippedThumbnail(ShellBrowserHost& host,int index) {
         HWND list=host.m_listWindow;
@@ -193,8 +295,10 @@ struct ShellBrowserHostTestAccess {
         SetWindowPos(list,nullptr,0,0,bounds.right-bounds.left,0,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
         HDC dc=GetDC(list);
         NMLVCUSTOMDRAW draw{};draw.nmcd.hdc=dc;draw.nmcd.dwItemSpec=index;draw.nmcd.dwDrawStage=CDDS_ITEMPREPAINT;
+        const auto before=host.m_counters;
         host.DrawIconItem(&draw);
-        const bool skipped=host.m_itemImages.empty();
+        const bool skipped=host.m_thumbLru.empty() && host.m_thumbPending.empty()
+            && host.m_counters.thumbRequests==before.thumbRequests && host.m_counters.syncExtractions==before.syncExtractions;
         ReleaseDC(list,dc);
         SetWindowPos(list,nullptr,0,0,bounds.right-bounds.left,bounds.bottom-bounds.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
         return skipped;
@@ -208,6 +312,9 @@ struct ShellBrowserHostTestAccess {
         auto old=SelectObject(dc,bitmap);
         FillRect(dc,&bounds,reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
         NMLVCUSTOMDRAW draw{};draw.nmcd.hdc=dc;draw.nmcd.dwItemSpec=index;draw.nmcd.dwDrawStage=CDDS_ITEMPREPAINT;
+        host.DrawIconItem(&draw);
+        SettleThumbs(host);
+        FillRect(dc,&bounds,reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
         host.DrawIconItem(&draw);
         int pixels=0;
         for(int y=0;y<bounds.bottom;y+=2) for(int x=0;x<bounds.right;x+=2)
@@ -1893,6 +2000,183 @@ struct MainWndRegressionAccess {
         return failures;
     }
 
+    // Large / extra-large thumbnails never extract on the UI thread: a cache miss paints the
+    // Shell icon and queues the item; the worker's result repaints only that cell; stale
+    // results are dropped; the memory cache (LRU) survives mode switches, refreshes and
+    // folder changes; association badges are resolved once per extension.
+    static int CheckAsyncThumbs(CMainWnd& window, const std::wstring& parent) {
+        int failures = 0;
+        auto check = [&](bool ok, const std::string& name) { if (!ok) { ++failures; std::cerr << "FAIL " << name << '\n'; } };
+        auto pump = [&](DWORD ms) {
+            const DWORD until = GetTickCount() + ms;
+            do {
+                MSG message;
+                while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                    if (message.message != WM_QUIT && !CPaintManagerUI::TranslateMessage(&message)) {
+                        ::TranslateMessage(&message); DispatchMessageW(&message);
+                    }
+                }
+                Sleep(5);
+            } while (GetTickCount() < until);
+        };
+        using Access = ShellBrowserHostTestAccess;
+        using Mode = CMainWnd::ViewMode;
+        check(Access::LruEviction(), "thumbnail memory cache evicts least recently used entries (no clear-all)");
+        const std::wstring folder = parent + L"\\AsyncThumbs", other = parent + L"\\AsyncThumbsOther";
+        CreateDirectoryW(folder.c_str(), nullptr); CreateDirectoryW(other.c_str(), nullptr);
+        CreateDirectoryW((folder + L"\\子目录").c_str(), nullptr);
+        CLSID encoder{}; check(window.GetPngEncoderClsid(&encoder), "fixture PNG encoder available");
+        for (int i = 0; i < 18; ++i) {
+            Gdiplus::Bitmap bitmap(200, 150, PixelFormat32bppARGB);
+            Gdiplus::Graphics graphics(&bitmap);
+            graphics.Clear(Gdiplus::Color(255, BYTE(30 + i * 11), BYTE(200 - i * 7), BYTE(90 + i * 5)));
+            wchar_t name[32]; swprintf_s(name, L"\\图片%02d.png", i);
+            bitmap.Save((folder + name).c_str(), &encoder, nullptr);
+        }
+        HANDLE text = CreateFileW((folder + L"\\说明.txt").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+        if (text != INVALID_HANDLE_VALUE) { DWORD written = 0; WriteFile(text, "x", 1, &written, nullptr); CloseHandle(text); }
+        const bool wasShown = IsWindowVisible(window.m_hWnd) != FALSE;
+        if (!wasShown) ShowWindow(window.m_hWnd, SW_SHOWNOACTIVATE);
+        window.m_PaintManager.GetRoot()->SetPos({0, 0, 1180, 740}, false);
+        window.SyncLayoutDependents();
+        window.SetViewMode(Mode::Details);
+        window.NavigateToNow(folder, false); pump(700);
+        ShellBrowserHost& host = *window.m_shellBrowser;
+        Access::ClearThumbs(host); // cold memory cache for this fixture
+        // 1) First visit: placeholders on paint, async extraction, per-cell invalidation.
+        auto c0 = Access::Counters(host);
+        window.SetViewMode(Mode::LargeIcons);
+        auto c1 = Access::Counters(host);
+        check(c1.syncExtractions == c0.syncExtractions, "switching to large icons extracts no thumbnail on the UI thread");
+        check(Access::SettleThumbs(host), "queued thumbnails are delivered by the worker");
+        pump(200);
+        auto c2 = Access::Counters(host);
+        std::cout << "async thumbs first visit: placeholders " << c2.placeholders - c0.placeholders
+                  << ", requests " << c2.thumbRequests - c0.thumbRequests << ", coalesced " << c2.coalesced - c0.coalesced
+                  << ", extractions " << c2.thumbExtractions - c0.thumbExtractions << ", cell invalidations "
+                  << c2.itemInvalidations - c0.itemInvalidations << ", list paints " << c2.listPaints - c0.listPaints
+                  << " (full " << c2.fullPaints - c0.fullPaints << "), badge lookups " << c2.badgeResolves - c0.badgeResolves << '\n';
+        check(c2.syncExtractions == c0.syncExtractions, "large-icon paint path never extracts thumbnails synchronously");
+        check(c2.placeholders - c0.placeholders >= 10, "uncached cells paint a placeholder icon first");
+        check(c2.thumbRequests - c0.thumbRequests >= 10, "uncached cells queue an async thumbnail request");
+        check(c2.thumbExtractions - c0.thumbExtractions == c2.thumbRequests - c0.thumbRequests,
+            "each queued item is extracted once (duplicate requests coalesced)");
+        check(c2.itemInvalidations - c0.itemInvalidations >= 10, "each arriving thumbnail invalidates its own cell");
+        check(c2.listPaints - c0.listPaints > c2.fullPaints - c0.fullPaints, "arriving thumbnails repaint partial regions, not the whole list");
+        check(c2.badgeResolves - c0.badgeResolves <= 3, "association badges resolve once per extension (png / txt / folder)");
+        // Exact cell: a delivered result for item i invalidates only that item's cell.
+        HWND list = Access::ListWindow(host);
+        int count = 0;
+        if (IFolderView2* view = Access::View(host)) { view->ItemCount(SVGIO_ALLVIEW, &count); view->Release(); }
+        const int probe = (std::min)(4, count - 1);
+        std::wstring path;
+        std::wstring key = Access::Key(host, probe, &path);
+        check(!key.empty() && Access::HasThumb(host, key), "delivered thumbnail is cached under item + size + stamp");
+        if (list && probe >= 0) {
+            UpdateWindow(list); ValidateRect(list, nullptr);
+            const auto before = Access::Counters(host);
+            Access::Deliver(host, probe, path, key, Access::ThumbGeneration(host));
+            RECT update{}, cell{}, client{}, expected{};
+            const BOOL dirty = GetUpdateRect(list, &update, FALSE);
+            Access::IconCell(host, probe, cell); GetClientRect(list, &client); IntersectRect(&expected, &cell, &client);
+            check(dirty && EqualRect(&update, &expected) && Access::Counters(host).itemInvalidations == before.itemInvalidations + 1,
+                "async completion invalidates exactly the item's cell");
+            // Stale (old generation) results are dropped: not cached, nothing repainted.
+            UpdateWindow(list); ValidateRect(list, nullptr);
+            const std::wstring staleKey = key + L"|stale";
+            Access::Deliver(host, probe, path, staleKey, Access::ThumbGeneration(host) - 1);
+            check(!Access::HasThumb(host, staleKey) && !GetUpdateRect(list, &update, FALSE)
+                && Access::Counters(host).staleDropped == before.staleDropped + 1,
+                "stale thumbnail results (old folder / mode) are dropped");
+        }
+        // A cancelled (folder / mode change) request never lands in the cache.
+        {
+            Access::ClearThumbs(host);
+            const auto before = Access::Counters(host);
+            const std::wstring cancelledKey = Access::Key(host, probe);
+            Access::Request(host, probe);
+            Access::Cancel(host);
+            pump(400);
+            const auto after = Access::Counters(host);
+            check(after.thumbRequests == before.thumbRequests + 1 && after.staleDropped >= before.staleDropped + 1
+                && !Access::HasThumb(host, cancelledKey) && Access::PendingThumbs(host) == 0,
+                "requests cancelled by a folder / mode change are dropped");
+            InvalidateRect(list, nullptr, FALSE);
+            Access::SettleThumbs(host); pump(200);
+        }
+        // Direct paint of an uncached cell: placeholder + request, no extraction.
+        if (list && probe >= 0) {
+            Access::ClearThumbs(host);
+            const auto before = Access::Counters(host);
+            RECT client{}; GetClientRect(list, &client);
+            HDC screen = GetDC(nullptr), dc = CreateCompatibleDC(screen);
+            HBITMAP canvas = CreateCompatibleBitmap(screen, client.right, client.bottom);
+            auto old = SelectObject(dc, canvas);
+            FillRect(dc, &client, reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+            Access::DrawItem(host, dc, probe);
+            RECT cell{}; Access::IconCell(host, probe, cell);
+            int inked = 0;
+            for (int y = cell.top; y < cell.bottom - (cell.bottom - cell.top) / 4; ++y)
+                for (int x = cell.left; x < cell.right; ++x) {
+                    const COLORREF color = GetPixel(dc, x, y);
+                    inked += color != CLR_INVALID && color != RGB(255, 255, 255);
+                }
+            SelectObject(dc, old); DeleteObject(canvas); DeleteDC(dc); ReleaseDC(nullptr, screen);
+            const auto after = Access::Counters(host);
+            check(after.placeholders == before.placeholders + 1 && after.thumbRequests == before.thumbRequests + 1
+                && after.syncExtractions == before.syncExtractions && Access::PendingThumbs(host) == 1,
+                "custom draw of an uncached cell draws a placeholder and queues the item");
+            check(inked > 400, "the placeholder cell shows the Shell icon (not an empty slot)");
+            InvalidateRect(list, nullptr, FALSE);
+            Access::SettleThumbs(host); pump(200);
+        }
+        // 2) Second visits: mode switch, other size, refresh, other folder and back -> 0 extractions.
+        auto visit = [&](const char* name, const std::function<void()>& action) {
+            const auto before = Access::Counters(host);
+            action();
+            Access::SettleThumbs(host); pump(250);
+            const auto after = Access::Counters(host);
+            std::cout << "async thumbs " << name << ": extractions " << after.thumbExtractions - before.thumbExtractions
+                      << ", placeholders " << after.placeholders - before.placeholders << ", hits " << after.thumbHits - before.thumbHits
+                      << ", badge lookups " << after.badgeResolves - before.badgeResolves << '\n';
+            return std::make_pair(before, after);
+        };
+        window.SetViewMode(Mode::ExtraLargeIcons); Access::SettleThumbs(host); pump(300);   // fill the other size
+        window.SetViewMode(Mode::LargeIcons); Access::SettleThumbs(host); pump(300);
+        auto r = visit("large -> details -> large", [&] { window.SetViewMode(Mode::Details); pump(300); window.SetViewMode(Mode::LargeIcons); });
+        check(r.second.thumbExtractions == r.first.thumbExtractions && r.second.placeholders == r.first.placeholders
+            && r.second.thumbHits > r.first.thumbHits, "second visit of large icons draws from cache (0 extractions)");
+        check(r.second.badgeResolves == r.first.badgeResolves, "badge cache survives view switches");
+        r = visit("large -> extra large", [&] { window.SetViewMode(Mode::ExtraLargeIcons); });
+        check(r.second.thumbExtractions == r.first.thumbExtractions && r.second.placeholders == r.first.placeholders,
+            "switching between large and extra large keeps both sizes cached (0 extractions)");
+        r = visit("refresh", [&] { host.Refresh(); pump(500); });
+        check(r.second.thumbExtractions == r.first.thumbExtractions, "refresh keeps unchanged thumbnails cached (0 extractions)");
+        const auto keysBefore = Access::CachedKeys(host);
+        r = visit("other folder and back", [&] {
+            window.NavigateToNow(other, false); pump(500); window.NavigateToNow(folder, false); pump(500);
+        });
+        // Navigation keeps the memory cache: everything cached before is still there and the
+        // returning paint draws from it (at most a cell or two seen for the first time).
+        bool kept = true;
+        for (const auto& key : keysBefore) kept = kept && Access::HasThumb(host, key);
+        check(kept && r.second.thumbHits > r.first.thumbHits && r.second.thumbExtractions - r.first.thumbExtractions <= 2,
+            "returning to a folder draws its thumbnails from cache");
+        // An edited file gets a fresh thumbnail (size / mtime are part of the key).
+        {
+            Gdiplus::Bitmap bitmap(120, 240, PixelFormat32bppARGB);
+            Gdiplus::Graphics graphics(&bitmap); graphics.Clear(Gdiplus::Color(255, 10, 10, 10));
+            bitmap.Save((folder + L"\\图片00.png").c_str(), &encoder, nullptr);
+        }
+        r = visit("edited file + refresh", [&] { host.Refresh(); pump(500); });
+        check(r.second.thumbExtractions - r.first.thumbExtractions >= 1 && r.second.thumbExtractions - r.first.thumbExtractions <= 3,
+            "an edited file is re-extracted, the others stay cached");
+        check(Access::Counters(host).syncExtractions == c0.syncExtractions, "no UI-thread extraction anywhere in the async thumbnail run");
+        window.SetViewMode(Mode::Details); pump(200);
+        if (!wasShown) { ShowWindow(window.m_hWnd, SW_HIDE); pump(100); }
+        return failures;
+    }
+
     static const wchar_t* IconCacheVersion() { return CMainWnd::kIconCacheVersion; }
     // The PNG icon cache persists (no wipe at startup), lives in an isolated folder for
     // tests, and is invalidated by version directory / stamped names / trimming instead.
@@ -2181,7 +2465,6 @@ struct MainWndRegressionAccess {
             "a sibling sharing the parent name prefix is not a descendant");
         check(DuiLib::TabStripRegressionAccess::Check(*window.m_pTabStrip), "150 percent tab title retains preferred width, idle/active equal, plus follows last tab");
         failures += CheckSelectionLatency(window, fixture);
-        failures += CheckViewSwitch(window, window.ParentPath(fixture));
         failures += CheckShellMenus(window, fixture);
         failures += CheckFileOperationEngine(window.ParentPath(fixture));
         failures += CheckHandlers(window);
@@ -2282,6 +2565,8 @@ int main(int argc, char** argv) {
         ? MainWndRegressionAccess::CheckDeletePermissionDialog(*window, root, true)
         : argc>1 && strcmp(argv[1],"--view-switch-only")==0
         ? MainWndRegressionAccess::CheckViewSwitch(*window, root)
+        : argc>1 && strcmp(argv[1],"--thumbs-only")==0
+        ? MainWndRegressionAccess::CheckAsyncThumbs(*window, root)
         : argc>1 && strcmp(argv[1],"--ui-polish-only")==0
         ? MainWndRegressionAccess::CheckUiMetrics(*window) + MainWndRegressionAccess::CheckUiPolish(*window, root)
         : MainWndRegressionAccess::Run(*window, fixture);
