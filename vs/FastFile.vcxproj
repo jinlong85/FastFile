@@ -55,7 +55,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
-      <AdditionalDependencies>comctl32.lib;gdiplus.lib;imm32.lib;ole32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>comctl32.lib;gdiplus.lib;msimg32.lib;imm32.lib;ole32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
   </ItemDefinitionGroup>
@@ -77,18 +77,27 @@
     <ClCompile Include="..\src\MainWnd.Favorites.cpp" />
     <ClCompile Include="..\src\MainWnd.FileOps.cpp" />
     <ClCompile Include="..\src\MainWnd.Menus.cpp" />
+    <ClCompile Include="..\src\MainWnd.Settings.cpp" />
     <ClCompile Include="..\src\MainWnd.Integration.cpp" />
     <ClCompile Include="..\src\MainWnd.Views.cpp" />
     <ClCompile Include="..\src\MainWnd.Icons.cpp" />
     <ClCompile Include="..\src\MainWnd.Preview.cpp" />
     <ClCompile Include="..\src\MainWnd.DragDrop.cpp" />
+    <ClCompile Include="..\src\ShellBrowserHost.cpp" />
     <ClInclude Include="..\src\MainWnd.h" />
     <ClInclude Include="..\src\MainWndInternal.h" />
+    <ClInclude Include="..\src\ShellBrowserHost.h" />
+    <ClInclude Include="..\src\FavoriteStarUI.h" />
+    <ClInclude Include="..\src\FavoritesJson.h" />
+    <ClInclude Include="..\src\ShellPresentation.h" />
+    <ClInclude Include="..\src\TabLayout.h" />
   </ItemGroup>
   <ItemGroup>
     <Xml Include="..\skin\main.xml">
       <DeploymentContent>true</DeploymentContent>
     </Xml>
+    <None Include="..\tests\FavoritesTests.cpp" />
+    <None Include="..\tests\MainWndRegressionTests.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="duilib_static.vcxproj">

@@ -1,8 +1,10 @@
-﻿// FastFile - main window: lifecycle, message routing, selection, window activation
+// FastFile - main window: lifecycle, message routing, selection, window activation
 // Implements CMainWnd members moved out of the original monolithic MainWnd.cpp.
 // Behaviour is unchanged; declarations live in MainWnd.h.
 
 #include "MainWndInternal.h"
+
+#include <memory>
 
 CMainWnd::CMainWnd()
 {
@@ -14,6 +16,11 @@ CMainWnd::CMainWnd()
 
 CMainWnd::~CMainWnd()
 {
+    if (m_shellBrowser) {
+        m_shellBrowser->Destroy();
+        delete m_shellBrowser;
+        m_shellBrowser = nullptr;
+    }
     CaptureColumnWidths();
     SaveSession();
     if (m_hWnd) {
@@ -44,6 +51,17 @@ LPCTSTR CMainWnd::GetWindowClassName() const
 
 void CMainWnd::InitWindow()
 {
+    m_PaintManager.AddTranslateAccelerator(this);
+    AddClipboardFormatListener(m_hWnd);
+    PIDLIST_ABSOLUTE desktop = nullptr;
+    if (SUCCEEDED(SHGetSpecialFolderLocation(m_hWnd, CSIDL_DESKTOP, &desktop))) {
+        SHChangeNotifyEntry entry{desktop, TRUE};
+        m_shellRenameNotify = SHChangeNotifyRegister(m_hWnd, SHCNRF_ShellLevel | SHCNRF_NewDelivery,
+            SHCNE_RENAMEITEM | SHCNE_RENAMEFOLDER, kMsgShellRename, 1, &entry);
+        CoTaskMemFree(desktop);
+    }
+    m_settings=FastFileSettings::Load(FastFileSettings::FilePath());
+    m_viewMode=static_cast<ViewMode>(m_settings.defaultView);m_sortColumn=static_cast<SortColumn>(m_settings.sortColumn);m_sortAscending=m_settings.sortAscending;
     RefreshDpiFromWindow();
     ApplyDpiScaledFonts();
 
@@ -51,6 +69,7 @@ void CMainWnd::InitWindow()
     m_pAddressEditHost = static_cast<CHorizontalLayoutUI*>(m_PaintManager.FindControl(_T("address_edit_host")));
     m_pPathHost = static_cast<CHorizontalLayoutUI*>(m_PaintManager.FindControl(_T("path_host")));
     m_pSearchEdit = static_cast<CEditUI*>(m_PaintManager.FindControl(_T("edit_search")));
+    m_pListHost = m_PaintManager.FindControl(_T("list_host"));
     m_addressEditMode = false;
     m_pFileList = static_cast<CListUI*>(m_PaintManager.FindControl(_T("file_list")));
     m_pDirTree = static_cast<CTreeViewUI*>(m_PaintManager.FindControl(_T("dir_tree")));
@@ -133,8 +152,18 @@ void CMainWnd::InitWindow()
     ApplyFileViewScrollBars();
     ApplyColumnWidths();
     SetPreviewVisible(m_previewVisible);
+    if (m_pListHost && m_hWnd) {
+        const RECT bounds = m_pListHost->GetPos();
+        m_shellBrowser = new (std::nothrow) ShellBrowserHost;
+        if (!m_shellBrowser || !m_shellBrowser->Create(m_hWnd, bounds,
+                kMsgShellNavigation, kMsgShellSelection, kMsgShellFolderOpen, kMsgShellContextMenu)) {
+            delete m_shellBrowser;
+            m_shellBrowser = nullptr;
+            UpdateStatus(_T("Windows 文件视图初始化失败"));
+        }
+    }
     if (!LoadSession()) {
-        const std::wstring start = GetDefaultStartPath();
+        const std::wstring start = m_settings.startup==2 && !ResolveFolderOpenTarget(m_settings.startupPath).empty() ? m_settings.startupPath : GetDefaultStartPath();
         AddTab(start, true);
     }
     ApplyColumnWidths();
@@ -331,6 +360,13 @@ void CMainWnd::OnClick(TNotifyUI& msg)
 {
     CDuiString name = msg.pSender->GetName();
 
+    if (name == _T("btn_favorite_toggle")) {
+        if (!IsThisPcPath(m_currentPath)) {
+            if (IsFavoritePinned(m_currentPath)) UnpinFavorite(m_currentPath);
+            else PinFavorite(m_currentPath);
+        }
+        return;
+    }
     if (name == _T("btn_go")) {
         // Legacy go button removed from skin; keep handler harmless
         ExitAddressEditMode(true);
@@ -407,6 +443,7 @@ void CMainWnd::OnClick(TNotifyUI& msg)
     if (name == _T("btn_rename")) { OnRenameClicked(); return; }
     if (name == _T("btn_share") || name == _T("btn_preview_share")) { OnShareClicked(); return; }
         if (name == _T("btn_new") || name == _T("btn_newfolder")) { OnNewMenuClicked(); return; }
+        if (name == _T("btn_settings")) { ShowSettings(); return; }
         if (name == _T("btn_sort")) { OnSortMenuClicked(); return; }
         if (name == _T("btn_view_menu")) { OnViewMenuClicked(); return; }
     if (name == _T("btn_more")) { OnMoreMenuClicked(); return; }
@@ -453,6 +490,49 @@ void CMainWnd::OnClick(TNotifyUI& msg)
 
 LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
+    if(uMsg==kMsgShellContextMenu && m_shellBrowser) {
+        POINT point{static_cast<short>(LOWORD(lParam)),static_cast<short>(HIWORD(lParam))};
+        if(point.x==-1 && point.y==-1) {
+            RECT bounds{};GetWindowRect(reinterpret_cast<HWND>(wParam),&bounds);
+            point={bounds.left+24,bounds.top+24};
+        }
+        std::vector<std::pair<std::wstring,bool>> selected;
+        if(!m_shellBrowser->GetSelection(selected))return 0;
+        std::vector<std::wstring> paths;
+        for(const auto& item:selected)paths.push_back(item.first);
+        if(paths.empty())ShowBlankAreaContextMenu(point);
+        else ShowShellContextMenu(paths,point);
+        return 1;
+    }
+    if (uMsg == WM_CAPTURECHANGED || uMsg == WM_CANCELMODE || uMsg == WM_KILLFOCUS)
+        CancelScrollBarGestures();
+    if (uMsg == kMsgShellFolderOpen) {
+        std::unique_ptr<std::wstring> path(reinterpret_cast<std::wstring*>(lParam));
+        if(path) {if(wParam)AddTab(*path,true,wParam==2);else NavigateToNow(*path,true);}
+        return 0;
+    }
+    if (uMsg == kMsgShellNavigation) {
+        std::unique_ptr<std::wstring> path(reinterpret_cast<std::wstring*>(lParam));
+        if (path)
+            OnShellBrowserNavigation(std::move(*path));
+        return 0;
+    }
+    if (uMsg == kMsgShellRename) {
+        TrackShellRename(wParam, lParam);
+        return 0;
+    }
+    if (uMsg == kMsgShellSelection) {
+        SyncShellViewSelection();
+        return 0;
+    }
+    if (uMsg == kMsgCommitInlineRename) { CommitInlineRename(); return 0; }
+    if (uMsg == kMsgCancelInlineRename) { CancelInlineRename(); return 0; }
+    if (uMsg == WM_COMMAND && m_renameEdit
+        && reinterpret_cast<HWND>(lParam) == m_renameEdit
+        && HIWORD(wParam) == EN_KILLFOCUS) {
+        CommitInlineRename();
+        return 0;
+    }
     if (uMsg == WM_NCLBUTTONDOWN || uMsg == WM_NCLBUTTONUP) {
         // Custom frame: the caption buttons are reported by WM_NCHITTEST (HTMINBUTTON /
         // HTMAXBUTTON / HTCLOSE) instead of being DuiLib controls. DefWindowProc's caption
@@ -601,16 +681,37 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         SaveSession();
     }
     if (uMsg == WM_DESTROY) {
+        m_PaintManager.RemoveTranslateAccelerator(this);
+        RemoveClipboardFormatListener(m_hWnd);
+        if (m_shellRenameNotify) SHChangeNotifyDeregister(m_shellRenameNotify);
+        // A failed copy undo can leave a partially retained batch. Restore its
+        // retained items before dropping the in-memory history on close.
+        for (const auto& record : m_undoStack) {
+            for (const auto& pair : record.backups) {
+                const auto folder = ParentPath(pair.second);
+                const DWORD attributes = GetFileAttributesW(folder.c_str());
+                if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) continue;
+                if (GetFileAttributesW(pair.first.c_str()) == INVALID_FILE_ATTRIBUTES)
+                    MoveFileExW(pair.second.c_str(), pair.first.c_str(), 0);
+                RemoveDirectoryW(folder.c_str());
+            }
+        }
+        ClearRedoHistory();
         // DuiLib's WindowImplBase::OnClose only clears bHandled and never posts WM_QUIT,
         // so without this the process lives on with no window after a close (it also keeps
         // FastFile.exe locked, which blocks rebuilds). Quit once the window is gone.
         ::PostQuitMessage(0);
     }
+    if (uMsg == WM_CLIPBOARDUPDATE) {
+        UpdateCommandBarState();
+        return 0;
+    }
     if (uMsg == WM_TIMER) {
+        if (wParam == kTimerShellHistory) { FinishShellHistory(); return 0; }
         if (wParam == kTimerVirtSync) { SyncVisibleIconWindow(false); return 0; }
         if (wParam == kTimerColWidth) { CaptureColumnWidths(); return 0; }
         if (wParam == kTimerDetailsSync) { UpdateDetailsWindow(false); return 0; }
-        if (wParam == kTimerLayoutSync) { SyncLayoutDependents(); return 0; }
+        if (wParam == kTimerLayoutSync) { SyncLayoutDependents(); SyncShellViewSelection(); return 0; }
     }
     if (uMsg == WM_MBUTTONDOWN) {
         // Middle click on a tab closes it (Explorer behaviour).
@@ -626,7 +727,7 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         for (CControlUI* p = m_PaintManager.FindControl(mp); p; p = p->GetParent()) {
             const CDuiString nm = p->GetName();
             if (nm.Find(_T("fav_pin_")) == 0 && !p->GetUserData().IsEmpty()) {
-                AddTab(p->GetUserData().GetData(), true, true);
+                AddTab(p->GetUserData().GetData(), true);
                 return 0;
             }
         }
@@ -643,7 +744,13 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
     }
-    if (uMsg == WM_LBUTTONDOWN && !m_inDoDragDrop) {
+    auto* pressedScrollBar = uMsg == WM_LBUTTONDOWN
+        ? dynamic_cast<CScrollBarUI*>(m_PaintManager.FindControl(POINT{(short)LOWORD(lParam),(short)HIWORD(lParam)}))
+        : nullptr;
+    if (pressedScrollBar && pressedScrollBar != m_pPreviewRail)
+        m_dragTracking = false; // Scrollbar capture must never arm an OLE file drag.
+    if (uMsg == WM_LBUTTONDOWN && !m_inDoDragDrop
+        && (!pressedScrollBar || pressedScrollBar == m_pPreviewRail)) {
         // Pane dividers own a generous grab band that straddles the divider line: the
         // cursor turns into a left/right arrow there and the press starts a drag.
         const int px = (short)LOWORD(lParam);
@@ -1101,6 +1208,100 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     return WindowImplBase::HandleMessage(uMsg, wParam, lParam);
 }
 
+LRESULT CMainWnd::TranslateAccelerator(MSG* message)
+{
+    if (!message || (message->message != WM_KEYDOWN && message->message != WM_SYSKEYDOWN)) return S_FALSE;
+    if (message->hwnd != m_hWnd && !IsChild(m_hWnd, message->hwnd)) return S_FALSE;
+    const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+    const WPARAM key = message->wParam;
+    wchar_t className[64]{};
+    GetClassNameW(message->hwnd, className, _countof(className));
+    const bool shellWindow = m_shellBrowser && m_shellBrowser->OwnsWindow(message->hwnd);
+    const bool textEdit = _wcsicmp(className, L"Edit") == 0 ||
+        _wcsnicmp(className, L"RichEdit", 8) == 0 || (!shellWindow && IsEditingText());
+    // App navigation works from every pane, including native text edits. File
+    // operations below never intercept the text edit's own C/X/V/Z/Y/Delete keys.
+    if (ctrl && !alt && key == VK_TAB) {
+        bool handled = false;
+        MessageHandler(message->message, key, message->lParam, handled);
+        return handled ? S_OK : S_FALSE;
+    }
+    if ((!alt && ctrl && (key == 'L')) || (!ctrl && alt && key == 'D') ||
+        (!ctrl && !alt && key == VK_F4)) {
+        if (key == VK_F4) ShowAddressHistory(); else EnterAddressEditMode();
+        return S_OK;
+    }
+    if ((!alt && ctrl && (key == 'F' || (key == 'E' && !shift))) || (!ctrl && !alt && key == VK_F3)) {
+        FocusSearchBox(); return S_OK;
+    }
+    if (!ctrl && !alt && key == VK_F6) { CycleKeyboardPane(shift); return S_OK; }
+    if (!ctrl && !alt && key == VK_F11) {
+        SendMessage(WM_SYSCOMMAND, IsZoomed(m_hWnd) ? SC_RESTORE : SC_MAXIMIZE, 0); return S_OK;
+    }
+    if (ctrl && shift && !alt && key == 'E') {
+        SyncTreeToPath(m_currentPath); if (m_pDirTree) m_pDirTree->SetFocus(); return S_OK;
+    }
+    if (!alt && ((ctrl && key == 'R') || key == VK_F5)) { RefreshListing(); return S_OK; }
+    if (!ctrl && alt && (key == VK_LEFT || key == VK_RIGHT || key == VK_UP)) {
+        if (key == VK_LEFT) GoBack(); else if (key == VK_RIGHT) GoForward(); else GoUp();
+        return S_OK;
+    }
+    if (!ctrl && alt && key == 'P') { SetPreviewVisible(!m_previewVisible); return S_OK; }
+    if (!alt && ctrl && !shift && key >= '1' && key <= '9') {
+        const int index = key == '9' ? int(m_tabs.size()) - 1 : int(key - '1');
+        if (index >= 0 && index < int(m_tabs.size())) ActivateTab(index);
+        return S_OK;
+    }
+    if (!alt && ctrl && key == 'T') { OnNewTabRequested(); return S_OK; }
+    if (!alt && ctrl && (key == 'W' || key == VK_F4)) {
+        if (m_activeTab >= 0) CloseTab(m_activeTab);
+        return S_OK;
+    }
+    if (key == VK_ESCAPE && !ctrl && !alt) {
+        if (m_addressEditMode) { ExitAddressEditMode(false); FocusFileView(); return S_OK; }
+        if (m_pSearchEdit && ::GetFocus() == m_pSearchEdit->GetNativeEditHWND()) {
+            ClearSearchFilter(); FocusFileView(); return S_OK;
+        }
+        if (!textEdit) { ClearFileSelection(); return S_OK; }
+        m_pendingShellRename.clear();
+        return S_FALSE;
+    }
+    if (textEdit) return S_FALSE;
+    if (!ctrl && !alt && IsTreeKeyboardFocus() && HandleTreeShortcut(key)) return S_OK;
+    if (!alt && ctrl && shift && key >= '1' && key <= '8') {
+        const ViewMode modes[] = {ViewMode::ExtraLargeIcons, ViewMode::LargeIcons,
+            ViewMode::MediumIcons, ViewMode::SmallIcons, ViewMode::List,
+            ViewMode::Details, ViewMode::Tiles, ViewMode::Content};
+        SetViewMode(modes[key - '1']); return S_OK;
+    }
+    if (!alt && ctrl && key == 'N') {
+        if (shift) OnNewFolderClicked(); else OpenPathInNewWindow(m_currentPath, {0, 0});
+        return S_OK;
+    }
+    if (!alt && ctrl && key == 'C' && shift) { OnCopyPaths(); return S_OK; }
+    if (!alt && ctrl && (key == 'C' || key == VK_INSERT)) { OnCopyClicked(); return S_OK; }
+    if (!alt && ((ctrl && key == 'V') || (!ctrl && shift && key == VK_INSERT))) { OnPasteClicked(); return S_OK; }
+    if (!alt && ctrl && key == 'X') { OnCutClicked(); return S_OK; }
+    if (!alt && ctrl && key == 'Z') { if (shift) OnRedo(); else OnUndo(); return S_OK; }
+    if (!alt && ctrl && key == 'Y') { OnRedo(); return S_OK; }
+    if (!alt && ctrl && key == 'A') { SelectAllItems(); return S_OK; }
+    if (!alt && (key == VK_DELETE || (ctrl && key == 'D'))) { OnDeleteClicked(shift); return S_OK; }
+    if (!ctrl && !alt && key == VK_F2) { OnRenameClicked(); return S_OK; }
+    if (!ctrl && !alt && key == VK_BACK) { GoBack(); return S_OK; }
+    if (!ctrl && alt && key == VK_RETURN) { ShowPropertiesForSelection(); return S_OK; }
+    if (!ctrl && !alt && (key == VK_APPS || (shift && key == VK_F10)) &&
+        !(m_shellBrowser && m_shellBrowser->OwnsWindow(message->hwnd))) {
+        RECT bounds = m_pFileList ? m_pFileList->GetPos() : RECT{0,0,100,100};
+        POINT point{bounds.left + 20, bounds.top + 40}; ClientToScreen(m_hWnd, &point);
+        std::vector<ClipboardItem> selected; CollectSelectedItems(selected);
+        std::vector<std::wstring> paths; for (const auto& item : selected) paths.push_back(item.path);
+        if (paths.empty()) ShowBlankAreaContextMenu(point); else ShowShellContextMenu(paths, point);
+        return S_OK;
+    }
+    return m_shellBrowser ? m_shellBrowser->TranslateAccelerator(message) : S_FALSE;
+}
 // DuiLib calls its pre-message filters from CPaintManagerUI::TranslateMessage, *before*
 // DispatchMessage, and its own handler turns any WM_KEYDOWN/VK_TAB into control tabbing - so a
 // Ctrl+Tab never reaches the window proc. Claim the message here (bHandled) and cycle tabs.
@@ -1161,6 +1362,12 @@ LRESULT CMainWnd::ResponseDefaultKeyEvent(WPARAM wParam)
 
 bool CMainWnd::IsEditingText() const
 {
+    const HWND focused = ::GetFocus();
+    wchar_t className[64]{};
+    if (focused) GetClassNameW(focused, className, _countof(className));
+    if (_wcsicmp(className, L"Edit") == 0 || _wcsnicmp(className, L"RichEdit", 8) == 0)
+        return true;
+    if (m_shellBrowser && m_shellBrowser->OwnsWindow(focused)) return false;
     CControlUI* pFocus = m_PaintManager.GetFocus();
     if (!pFocus || pFocus->GetInterface(DUI_CTR_EDIT) == nullptr)
         return false;
@@ -1173,6 +1380,10 @@ bool CMainWnd::IsEditingText() const
 
 bool CMainWnd::HasFileSelection() const
 {
+    if (m_shellBrowser && m_shellBrowser->IsVisible()) {
+        std::vector<std::pair<std::wstring, bool>> selected;
+        return m_shellBrowser->GetSelection(selected) && !selected.empty();
+    }
     if (IsTileViewMode() && m_pIconTiles) {
         const int n = m_pIconTiles->GetCount();
         for (int i = 0; i < n; ++i) {
@@ -1204,6 +1415,11 @@ bool CMainWnd::HasFileSelection() const
 
 void CMainWnd::ClearFileSelection()
 {
+    if (m_shellBrowser && m_shellBrowser->IsVisible()) {
+        m_shellBrowser->ClearSelection();
+        UpdatePreviewForSelection(); UpdateCommandBarState();
+        return;
+    }
     if (IsTileViewMode()) {
         ClearIconSelection();
         m_iconAnchor = -1;
@@ -1318,6 +1534,9 @@ LRESULT CMainWnd::HandleCustomMessage(UINT uMsg, WPARAM wParam, LPARAM lParam, B
         bHandled = TRUE;
         auto* paths = reinterpret_cast<std::vector<std::wstring>*>(lParam);
         if (paths) {
+            // Startup already filters legacy cached --open activations. IPC
+            // represents an explicit FastFile request (--shell-folder, a bare
+            // path or another FastFile window), independent of default takeover.
             BringToForeground();
             OpenExternalPaths(*paths, false);
             delete paths;

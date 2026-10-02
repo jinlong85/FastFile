@@ -1,8 +1,9 @@
-// FastFile - navigation, listing refresh, search filter, breadcrumb/address bar
+﻿// FastFile - navigation, listing refresh, search filter, breadcrumb/address bar
 // Implements CMainWnd members moved out of the original monolithic MainWnd.cpp.
 // Behaviour is unchanged; declarations live in MainWnd.h.
 
 #include "MainWndInternal.h"
+#include "ShellPresentation.h"
 
 namespace {
 
@@ -35,6 +36,12 @@ void CMainWnd::NavigateToNow(const std::wstring& path, bool addToHistory)
         raw.erase(raw.begin());
     while (!raw.empty() && (raw.back() == L' ' || raw.back() == L'"'))
         raw.pop_back();
+
+    const int existingTab = FindTabForPath(raw == L"This PC" ? std::wstring(kThisPcPath) : raw);
+    if (!PathEquals(path,m_currentPath) && m_settings.reuseTabs && existingTab >= 0 && existingTab != m_activeTab) {
+        ActivateTab(existingTab);
+        return;
+    }
 
     // Accept "此电脑" typed in the address bar.
     if (raw == kThisPcPath || raw == L"此电脑" || ::_wcsicmp(raw.c_str(), L"This PC") == 0) {
@@ -116,6 +123,91 @@ void CMainWnd::NavigateToNow(const std::wstring& path, bool addToHistory)
     }
     RebuildBreadcrumb();
     ClearPreview();
+}
+
+void CMainWnd::OnShellBrowserNavigation(std::wstring path)
+{
+    if (path.empty()) return;
+    // A queued completion for the previous tab must not rewrite the newly
+    // activated tab or select an earlier duplicate of its path.
+    if(m_shellBrowser && !m_shellBrowser->IsAtPath(path))return;
+    const int existingTab = FindTabForPath(path);
+    if (!PathEquals(path,m_currentPath) && m_settings.reuseTabs && existingTab >= 0 && existingTab != m_activeTab) {
+        ActivateTab(existingTab);
+        return;
+    }
+    if (PathEquals(path, m_currentPath)) {
+        // BrowseToObject finishes asynchronously and creates a fresh Shell view.
+        // Even app-initiated navigation must apply its remembered mode to that view.
+        ApplyShellViewMode();
+        SyncTreeToPath(m_currentPath);
+        UpdateFavoritesHighlight();
+        m_shellSelectionSnapshot.clear();
+        UpdatePreviewForSelection();
+        UpdateCommandBarState();
+        return;
+    }
+    if (!m_currentPath.empty())
+        PushHistoryBeforeNav(m_currentPath);
+
+    m_currentPath = std::move(path);
+    m_searchFilter.clear();
+    if (m_pSearchEdit)
+        SetSearchPlaceholder(true);
+    if (m_pAddressEdit)
+        m_pAddressEdit->SetText(IsThisPcPath(m_currentPath) ? _T("此电脑") : m_currentPath.c_str());
+
+    const ViewMode remembered = LoadFolderViewForPath(m_currentPath);
+    if (m_viewMode != remembered) {
+        m_viewMode = remembered;
+        UpdateViewModeButtons();
+    }
+    ApplyShellViewMode();
+    UpdateActiveTabPath(m_currentPath);
+    SyncTreeToPath(m_currentPath);
+    UpdateFavoritesHighlight();
+    UpdateNavButtons();
+    if (m_addressEditMode) {
+        m_addressEditMode = false;
+        if (m_pAddressEditHost) m_pAddressEditHost->SetVisible(false);
+        if (m_pBreadcrumb) m_pBreadcrumb->SetVisible(true);
+    }
+    RebuildBreadcrumb();
+    ClearPreview();
+    UpdatePreviewForCurrentFolder();
+    m_shellSelectionSnapshot.clear();
+}
+
+void CMainWnd::SyncShellViewSelection()
+{
+    if (!m_shellBrowser || !m_shellBrowser->IsCreated() || !m_shellBrowser->IsVisible())
+        return;
+    std::vector<std::pair<std::wstring, bool>> selected;
+    if (!m_shellBrowser->GetSelection(selected))
+        return;
+    std::vector<std::wstring> snapshot;
+    snapshot.reserve(selected.size());
+    for (const auto& item : selected)
+        snapshot.push_back(item.first);
+    if (snapshot == m_shellSelectionSnapshot)
+        return;
+    for (const auto& path : snapshot) {
+        if (std::find(m_recentShellSelection.begin(), m_recentShellSelection.end(), path) == m_recentShellSelection.end())
+            m_recentShellSelection.push_back(path);
+    }
+    if (m_recentShellSelection.size() > 32)
+        m_recentShellSelection.erase(m_recentShellSelection.begin(), m_recentShellSelection.end() - 32);
+    m_shellSelectionSnapshot.swap(snapshot);
+    m_shellBrowser->EnsureSelectionVisible();
+    UpdatePreviewForSelection();
+    UpdateCommandBarState();
+    if (!m_copyRunning.load()) {
+        CDuiString status;
+        status.Format(_T("%s  ·  已选 %d 项"),
+            IsThisPcPath(m_currentPath) ? _T("此电脑") : m_currentPath.c_str(),
+            static_cast<int>(selected.size()));
+        UpdateStatus(status.GetData());
+    }
 }
 
 void CMainWnd::GoUp()
@@ -210,9 +302,9 @@ void CMainWnd::OnItemActivate(CControlUI* pSender)
     if (isDir) {
         NavigateTo(path, true);
     } else {
-        ::ShellExecuteW(m_hWnd, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        const bool opened=ShellPresentation::OpenDefaultFile(m_hWnd,path);
         CDuiString tip;
-        tip.Format(_T("已打开: %s"), path.c_str());
+        tip.Format(opened ? _T("已打开: %s") : _T("未能打开: %s"), path.c_str());
         UpdateStatus(tip.GetData());
     }
 }
@@ -222,6 +314,43 @@ void CMainWnd::RefreshListing()
     if (m_currentPath.empty()) {
         UpdateStatus(_T("当前路径为空"));
         return;
+    }
+
+    if (m_shellBrowser && m_shellBrowser->IsCreated()) {
+        const bool alreadyThere = m_shellBrowser->IsAtPath(m_currentPath);
+        // Save the destination's remembered mode before Shell creates its view.
+        if(!alreadyThere)ApplyShellViewMode();
+        if (!alreadyThere && !m_shellBrowser->Navigate(m_currentPath)) {
+            UpdateStatus(_T("Windows 文件视图无法打开此位置"));
+            return;
+        }
+        // IFolderFilterSite support varies by Shell provider; S_OK does not guarantee
+        // that a running view re-enumerates. Use our existing search results renderer
+        // for all non-empty searches, and keep normal browsing in the Shell view.
+        const bool searchResults = !m_searchFilter.empty();
+        if (!searchResults) m_shellBrowser->SetFilter(L"");
+        if (!searchResults) {
+            m_shellBrowser->SetVisible(true);
+            ApplyShellViewMode();
+            if (alreadyThere) {
+                m_shellBrowser->Refresh();
+                UpdatePreviewForSelection();
+            }
+            UpdateNavButtons();
+            UpdateCommandBarState();
+            if (!m_copyRunning.load()) {
+                CDuiString status;
+                if (m_searchFilter.empty())
+                    status.Format(_T("%s  ·  Windows 原生文件视图"),
+                        IsThisPcPath(m_currentPath) ? _T("此电脑") : m_currentPath.c_str());
+                else
+                    status.Format(_T("%s  ·  名称筛选：%s"),
+                        m_currentPath.c_str(), m_searchFilter.c_str());
+                UpdateStatus(status.GetData());
+            }
+            return;
+        }
+        m_shellBrowser->SetVisible(false);
     }
 
     CancelThumbJobs();

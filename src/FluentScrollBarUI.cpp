@@ -100,6 +100,7 @@ void CFluentScrollBarUI::InvalidateOverhang()
 
 void CFluentScrollBarUI::SetExpanded(bool on)
 {
+    if (!on && IsDragging()) return;
     if (m_expanded == on) return;
     const RECT before = ThumbRectPx();
     m_expanded = on;
@@ -112,6 +113,44 @@ void CFluentScrollBarUI::SetExpanded(bool on)
         if (m_pManager) m_pManager->Invalidate(both);
     }
     Invalidate();
+}
+
+void CFluentScrollBarUI::DoEvent(DuiLib::TEventUI& event)
+{
+    if ((event.Type == UIEVENT_MOUSEMOVE || event.Type == UIEVENT_TIMER)
+        && (event.wKeyState & MK_LBUTTON) == 0)
+        CancelGesture();
+    if (event.Type == UIEVENT_KILLFOCUS) CancelGesture();
+    CScrollBarUI::DoEvent(event);
+    if (event.Type == UIEVENT_MOUSEMOVE && IsDragging()) {
+        // Apply each drag sample immediately. Waiting for the base 50ms repeat
+        // timer loses a quick drag when BUTTONUP clears its pending offset.
+        const int position = m_nLastScrollPos + m_nLastScrollOffset;
+        if (m_pOwner) {
+            SIZE scroll = m_pOwner->GetScrollPos();
+            if (IsHorizontal()) scroll.cx = position; else scroll.cy = position;
+            m_pOwner->SetScrollPos(scroll);
+        } else SetScrollPos(position);
+    }
+    if (IsDragging()) SetExpanded(true);
+    else if (event.Type == UIEVENT_BUTTONUP)
+        SetExpanded(HitTestHover(event.ptMouse, 0));
+}
+
+void CFluentScrollBarUI::CancelGesture()
+{
+    const bool active = (m_uThumbState & (UISTATE_CAPTURED | UISTATE_PUSHED))
+        || (m_uButton1State & UISTATE_PUSHED) || (m_uButton2State & UISTATE_PUSHED);
+    m_uThumbState &= ~(UISTATE_CAPTURED | UISTATE_PUSHED);
+    m_uButton1State &= ~UISTATE_PUSHED;
+    m_uButton2State &= ~UISTATE_PUSHED;
+    m_nLastScrollOffset = 0;
+    m_nScrollRepeatDelay = 0;
+    if (m_pManager) {
+        m_pManager->KillTimer(this, DEFAULT_TIMERID);
+        m_pManager->CancelMouseCapture(this);
+    }
+    if (active) { SetExpanded(false); Invalidate(); }
 }
 
 bool CFluentScrollBarUI::HitTestHover(const POINT& pt, int margin)

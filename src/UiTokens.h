@@ -24,11 +24,11 @@ constexpr int ChromeRound = 8;      // window/chrome container (was 10)
 constexpr int RadiusControl = 4;    // command-bar buttons, input boxes, list rows, chips
 constexpr int GapGroup = SpaceSm;   // toolbar group gaps
 constexpr int SepH = 20;            // command-bar separators (bar is 40, buttons 32)
-constexpr int HitTabH = 32;           // "+" / caption hit boxes never below 32 design px
+constexpr int HitTabH = 29;           // compact tab-row height; plus width stays 32
 constexpr int TabIconPx = 16;
-constexpr int TabMinW = 120;          // icon + 2-4 CJK chars + ellipsis
-constexpr int TabSelMinW = 148;       // the active tab also carries a visible close button
-constexpr int TabMaxW = 200;
+constexpr int TabMinW = 120;          // default width increased by 50 percent
+constexpr int TabSelMinW = TabMinW;   // active and idle tabs reserve the same close slot
+constexpr int TabMaxW = 360;
 // This PC drive cards (Explorer): thin rounded capacity bar with a warning ramp.
 constexpr int DriveBarH = 6;            // logical height of the usage bar
 constexpr int DriveBarRound = 2;
@@ -44,34 +44,33 @@ constexpr int Hairline = 1;           // 1 design px; DpiScaleHairline() rounds 
 // row whose path/search fields are white rounded boxes, and the command bar sitting on the
 // white content surface instead of the grey chrome.
 // Phase 7 (Fluent pass): every chrome row follows Win11 Explorer, not the 360 density:
-// title 36 / favourites 36 / address 36 / command bar 40, nav + tree rows 36.
-constexpr int TabBarH = 36;
-constexpr int TabCardH = 34;          // chip inside the strip (2px inset above, merges below)
+// Tabs and favorites now use 80% height; address/command/navigation keep their sizes.
+constexpr int TabBarH = 29;          // round(36 * 0.8), 96-DPI units
+constexpr int TabCardH = TabBarH;     // active and idle cards both fill the row
 constexpr int TabCardGap = 4;         // gap between chips
 constexpr int TabCardRound = 6;       // chip corner radius (Explorer-like)
 constexpr int ToolbarH = 40;
 constexpr int BreadcrumbBarH = 36;     // legacy; path merged into address_bar
 constexpr int BreadcrumbSegPadX = 3;   // compact Explorer-style segment gap
 constexpr int BreadcrumbSepW = 12;
-constexpr int TitleBarH = 36;
-constexpr int FavoritesBarH = 36;      // same height as the address row (Explorer)
+constexpr int TitleBarH = TabBarH;
+constexpr int FavoritesBarH = 29;     // round(36 * 0.8), matches compact tabs
 constexpr int FavBarPadY = 2;          // legacy; kept for compatibility
-constexpr int FavBarPadTop = 4;        // chips are 28 tall inside the 36 row
-constexpr int FavBarPadBottom = 4;
-constexpr int FavChipH = 28;
+constexpr int FavBarPadTop = 2;        // vertically centered compact favorites buttons
+constexpr int FavBarPadBottom = 2;
+constexpr int FavChipH = 25;          // 2px vertical padding inside the 29px row
 constexpr int FavIconPx = 16;
-constexpr int FavLabelW = 48;          // weak "收藏" mark, not a button
+constexpr int FavStarHitSize = 32;     // icon-only toggle width; height follows FavChipH
+constexpr int FavStarGap = 8;         // toggle -> first chip / empty hint
 constexpr int FavChipPadX = 8;         // chip inner left/right padding
 constexpr int FavChipIconGap = 8;      // icon -> label gap
 constexpr int FavChipGap = 8;          // between chips
 constexpr int FavChipMaxW = 168;       // DT_END_ELLIPSIS beyond this
-constexpr int FavLabelBaselineLift = 4; // design px to raise the CJK "★ 收藏" label onto the
-                                        // Latin baseline of the chips beside it
-constexpr int AddressBarH = 36;       // Explorer address row
-constexpr int FieldRound = 4;         // path / search field corner radius (Explorer)
-constexpr int FieldH = 32;             // path / search field height (centred in the address row)
-constexpr int AddressBarPadY = 4;
-constexpr int SearchBoxH = 32;   // matches the path field
+constexpr int AddressBarH = 48;       // leaves room for fields and their rounded borders
+constexpr int FieldRound = 6;
+constexpr int FieldH = 36;
+constexpr int AddressBarPadY = 6;
+constexpr int SearchBoxH = FieldH;
 constexpr int SearchBoxW = 260;        // search box width (design), never stretched
 constexpr int SearchChkW = 100;        // ☐ 含子目录
 // One scrollbar thickness for the whole window: the file views sit right next to the
@@ -81,6 +80,8 @@ constexpr int SearchChkW = 100;        // ☐ 含子目录
 // Fluent pass: thin rail (4 logical = 6 physical at 150%), matching Explorer's overlay bar.
 constexpr int ScrollBarW = 4;          // file views (list / tiles)
 constexpr int SidePaneScrollBarW = 4;  // navigation + preview rail
+constexpr int NavScrollBarW = 8;       // visible navigation thumb
+constexpr int NavScrollBarHitW = 12;   // full reserved drag target, also hover width
 // Fluent pass: the rail stays thin while idle and widens toward the content on hover
 // (Explorer's overlay bar). The overhang is painted outside the control rect, so the
 // layout keeps using ScrollBarW and nothing shifts when the pointer arrives.
@@ -116,12 +117,14 @@ constexpr int ToolbarIconPx = 16;       // denser line glyph; avoid clip with la
 constexpr int ToolbarGlyphPx = 16;      // Segoe MDL2 glyph size for command-bar icons
 constexpr int ToolbarBtnW = 32;         // icon-only command button
 constexpr int ToolbarBtnH = 32;
-constexpr int ToolbarTextBtnMinW = 76;  // New/Sort/View: icon + label + chevron
+constexpr int ToolbarTextBtnMinW = 88;  // New/Sort/View: icon + label + chevron
 constexpr int ToolbarIconPad = 8;       // left/right pad around toolbar glyphs
 constexpr int ToolbarChevronPad = 16;   // room for dropdown chevron
 constexpr int ToolbarNavBtnW = 32;     // address-row navigation buttons (Explorer 32x32)
-constexpr int NavGlyphPx = 20;         // address-row glyph
+constexpr int NavGlyphPx = 16;
 constexpr int ToolbarGroupGap = SpaceSm;
+constexpr int ToolbarItemGap = 4;      // separate adjacent command hit areas
+constexpr int BodyTopGap = 8;          // group headers belong below the command divider
 constexpr int ToolbarSepPad = SpaceSm;
 
 // ---- Icon / tile padding (cheap shared metrics) ----
@@ -134,9 +137,11 @@ constexpr int TileChildPadXLarge = 10;
 
 // ---- Font sizes (design) ----
 constexpr int FontBody = 12;
+constexpr int FontNav = 12;
+constexpr int FontTab = 12;           // compact regular text within the compact tab card
 constexpr int FontSmall = 11;
 constexpr int FontCaption = 10;
-constexpr int FontPreviewTitle = 14;   // preview header (DPI-scaled)
+constexpr int FontPreviewTitle = 16;   // preview header (DPI-scaled)
 constexpr int FontPreviewMeta = 12;    // preview meta rows
 
 // ---- Colors (DuiLib #AARRGGBB strings) ----
@@ -176,11 +181,11 @@ inline constexpr const wchar_t* ColorCloseHot      = L"#FFE81123";
 
 // ---- Phase 3: preview pane + status bar (Win11 Explorer density) ----
 constexpr int PreviewPaneW = 280;         // Fluent pass: details pane stays ~1/5 of the window
-constexpr int PreviewPad = 24;            // white details pane: give text an Explorer-like inset
+constexpr int PreviewPad = 16;            // white details pane: give text an Explorer-like inset
 constexpr int PreviewRound = 0;
-constexpr int PreviewImageRound = 0;
+constexpr int PreviewImageRound = 4;
 constexpr int PreviewTitleH = 28;
-constexpr int PreviewTitleGap = 14;
+constexpr int PreviewTitleGap = 12;
 constexpr int PreviewImageH = 196;
 constexpr int PreviewIconCompactH = 80;  // folders / generic: compact icon area
 constexpr int PreviewIconPx = 48;        // folder/generic icon design size
@@ -203,10 +208,10 @@ constexpr int StatusCountSepPad = SpaceSm;
 
 // Phase 2: Explorer-like list / nav interaction
 inline constexpr const wchar_t* ColorListHover     = L"#FFE8F4FC";
-inline constexpr const wchar_t* ColorListSelected  = L"#FFCCE8FF";
+inline constexpr const wchar_t* ColorListSelected  = L"#FFE0EEF9";
 inline constexpr const wchar_t* ColorListHeaderBg  = L"#FFF3F3F3";  // match chrome Surface
-inline constexpr const wchar_t* ColorNavHover      = L"#FFE8F4FC";  // align with list hover
-inline constexpr const wchar_t* ColorNavSelected   = L"#FFCCE8FF";
+inline constexpr const wchar_t* ColorNavHover      = L"#FFF0F0F0";
+inline constexpr const wchar_t* ColorNavSelected   = L"#FFE8E8E8";
 inline constexpr const wchar_t* ColorNavSection    = L"#FF5A5A5A";  // same size as rows, only lighter
 inline constexpr const wchar_t* ColorTreeHotText   = L"#FF1A1A1A";
 inline constexpr const wchar_t* ColorTreeSelText   = L"#FF1A1A1A";
@@ -215,7 +220,7 @@ inline constexpr const wchar_t* ColorTreeSelText   = L"#FF1A1A1A";
 constexpr unsigned ArgbTextPrimary   = 0xFF1A1A1Au;
 constexpr unsigned ArgbTextSecondary = 0xFF5A5A5Au;
 constexpr unsigned ArgbListHover     = 0xFFE8F4FCu;
-constexpr unsigned ArgbListSelected  = 0xFFCCE8FFu;
+constexpr unsigned ArgbListSelected  = 0xFFE0EEF9u;
 constexpr unsigned ArgbNavSection    = 0xFF6B6B6Bu;
 
 } // namespace UiTokens

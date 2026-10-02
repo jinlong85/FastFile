@@ -1,8 +1,9 @@
-// FastFile - view modes, details list, icon/tile views, virtualization, sorting
+﻿// FastFile - view modes, details list, icon/tile views, virtualization, sorting
 // Implements CMainWnd members moved out of the original monolithic MainWnd.cpp.
 // Behaviour is unchanged; declarations live in MainWnd.h.
 
 #include "MainWndInternal.h"
+#include "ShellPresentation.h"
 
 namespace {
 
@@ -314,7 +315,7 @@ void CMainWnd::StyleVerticalScrollBar(CContainerUI* host)
     }
     if (!sb) return;
 
-    const int w = (std::max)(DpiScale(UiTokens::ScrollBarW), 6);
+    const int w = DpiScale(UiTokens::ScrollBarW);
     sb->SetFixedWidth(w);
     sb->SetShowButton1(false);
     sb->SetShowButton2(false);
@@ -356,18 +357,21 @@ void CMainWnd::ApplyFileViewScrollBars()
 void CMainWnd::StyleSidePaneScrollBars(CContainerUI* host)
 {
     if (!host) return;
-    const int extent = (std::max)(DpiScale(UiTokens::SidePaneScrollBarW), 6);
+    const int extent = DpiScale(m_settings.navigationScrollbar+4);
     const auto style = [this, extent](CScrollBarUI* sb, bool vertical) {
         if (!sb) return;
         if (vertical) sb->SetFixedWidth(extent);
         else sb->SetFixedHeight(extent);
         sb->SetShowButton1(false);
         sb->SetShowButton2(false);
-        sb->SetAttribute(_T("bkcolor"), UiTokens::ColorScrollTrack);
-        sb->SetThumbColor(0xFFB5B5B5);
+        sb->SetAttribute(_T("bkcolor"), UiTokens::ColorTransparent);
+        sb->SetThumbColor(0xFFC4C4C4);
         sb->SetAttribute(_T("button1color"), UiTokens::ColorScrollTrack);
         sb->SetAttribute(_T("button2color"), UiTokens::ColorScrollTrack);
-        ApplyFluentScrollBar(sb, true);
+        if (auto* fluent = dynamic_cast<CFluentScrollBarUI*>(sb)) {
+            fluent->SetRailMetrics(DpiScale(m_settings.navigationScrollbar), extent);
+            fluent->SetDockFar(true);
+        }
     };
     style(host->GetVerticalScrollBar(), true);
     style(host->GetHorizontalScrollBar(), false);
@@ -386,15 +390,18 @@ void CMainWnd::StylePreviewRail()
 {
     if (!m_pPreviewRail) return;
     if (m_pPreviewBody) m_pPreviewRail->SetOwner(m_pPreviewBody);
-    const int extent = (std::max)(DpiScale(UiTokens::SidePaneScrollBarW), 6);
+    const int extent = DpiScale(UiTokens::SidePaneScrollBarW);
     m_pPreviewRail->SetHorizontal(false);
     m_pPreviewRail->SetFixedWidth(extent);
     m_pPreviewRail->SetShowButton1(false);
     m_pPreviewRail->SetShowButton2(false);
-    m_pPreviewRail->SetAttribute(_T("bkcolor"), UiTokens::ColorScrollTrack);
+    m_pPreviewRail->SetAttribute(_T("bkcolor"), UiTokens::ColorTransparent);
+    m_pPreviewRail->SetAttribute(_T("bordercolor"), UiTokens::ColorBorder);
+    CDuiString railBorder; railBorder.Format(_T("%d,0,0,0"), DpiScaleHairline(1));
+    m_pPreviewRail->SetAttribute(_T("bordersize"), railBorder);
     m_pPreviewRail->SetAttribute(_T("button1color"), UiTokens::ColorScrollTrack);
     m_pPreviewRail->SetAttribute(_T("button2color"), UiTokens::ColorScrollTrack);
-    m_pPreviewRail->SetThumbColor(0xFFB5B5B5);
+    m_pPreviewRail->SetThumbColor(0xFFC4C4C4);
     m_pPreviewRail->SetVisible(true);
     // The rail owns the preview pane's LEFT edge, so it grows rightwards (into the pane's
     // own padding) instead of overflowing past the pane boundary, which would be clipped.
@@ -432,7 +439,7 @@ void CMainWnd::SyncPreviewRail()
     const int pos = bodyBar->GetScrollPos();
     if (m_pPreviewRail->GetScrollRange() != range) m_pPreviewRail->SetScrollRange(range);
     if (m_pPreviewRail->GetScrollPos() != pos) m_pPreviewRail->SetScrollPos(pos, false);
-    if (m_pPreviewRail->GetThumbColor() != 0xFFB5B5B5) m_pPreviewRail->SetThumbColor(0xFFB5B5B5);
+    if (m_pPreviewRail->GetThumbColor() != 0xFFC4C4C4) m_pPreviewRail->SetThumbColor(0xFFC4C4C4);
 }
 
 // Thumb rectangle of the rail, using DuiLib's own sizing formula (CScrollBarUI::SetPos,
@@ -463,7 +470,7 @@ void CMainWnd::StyleHorizontalScrollBar(CContainerUI* host)
     if (!host) return;
     CScrollBarUI* sb = host->GetHorizontalScrollBar();
     if (!sb) return;
-    sb->SetFixedHeight((std::max)(DpiScale(UiTokens::ScrollBarW), 6));
+    sb->SetFixedHeight(DpiScale(UiTokens::ScrollBarW));
     sb->SetShowButton1(false);
     sb->SetShowButton2(false);
     sb->SetAttribute(_T("bkcolor"), UiTokens::ColorTransparent);
@@ -499,6 +506,17 @@ void CMainWnd::UpdateFluentScrollBarHover(POINT clientPt)
     }
 }
 
+void CMainWnd::CancelScrollBarGestures()
+{
+    for (CContainerUI* host : {static_cast<CContainerUI*>(m_pFileList),
+        static_cast<CContainerUI*>(m_pIconTiles), static_cast<CContainerUI*>(m_pDirTree)}) {
+        if (!host) continue;
+        for (CScrollBarUI* bar : {host->GetVerticalScrollBar(), host->GetHorizontalScrollBar()})
+            if (auto* fluent = dynamic_cast<CFluentScrollBarUI*>(bar)) fluent->CancelGesture();
+    }
+    if (auto* fluent = dynamic_cast<CFluentScrollBarUI*>(m_pPreviewRail)) fluent->CancelGesture();
+}
+
 // ---- View modes ----------------------------------------------------------
 
 bool CMainWnd::IsTileViewMode() const
@@ -511,11 +529,15 @@ void CMainWnd::GetViewMetrics(int& tileW, int& tileH, int& iconPx, int& childPad
     // Design metrics @ 96 DPI; scale for Per-Monitor awareness.
     switch (m_viewMode) {
     case ViewMode::ExtraLargeIcons:
-        tileW = 200; tileH = 220; iconPx = 128; childPad = UiTokens::TileChildPadXLarge; maxLabel = 22; break;
+        tileW = 176; tileH = 196; iconPx = 160; childPad = UiTokens::TileChildPadXLarge; maxLabel = 32767; break;
     case ViewMode::LargeIcons:
-        tileW = 128; tileH = 148; iconPx = 96; childPad = UiTokens::TileChildPadLarge; maxLabel = 18; break;
+        tileW = 144; tileH = 164; iconPx = 128; childPad = UiTokens::TileChildPadLarge; maxLabel = 32767; break;
     case ViewMode::MediumIcons:
         tileW = 100; tileH = 108; iconPx = 48; childPad = UiTokens::TileChildPadMedium; maxLabel = 16; break;
+    case ViewMode::SmallIcons:
+        tileW = 140; tileH = 40; iconPx = 16; childPad = UiTokens::TileChildPadList; maxLabel = 24; break;
+    case ViewMode::Content:
+        tileW = 300; tileH = 72; iconPx = 44; childPad = UiTokens::TileChildPadMedium; maxLabel = 40; break;
     case ViewMode::List:
         // Width is measured from the longest name (see MeasureListColumnWidth); maxLabel
         // only guards against absurd names now that the column can grow.
@@ -528,7 +550,7 @@ void CMainWnd::GetViewMetrics(int& tileW, int& tileH, int& iconPx, int& childPad
     default:
         tileW = 100; tileH = 108; iconPx = 48; childPad = UiTokens::TileChildPadMedium; maxLabel = 16; break;
     }
-    if (IsThisPcPath(m_currentPath) && m_viewMode == ViewMode::Tiles) {
+    if (IsThisPcPath(m_currentPath) && (m_viewMode == ViewMode::Tiles || m_viewMode == ViewMode::Content)) {
         tileW = 280; tileH = 72; iconPx = 40; maxLabel = 48;
     }
     tileW = DpiScale(tileW);
@@ -540,7 +562,7 @@ void CMainWnd::GetViewMetrics(int& tileW, int& tileH, int& iconPx, int& childPad
     // full central canvas.  A fixed 280px card left a large unused strip whenever
     // the preview pane was wide.  Pick 1–4 columns from the live tile viewport and
     // distribute the remaining width evenly, while retaining an Explorer-like gap.
-    if (IsThisPcPath(m_currentPath) && m_viewMode == ViewMode::Tiles && m_pIconTiles) {
+    if (IsThisPcPath(m_currentPath) && (m_viewMode == ViewMode::Tiles || m_viewMode == ViewMode::Content) && m_pIconTiles) {
         const int viewportW = static_cast<int>(m_pIconTiles->GetWidth());
         const int gap = DpiScale(18);
         const int minCardW = DpiScale(240);
@@ -595,7 +617,7 @@ void CMainWnd::ApplyTileLayoutMetrics()
     m_iconPx = iconPx;
     // List view flows top->bottom inside a column and then wraps right (Explorer order);
     // every other mode is the usual row-major tile grid.
-    const bool listMode = (m_viewMode == ViewMode::List);
+    const bool listMode = ((m_viewMode == ViewMode::List || m_viewMode == ViewMode::SmallIcons));
     m_pIconTiles->SetColumnFirst(listMode);
     SIZE sz = { tileW, tileH };
     m_pIconTiles->SetItemSize(sz);
@@ -612,7 +634,7 @@ void CMainWnd::ApplyTileLayoutMetrics()
     }
     if (m_pIconScroll) {
         {
-            const int p = (m_viewMode == ViewMode::List)
+            const int p = ((m_viewMode == ViewMode::List || m_viewMode == ViewMode::SmallIcons))
                 ? DpiScale(UiTokens::TilePadCompact)
                 : DpiScale(UiTokens::TilePadNormal);
             CDuiString pad;
@@ -630,6 +652,7 @@ void CMainWnd::SetViewMode(ViewMode mode)
 {
     if (m_viewMode == mode) {
         UpdateViewModeButtons();
+        ApplyShellViewMode();
         return;
     }
     m_viewMode = mode;
@@ -639,6 +662,7 @@ void CMainWnd::SetViewMode(ViewMode mode)
     if (!m_currentPath.empty())
         SaveFolderViewForPath(m_currentPath, mode);
     UpdateViewModeButtons();
+    ApplyShellViewMode();
 
     // 步骤2：切视图复用已枚举的 listing，避免重新扫盘
     if (m_hasListingCache
@@ -649,6 +673,28 @@ void CMainWnd::SetViewMode(ViewMode mode)
         return;
     }
     RefreshListing();
+}
+
+void CMainWnd::ApplyShellViewMode()
+{
+    if (!m_shellBrowser || !m_shellBrowser->IsCreated())
+        return;
+    FOLDERVIEWMODE mode = FVM_DETAILS;
+    int iconSize = -1;
+    switch (m_viewMode) {
+    case ViewMode::ExtraLargeIcons: mode = FVM_ICON; iconSize = DpiScale(160); break;
+    case ViewMode::LargeIcons:      mode = FVM_ICON; iconSize = DpiScale(128); break;
+    case ViewMode::MediumIcons:     mode = FVM_ICON; iconSize = DpiScale(32); break;
+    case ViewMode::List:            mode = FVM_LIST; break;
+    case ViewMode::Details:         mode = FVM_DETAILS; break;
+    case ViewMode::Tiles:           mode = FVM_TILE; break;
+    case ViewMode::SmallIcons:      mode = FVM_SMALLICON; iconSize = DpiScale(16); break;
+    case ViewMode::Content:         mode = FVM_CONTENT; break;
+    }
+    m_shellBrowser->SetShowHidden(m_showHidden);
+    m_shellBrowser->SetViewMode(mode, iconSize);
+    m_shellBrowser->SetSort(static_cast<int>(m_sortColumn), m_sortAscending);
+    m_shellBrowser->SetGrouping(m_settings.grouping);
 }
 
 void CMainWnd::UpdateViewModeButtons()
@@ -725,6 +771,12 @@ void CMainWnd::SetIconSelected(CControlUI* tile, bool selected)
 
 void CMainWnd::SelectAllItems()
 {
+    if (m_shellBrowser && m_shellBrowser->IsCreated() && m_shellBrowser->IsVisible()) {
+        m_shellBrowser->SelectAll();
+        UpdatePreviewForSelection();
+        UpdateCommandBarState();
+        return;
+    }
     int count = 0;
 
     if (IsTileViewMode() && m_pIconTiles) {
@@ -755,17 +807,18 @@ void CMainWnd::ApplyIconSelectionVisual(CControlUI* tile)
 {
     if (!tile) return;
     const bool selected = (tile->GetTag() & 0x100) != 0;
+    const bool large = m_viewMode == ViewMode::LargeIcons || m_viewMode == ViewMode::ExtraLargeIcons;
     if (selected) {
-        tile->SetAttribute(_T("bkcolor"), UiTokens::ColorListSelected);
-        tile->SetAttribute(_T("bordercolor"), UiTokens::ColorBorder);
+        tile->SetAttribute(_T("bkcolor"), large ? L"#FFE5F1FB" : UiTokens::ColorListSelected);
+        tile->SetAttribute(_T("bordercolor"), large ? L"#FF99D1FF" : UiTokens::ColorBorder);
         tile->SetAttribute(_T("bordersize"), _T("1"));
-        tile->SetAttribute(_T("hotbkcolor"), UiTokens::ColorListHover);
-        tile->SetAttribute(_T("pushedbkcolor"), UiTokens::ColorListSelected);
+        tile->SetAttribute(_T("hotbkcolor"), large ? L"#FFE5F1FB" : UiTokens::ColorListHover);
+        tile->SetAttribute(_T("pushedbkcolor"), large ? L"#FFE5F1FB" : UiTokens::ColorListSelected);
     } else {
         tile->SetAttribute(_T("bkcolor"), UiTokens::ColorContent);
         tile->SetAttribute(_T("bordercolor"), UiTokens::ColorTransparent);
         tile->SetAttribute(_T("bordersize"), _T("0"));
-        tile->SetAttribute(_T("hotbkcolor"), UiTokens::ColorListHover);
+        tile->SetAttribute(_T("hotbkcolor"), large ? L"#FFF5F5F5" : UiTokens::ColorListHover);
         tile->SetAttribute(_T("pushedbkcolor"), UiTokens::ColorListSelected);
     }
     tile->Invalidate();
@@ -925,7 +978,7 @@ void CMainWnd::IconNavigate(int dCol, int dRow)
     const int total = m_pIconTiles->GetCount();
     if (total <= 0) return;
 
-    const bool columnFirst = (m_viewMode == ViewMode::List);
+    const bool columnFirst = ((m_viewMode == ViewMode::List || m_viewMode == ViewMode::SmallIcons));
     const int cols = (std::max)(1, m_pIconTiles->GetColumns());
     const int rows = (std::max)(1, m_pIconTiles->GetRows());
 
@@ -972,7 +1025,7 @@ void CMainWnd::IconPageMove(int dir)
     RECT rc = m_pIconTiles->GetPos();
     const int viewW = (std::max)(1, static_cast<int>(rc.right - rc.left));
     const int viewH = (std::max)(1, static_cast<int>(rc.bottom - rc.top));
-    const bool columnFirst = (m_viewMode == ViewMode::List);
+    const bool columnFirst = ((m_viewMode == ViewMode::List || m_viewMode == ViewMode::SmallIcons));
 
     if (columnFirst) {
         // A "page" in the vertical list view is the set of visible columns.
@@ -1005,9 +1058,9 @@ void CMainWnd::ActivateIconTile(CControlUI* tile)
     if (isDir)
         NavigateTo(ud.GetData(), true);
     else {
-        ::ShellExecuteW(m_hWnd, L"open", ud.GetData(), nullptr, nullptr, SW_SHOWNORMAL);
+        const bool opened=ShellPresentation::OpenDefaultFile(m_hWnd,ud.GetData());
         CDuiString tip;
-        tip.Format(_T("已打开: %s"), ud.GetData());
+        tip.Format(opened ? _T("已打开: %s") : _T("未能打开: %s"), ud.GetData());
         UpdateStatus(tip.GetData());
     }
 }
@@ -1050,6 +1103,7 @@ void CMainWnd::OnIconTileClick(CControlUI* tile)
     m_PaintManager.SetFocus(tile);
 
     std::vector<ClipboardItem> sel;
+    if (idx >= 0) IconEnsureVisible(m_iconVirtMode ? m_virtFirstIndex + idx : idx);
     CollectSelectedItems(sel);
     CDuiString tip;
     if (sel.size() <= 1)
@@ -1147,7 +1201,7 @@ bool CMainWnd::TryReuseIconsView(const std::vector<DirEntry>& dirs,
     if (n != static_cast<int>(all.size()) || n <= 0)
         return false;
     // List view re-measures its column width from the names, so reuse is not safe there.
-    if (m_viewMode == ViewMode::List)
+    if ((m_viewMode == ViewMode::List || m_viewMode == ViewMode::SmallIcons))
         return false;
 
     // 路径不一致则不能复用控件
@@ -1165,8 +1219,8 @@ bool CMainWnd::TryReuseIconsView(const std::vector<DirEntry>& dirs,
     int tileW = 100, tileH = 108, iconPx = 48, childPad = 6, maxLabel = 16;
     GetViewMetrics(tileW, tileH, iconPx, childPad, maxLabel);
     m_iconPx = iconPx;
-    const bool listMode = (m_viewMode == ViewMode::List);
-    const bool tilesMode = (m_viewMode == ViewMode::Tiles);
+    const bool listMode = ((m_viewMode == ViewMode::List || m_viewMode == ViewMode::SmallIcons));
+    const bool tilesMode = ((m_viewMode == ViewMode::Tiles || m_viewMode == ViewMode::Content));
     const UINT gen = m_thumbGeneration.load();
 
     for (int i = 0; i < n; ++i) {
@@ -1791,8 +1845,8 @@ void CMainWnd::OnDetailsFillTick()
     if (IsTileViewMode() && m_pIconTiles) {
         int tileW = 100, tileH = 108, iconPx = 48, childPad = 6, maxLabel = 16;
         GetViewMetrics(tileW, tileH, iconPx, childPad, maxLabel);
-        const bool listMode = (m_viewMode == ViewMode::List);
-        const bool tilesMode = (m_viewMode == ViewMode::Tiles);
+        const bool listMode = ((m_viewMode == ViewMode::List || m_viewMode == ViewMode::SmallIcons));
+        const bool tilesMode = ((m_viewMode == ViewMode::Tiles || m_viewMode == ViewMode::Content));
         const UINT gen = m_thumbGeneration.load();
         int added = 0;
         while (m_detailsFillNext < n && added < kDetailsFillBatch) {
@@ -1951,8 +2005,8 @@ void CMainWnd::RebuildIconsViewFull(const std::vector<DirEntry>& all)
     int tileW = 100, tileH = 108, iconPx = 48, childPad = 6, maxLabel = 16;
     GetViewMetrics(tileW, tileH, iconPx, childPad, maxLabel);
     m_iconPx = iconPx;
-    const bool listMode = (m_viewMode == ViewMode::List);
-    const bool tilesMode = (m_viewMode == ViewMode::Tiles);
+    const bool listMode = ((m_viewMode == ViewMode::List || m_viewMode == ViewMode::SmallIcons));
+    const bool tilesMode = ((m_viewMode == ViewMode::Tiles || m_viewMode == ViewMode::Content));
     if (listMode) {
         tileW = MeasureListColumnWidth(all, iconPx);
         SIZE lsz = { tileW, tileH };
@@ -2016,8 +2070,8 @@ void CMainWnd::RebuildIconsViewVirtual(const std::vector<DirEntry>& all)
     int tileW = 100, tileH = 108, iconPx = 48, childPad = 6, maxLabel = 16;
     GetViewMetrics(tileW, tileH, iconPx, childPad, maxLabel);
     m_iconPx = iconPx;
-    const bool listMode = (m_viewMode == ViewMode::List);
-    const bool tilesMode = (m_viewMode == ViewMode::Tiles);
+    const bool listMode = ((m_viewMode == ViewMode::List || m_viewMode == ViewMode::SmallIcons));
+    const bool tilesMode = ((m_viewMode == ViewMode::Tiles || m_viewMode == ViewMode::Content));
     if (listMode) {
         tileW = MeasureListColumnWidth(all, iconPx);
         SIZE lsz = { tileW, tileH };

@@ -872,12 +872,11 @@ namespace {
 // Ids for the two-tone command-bar icons (see GetCommandIconBmp).
 enum CommandIcon {
     CmdIconNew = 0, CmdIconCut, CmdIconCopy, CmdIconPaste, CmdIconRename,
-    CmdIconShare, CmdIconDelete, CmdIconSort, CmdIconView, CmdIconMore
+    CmdIconShare, CmdIconDelete, CmdIconSort, CmdIconView, CmdIconMore, CmdIconSettings
 };
 
-// Command-bar palettes, sampled from the two Windows 11 Explorer command-bar states:
-//  - enabled / "lit":   dark grey line art (#555555) with a strong blue accent (#0078D4)
-//  - disabled / dimmed: light grey (#C2C2C2) with a pale blue (#A3CEEF)
+// Command-bar ink is #1A1A1A. Disabled icons receive 40% overall alpha
+// after rendering, so intersecting strokes do not become more opaque.
 // `soft` is the lighter secondary stroke (clipboard sheet, bin slots); `ink` is used for the
 // near-black "more" dots, which Explorer always draws dark; `tint` is the translucent fill
 // Explorer puts behind the accent shapes (the front copy sheet, the pasted page).
@@ -888,11 +887,10 @@ struct CmdPalette {
     Gdiplus::ARGB ink;
     Gdiplus::ARGB tint;
 };
-const CmdPalette kCmdLit = { 0xFF555555, 0xFF0078D4, 0xFFAAAAAA, 0xFF1B1B1B, 0x260078D4 };
-const CmdPalette kCmdDim = { 0xFFC2C2C2, 0xFFA3CEEF, 0xFFE1E1E1, 0xFFC2C2C2, 0x26A3CEEF };
+const CmdPalette kCmdLit = { 0xFF1A1A1A, 0xFF1A1A1A, 0xFF1A1A1A, 0xFF1A1A1A, 0x261A1A1A };
 
 // Icons are authored on a 20x20 grid and scaled to the requested pixel size.
-void DrawCommandIcon(Gdiplus::Graphics& g, int kind, float px, bool dim)
+void DrawCommandIcon(Gdiplus::Graphics& g, int kind, float px)
 {
     using namespace Gdiplus;
     const float s = px / 20.0f;
@@ -900,7 +898,7 @@ void DrawCommandIcon(Gdiplus::Graphics& g, int kind, float px, bool dim)
     // Explorer's glyphs are noticeably heavier than a hairline: ~1.7 logical px at 16px.
     const float w = (std::max)(1.4f, px / 9.0f);
     const float corner = 1.6f;                      // rounded-rect radius on the grid
-    const CmdPalette pal = dim ? kCmdDim : kCmdLit;
+    const CmdPalette pal = kCmdLit;
 
     auto stroke = [&](ARGB color, float x1, float y1, float x2, float y2) {
         Pen p(Color(color), w);
@@ -1038,6 +1036,16 @@ void DrawCommandIcon(Gdiplus::Graphics& g, int kind, float px, bool dim)
         strokeW(pal.outline, 3.2f, 12.4f, 16.8f, 12.4f, 1.02f);
         strokeW(pal.outline, 3.2f, 16.4f, 16.8f, 16.4f, 1.16f);
         break;
+    case CmdIconSettings: {
+        PointF gear[24];
+        for(int i=0;i<24;++i) {
+            const float angle=float(i*3.141592653589793/12);
+            const float radius=(i%4==0 || i%4==3)?8.0f:6.4f;
+            gear[i]=PointF(X(10+radius*std::cos(angle)),X(10+radius*std::sin(angle)));
+        }
+        Pen pen(Color(pal.ink),w);pen.SetLineJoin(LineJoinRound);g.DrawPolygon(&pen,gear,24);
+        ring(pal.ink,10,10,2.6f,false);break;
+    }
     default:                        // more: three ink dots
         ring(pal.ink, 4.4f, 10, 1.5f, true);
         ring(pal.ink, 10, 10, 1.5f, true);
@@ -1053,7 +1061,7 @@ std::wstring CMainWnd::GetCommandIconBmp(int kind, int px, bool dim)
     if (px < 8) px = 8;
     if (px > 128) px = 128;
     wchar_t keybuf[64] = {};
-    swprintf_s(keybuf, L"cmdi:%d@%d%s", kind, px, dim ? L"#dim" : L"");
+    swprintf_s(keybuf, L"cmdi-v6:%d@%d%s", kind, px, dim ? L"#dim" : L"");
     const std::wstring key = keybuf;
     {
         std::lock_guard<std::mutex> lock(m_iconCacheMutex);
@@ -1066,7 +1074,7 @@ std::wstring CMainWnd::GetCommandIconBmp(int kind, int px, bool dim)
 
     size_t h = std::hash<std::wstring>{}(key);
     wchar_t name[96] = {};
-    swprintf_s(name, L"cmd_%08X_%d_%d_%d_v2.png", static_cast<unsigned>(h & 0xFFFFFFFFu),
+    swprintf_s(name, L"cmd_%08X_%d_%d_%d_v6.png", static_cast<unsigned>(h & 0xFFFFFFFFu),
         kind, px, dim ? 1 : 0);
     const std::wstring pngPath = m_iconCacheDir + name;
     if (::PathFileExistsW(pngPath.c_str())) {
@@ -1080,10 +1088,42 @@ std::wstring CMainWnd::GetCommandIconBmp(int kind, int px, bool dim)
         using namespace Gdiplus;
         Bitmap bmp(px, px, PixelFormat32bppARGB);
         if (bmp.GetLastStatus() == Ok) {
-            Graphics g(&bmp);
-            g.SetSmoothingMode(SmoothingModeAntiAlias);
-            g.SetPixelOffsetMode(PixelOffsetModeHalf);
-            DrawCommandIcon(g, kind, static_cast<float>(px), dim);
+            {
+                // Rasterize original vector paths at 4x, then filter to the exact window-DPI
+                // size. DuiLib receives a 1:1 bitmap rather than stretching a small asset.
+                constexpr int samples = 4;
+                Bitmap high(px * samples, px * samples, PixelFormat32bppARGB);
+                Graphics vector(&high);
+                vector.Clear(Color(0,0,0,0));
+                vector.SetSmoothingMode(SmoothingModeAntiAlias);
+                vector.SetPixelOffsetMode(PixelOffsetModeHalf);
+                DrawCommandIcon(vector, kind, static_cast<float>(px * samples));
+                vector.Flush(FlushIntentionSync);
+                Graphics g(&bmp);
+                g.Clear(Color(0,0,0,0));
+                g.SetCompositingMode(CompositingModeSourceCopy);
+                g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
+                g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
+                ImageAttributes edges;
+                edges.SetWrapMode(WrapModeTileFlipXY);
+                g.DrawImage(&high, Rect(0,0,px,px), 0,0,px*samples,px*samples,UnitPixel,&edges);
+            }
+            {
+                // Bicubic filtering may overshoot RGB near transparent edges. Keep exact
+                // monochrome ink and use the filtered alpha solely for coverage.
+                BitmapData pixels{};
+                Rect bounds(0,0,px,px);
+                if (bmp.LockBits(&bounds, ImageLockModeRead | ImageLockModeWrite, PixelFormat32bppARGB, &pixels) != Ok) return {};
+                for (int y=0;y<px;++y) {
+                    BYTE* row=static_cast<BYTE*>(pixels.Scan0)+ptrdiff_t(y)*pixels.Stride;
+                    for (int x=0;x<px;++x) {
+                        BYTE* pixel=row+x*4;
+                        if(dim) pixel[3]=BYTE((unsigned(pixel[3])*2+2)/5);
+                        pixel[0]=pixel[1]=pixel[2]=pixel[3] ? 0x1A : 0;
+                    }
+                }
+                bmp.UnlockBits(&pixels);
+            }
             CLSID clsidPng = {};
             ok = GetPngEncoderClsid(&clsidPng)
                 && bmp.Save(pngPath.c_str(), &clsidPng, nullptr) == Ok;
@@ -1118,7 +1158,7 @@ void CMainWnd::ApplyCommandIcon(CControlUI* c, int kind, bool withLabel)
     if (withLabel) {
         CDuiString tp;
         tp.Format(_T("%d,0,%d,0"),
-            padL + px + DpiScale(UiTokens::SpaceXs), DpiScale(UiTokens::SpaceSm));
+            padL + px + DpiScale(6), DpiScale(UiTokens::SpaceSm));
         c->SetAttribute(_T("textpadding"), tp.GetData());
     } else {
         c->SetAttribute(_T("textpadding"), _T("0,0,0,0"));
@@ -1145,7 +1185,7 @@ void CMainWnd::UpdateCommandBarState()
     };
     state(_T("btn_cut"), CmdIconCut, hasSel && !running);
     state(_T("btn_copy"), CmdIconCopy, hasSel && !running);
-    state(_T("btn_paste"), CmdIconPaste, !running && !m_clipboard.empty());
+    state(_T("btn_paste"), CmdIconPaste, !running && IsClipboardFormatAvailable(CF_HDROP));
     state(_T("btn_rename"), CmdIconRename, single && !running);
     state(_T("btn_share"), CmdIconShare, hasSel && !running);
     state(_T("btn_delete"), CmdIconDelete, hasSel && !running);
@@ -1216,7 +1256,9 @@ void CMainWnd::ApplyChromeShellIcons()
         CControlUI* c = m_PaintManager.FindControl(name);
         if (!c) return;
         const int px = DpiScale(UiTokens::NavGlyphPx);
-        const std::wstring bmp = GetGlyphIconBmp(glyph, px, RGB(0x3A, 0x3A, 0x3A));
+        // Render at twice the final resolution, then let the image renderer downsample
+        // coverage for smooth, quiet strokes at fractional DPI.
+        const std::wstring bmp = GetGlyphIconBmp(glyph, px * 2, RGB(0x70, 0x70, 0x70));
         if (bmp.empty()) return;
         int bw = c->GetFixedWidth();
         int bh = c->GetFixedHeight();
@@ -1243,6 +1285,7 @@ void CMainWnd::ApplyChromeShellIcons()
     applyCmdIcon(_T("btn_sort"), CmdIconSort, true);
     applyCmdIcon(_T("btn_view_menu"), CmdIconView, true);
     applyCmdIcon(_T("btn_more"), CmdIconMore, false);
+    applyCmdIcon(_T("btn_settings"), CmdIconSettings, false);
 
     // Keep hidden legacy view buttons iconized for UpdateViewModeButtons
     applyBtn(_T("btn_view_xlarge"), GetModuleIconBmp(L"shell32.dll", 257, iconPx), true);

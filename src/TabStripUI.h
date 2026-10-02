@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 // FastFile - Explorer-style tab strip.
 //
 // One self-drawn control owns the tab geometry, hover/press state and the hit testing that
@@ -41,13 +41,14 @@ public:
 
     // ---- appearance -------------------------------------------------------
     void SetDarkMode(bool dark);
+    void SetBarHeight(int height) { m_barHeight=height; }
+    void SetWidthPercent(int percent) { m_widthPercent=percent; }
     void SetMetrics(int dpi);            // icon px / radii / max tab width
     void SetMaxTabWidth(int px) { m_maxTabW = px; }
     void SetTabWidthRange(int minW, int selMinW, int maxW)
     {
         m_minTabW = minW; m_selMinTabW = selMinW; m_maxTabW = maxW;
     }
-    void AnimateAppear(int index);       // short slide-in for a new tab
     // Bring a tab into the visible window (a selected tab that was scrolled out must come back).
     void EnsureTabVisible(int index);
 
@@ -72,6 +73,7 @@ public:
     static constexpr UINT kMsgTabAdd = WM_USER + 305;
 
 private:
+    friend struct TabStripRegressionAccess;
     struct Tab {
         std::wstring path;
         std::wstring title;
@@ -80,8 +82,7 @@ private:
         int  iconPx = 16;
         RECT body = {};
         RECT close = {};
-        int  singleWidth = 0;  // non-zero when this is the only tab (card spans the strip)
-        DWORD born = 0;        // tick of creation (slide-in)
+        int  width = 0;        // allocated by preferred/minimum layout, independent of active state
     };
 
     void  RecalcRects(bool notifyOnly = false);
@@ -92,7 +93,6 @@ private:
     void  DrawTabText(Gdiplus::Graphics& g, int index, const RECT& rc, COLORREF color);
     void  DrawCloseGlyph(Gdiplus::Graphics& g, const RECT& rc, bool hot);
     void  DrawPlusGlyph(Gdiplus::Graphics& g, const RECT& rc);
-    void  StartAnimTimer();
     int   MeasureTabWidth(int index) const;   // natural width from the measured title
     int   TabWidth(int index) const;          // clamped to [min|selMin, max]
     void  ClampScroll();
@@ -109,13 +109,14 @@ private:
     bool  m_dragging = false;
     bool  m_dark = false;
     int   m_dpi = 96;
-    int   m_maxTabW = 200;
+    int   m_maxTabW = 360;
+    int m_barHeight=29;
+    int m_widthPercent=150;
     int   m_minTabW = 120;
-    int   m_selMinTabW = 148;
+    int   m_selMinTabW = 120;
     int   m_scrollX = 0;         // horizontal offset when the tabs do not fit
     int   m_contentW = 0;        // total width of the tab cells
     RECT  m_plus = {};
-    bool  m_animating = false;
     Gdiplus::Font* m_font = nullptr;
     Gdiplus::FontFamily* m_fontFamily = nullptr;
 };

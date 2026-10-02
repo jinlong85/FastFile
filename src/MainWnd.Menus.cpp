@@ -1,8 +1,9 @@
-// FastFile - toolbar dropdown menus and Shell context menus
+﻿// FastFile - toolbar dropdown menus and Shell context menus
 // Implements CMainWnd members moved out of the original monolithic MainWnd.cpp.
 // Behaviour is unchanged; declarations live in MainWnd.h.
 
 #include "MainWndInternal.h"
+#include "ShellPresentation.h"
 
 void CMainWnd::ShowToolbarPopupMenu(CControlUI* anchor, HMENU hMenu)
 {
@@ -81,6 +82,10 @@ void CMainWnd::OnSortMenuClicked()
     } else if (cmd == 6) {
         m_sortAscending = false;
     }
+    if (m_shellBrowser && m_shellBrowser->IsCreated() && m_shellBrowser->IsVisible()) {
+        m_shellBrowser->SetSort(static_cast<int>(m_sortColumn), m_sortAscending);
+        return;
+    }
     SortListingCache();
     UpdateHeaderSortIndicators();
     RebuildCurrentViewFromCache();
@@ -96,9 +101,11 @@ void CMainWnd::OnViewMenuClicked()
     ::AppendMenuW(hMenu, check(ViewMode::ExtraLargeIcons), 1, L"超大图标");
     ::AppendMenuW(hMenu, check(ViewMode::LargeIcons), 2, L"大图标");
     ::AppendMenuW(hMenu, check(ViewMode::MediumIcons), 3, L"中等图标");
+    ::AppendMenuW(hMenu, check(ViewMode::SmallIcons), 9, L"小图标");
     ::AppendMenuW(hMenu, check(ViewMode::List), 4, L"列表");
     ::AppendMenuW(hMenu, check(ViewMode::Details), 5, L"详细信息");
     ::AppendMenuW(hMenu, check(ViewMode::Tiles), 6, L"平铺");
+    ::AppendMenuW(hMenu, check(ViewMode::Content), 10, L"内容");
     ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     ::AppendMenuW(hMenu, m_previewVisible ? (MF_STRING | MF_CHECKED) : MF_STRING, 7, L"预览窗格");
     ::AppendMenuW(hMenu, m_favoritesBarVisible ? (MF_STRING | MF_CHECKED) : MF_STRING, 8, L"收藏栏");
@@ -121,6 +128,8 @@ void CMainWnd::OnViewMenuClicked()
     case 4: SetViewMode(ViewMode::List); break;
     case 5: SetViewMode(ViewMode::Details); break;
     case 6: SetViewMode(ViewMode::Tiles); break;
+    case 9: SetViewMode(ViewMode::SmallIcons); break;
+    case 10: SetViewMode(ViewMode::Content); break;
     case 7:
         SetPreviewVisible(!m_previewVisible);
         if (m_previewVisible) UpdatePreviewForSelection();
@@ -150,11 +159,10 @@ void CMainWnd::OnMoreMenuClicked()
     ::AppendMenuW(hMenu, m_showHidden ? (MF_STRING | MF_CHECKED) : MF_STRING,
         3, L"显示隐藏的项目");
     ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
-    ::AppendMenuW(hMenu, m_undoStack.empty() ? (MF_STRING | MF_GRAYED) : MF_STRING,
+    ::AppendMenuW(hMenu, (m_undoStack.empty() && !(!m_historyStarted && m_shellBrowser && m_shellBrowser->InvokeHistory(false, false))) ? (MF_STRING | MF_GRAYED) : MF_STRING,
         4, L"撤销\tCtrl+Z");
-    ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
-    ::AppendMenuW(hMenu, IsFolderOpenHandlerEnabled() ? (MF_STRING | MF_CHECKED) : MF_STRING,
-        5, L"使用 FastFile 打开系统文件夹");
+    ::AppendMenuW(hMenu, (m_redoStack.empty() && !(!m_historyStarted && m_shellBrowser && m_shellBrowser->InvokeHistory(true, false))) ? (MF_STRING | MF_GRAYED) : MF_STRING,
+        7, L"重做\tCtrl+Y");
 
     CControlUI* anchor = m_PaintManager.FindControl(_T("btn_more"));
     if (!anchor || !m_hWnd) {
@@ -177,11 +185,12 @@ void CMainWnd::OnMoreMenuClicked()
         ToggleShowHidden();
     } else if (cmd == 4) {
         OnUndo();
-    } else if (cmd == 5) {
-        OnFolderOpenHandlerMenuClicked();
+    } else if (cmd == 7) {
+        OnRedo();
+
     } else if (cmd == 6) {
         if (!cfgDir.empty())
-            AddTab(cfgDir, true, /*allowDuplicate*/ false);
+            AddTab(cfgDir, true);
     }
 }
 
@@ -250,9 +259,9 @@ void CMainWnd::PruneShellMenu(IContextMenu* pMenu, HMENU hMenu, UINT idCmdFirst,
 
         if (id >= idCmdFirst && id < idShellMax) {
             wchar_t verb[128] = {};
-            if (SUCCEEDED(pMenu->GetCommandString(id - idCmdFirst, GCS_VERBW, nullptr,
-                    reinterpret_cast<LPSTR>(verb), _countof(verb)))
-                && ::_wcsicmp(verb, L"Powershell") == 0) {
+            const bool hasVerb=SUCCEEDED(pMenu->GetCommandString(id - idCmdFirst, GCS_VERBW, nullptr,
+                    reinterpret_cast<LPSTR>(verb), _countof(verb)));
+            if (hasVerb && ::_wcsicmp(verb, L"Powershell") == 0) {
                 ::DeleteMenu(hMenu, pos, MF_BYPOSITION);
                 continue;
             }
@@ -269,6 +278,28 @@ void CMainWnd::PruneShellMenu(IContextMenu* pMenu, HMENU hMenu, UINT idCmdFirst,
         pcm2->Release();
 
     TidyMenuSeparators(hMenu);
+}
+
+void CMainWnd::AddInternalFolderOpenMenu(IContextMenu* menu,HMENU popup,UINT first,UINT last,
+    const std::vector<std::wstring>& paths)
+{
+    if(paths.empty())return;
+    for(const auto& path:paths) {
+        const DWORD attributes=GetFileAttributesW(path.c_str());
+        if(!IsThisPcPath(path) && (attributes==INVALID_FILE_ATTRIBUTES || !(attributes&FILE_ATTRIBUTE_DIRECTORY)))return;
+    }
+    bool found=false;
+    for(int pos=0;pos<GetMenuItemCount(popup);++pos) {
+        const UINT id=GetMenuItemID(popup,pos);wchar_t verb[128]{};
+        if(id>=first && id<last && SUCCEEDED(menu->GetCommandString(id-first,GCS_VERBW,nullptr,reinterpret_cast<LPSTR>(verb),_countof(verb)))
+            && (_wcsicmp(verb,L"opennewwindow")==0 || _wcsicmp(verb,L"opennewtab")==0)) {
+            MENUITEMINFOW item{};item.cbSize=sizeof(item);item.fMask=MIIM_STRING;
+            item.dwTypeData=const_cast<wchar_t*>(L"在新选项卡中打开");
+            SetMenuItemInfoW(popup,pos,TRUE,&item);found=true;
+        }
+    }
+    // Some Shell providers omit their new-window verb for embedded hosts.
+    if(!found)InsertMenuW(popup,1,MF_BYPOSITION|MF_STRING,kCmdShellNewTab,L"在新选项卡中打开");
 }
 
 // Collapse separators left behind by removals / insertions (no leading, trailing or
@@ -351,6 +382,9 @@ bool CMainWnd::TrackPopupShellMenu(IContextMenu* pMenu, HMENU hMenu, POINT ptScr
         ToggleShowHidden();
         return true;
     }
+    if(cmd==kCmdShellNewTab) {
+        HandleInternalFolderOpenVerb(L"opennewtab",m_shellMenuPaths);return true;
+    }
 
     // FastFile's own entries in the folder-background menu (see ShowShellBackgroundContextMenu).
     if (cmd == kCmdBgRefresh) {
@@ -361,7 +395,7 @@ bool CMainWnd::TrackPopupShellMenu(IContextMenu* pMenu, HMENU hMenu, POINT ptScr
         OnPasteClicked();
         return true;
     }
-    if (cmd >= kCmdBgViewBase && cmd < kCmdBgViewBase + 6) {
+    if (cmd >= kCmdBgViewBase && cmd < kCmdBgViewBase + 8) {
         SetViewMode(static_cast<ViewMode>(cmd - kCmdBgViewBase));
         return true;
     }
@@ -373,6 +407,10 @@ bool CMainWnd::TrackPopupShellMenu(IContextMenu* pMenu, HMENU hMenu, POINT ptScr
             m_sortColumn = col;
             m_sortAscending = true;
         }
+        if (m_shellBrowser && m_shellBrowser->IsCreated() && m_shellBrowser->IsVisible()) {
+            m_shellBrowser->SetSort(static_cast<int>(m_sortColumn), m_sortAscending);
+            return true;
+        }
         SortListingCache();
         UpdateHeaderSortIndicators();
         RebuildCurrentViewFromCache();
@@ -380,6 +418,10 @@ bool CMainWnd::TrackPopupShellMenu(IContextMenu* pMenu, HMENU hMenu, POINT ptScr
     }
     if (cmd == kCmdBgSortBase + 4 || cmd == kCmdBgSortBase + 5) {
         m_sortAscending = (cmd == kCmdBgSortBase + 4);
+        if (m_shellBrowser && m_shellBrowser->IsCreated() && m_shellBrowser->IsVisible()) {
+            m_shellBrowser->SetSort(static_cast<int>(m_sortColumn), m_sortAscending);
+            return true;
+        }
         SortListingCache();
         UpdateHeaderSortIndicators();
         RebuildCurrentViewFromCache();
@@ -390,6 +432,8 @@ bool CMainWnd::TrackPopupShellMenu(IContextMenu* pMenu, HMENU hMenu, POINT ptScr
         wchar_t verb[128] = {};
         const bool hasVerb = SUCCEEDED(pMenu->GetCommandString(cmd - idCmdFirst,
             GCS_VERBW, nullptr, reinterpret_cast<LPSTR>(verb), _countof(verb)));
+
+        if(hasVerb && HandleInternalFolderOpenVerb(verb,m_shellMenuPaths))return true;
 
         // "属性" goes through the documented API instead of the menu's offset verb.
         // The offset verb is resolved against whatever folder object the menu was bound to,
@@ -418,6 +462,21 @@ bool CMainWnd::TrackPopupShellMenu(IContextMenu* pMenu, HMENU hMenu, POINT ptScr
                 UnpinQuickAccess(m_shellMenuPaths.front());
         }
         RefreshListing();
+    }
+    return true;
+}
+
+bool CMainWnd::HandleInternalFolderOpenVerb(const std::wstring& verb,const std::vector<std::wstring>& paths)
+{
+    const bool newTab=_wcsicmp(verb.c_str(),L"opennewwindow")==0 || _wcsicmp(verb.c_str(),L"opennewtab")==0;
+    if((!newTab && _wcsicmp(verb.c_str(),L"open")!=0 && _wcsicmp(verb.c_str(),L"explore")!=0) || paths.empty())return false;
+    for(const auto& path:paths) {
+        const DWORD attributes=GetFileAttributesW(path.c_str());
+        if(!IsThisPcPath(path) && (attributes==INVALID_FILE_ATTRIBUTES || !(attributes&FILE_ATTRIBUTE_DIRECTORY)))return false;
+    }
+    for(size_t i=0;i<paths.size();++i) {
+        auto* target=new(std::nothrow) std::wstring(paths[i]);
+        if(target && !::PostMessageW(m_hWnd,kMsgShellFolderOpen,newTab ? 2 : (i!=0),reinterpret_cast<LPARAM>(target)))delete target;
     }
     return true;
 }
@@ -518,6 +577,8 @@ bool CMainWnd::ShowShellBackgroundContextMenu(const std::wstring& folderPath, PO
         ::AppendMenuW(hView, checkView(ViewMode::List), (UINT_PTR)(kCmdBgViewBase + 3), L"列表");
         ::AppendMenuW(hView, checkView(ViewMode::Details), (UINT_PTR)(kCmdBgViewBase + 4), L"详细信息");
         ::AppendMenuW(hView, checkView(ViewMode::Tiles), (UINT_PTR)(kCmdBgViewBase + 5), L"平铺");
+        ::AppendMenuW(hView, checkView(ViewMode::SmallIcons), (UINT_PTR)(kCmdBgViewBase + 6), L"小图标");
+        ::AppendMenuW(hView, checkView(ViewMode::Content), (UINT_PTR)(kCmdBgViewBase + 7), L"内容");
 
         auto checkSort = [&](SortColumn c) -> UINT {
             return (m_sortColumn == c) ? (MF_STRING | MF_CHECKED) : MF_STRING;
@@ -576,8 +637,20 @@ void CMainWnd::ShowItemContextMenu(CControlUI* /*pItem*/, POINT ptScreen)
     for (const auto& it : items)
         paths.push_back(it.path);
 
-    if (!ShowShellContextMenu(paths, ptScreen))
+    std::vector<std::pair<UINT, std::wstring>> extraItems;
+    if (items.size() == 1
+        && !ParentPath(items[0].path).empty()
+        && ::GetFileAttributesW(items[0].path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        extraItems.emplace_back(static_cast<UINT>(kCmdShellRename), L"重命名");
+    }
+    UINT extraCommand = 0;
+    if (!ShowShellContextMenu(paths, ptScreen,
+            extraItems.empty() ? nullptr : &extraItems, &extraCommand)) {
         ShowFallbackContextMenu(items, ptScreen);
+        return;
+    }
+    if (extraCommand == kCmdShellRename)
+        OnRenameClicked();
 }
 
 bool CMainWnd::ShowShellContextMenu(const std::vector<std::wstring>& paths, POINT ptScreen,
@@ -712,6 +785,7 @@ bool CMainWnd::ShowShellContextMenu(const std::vector<std::wstring>& paths, POIN
 
     const UINT idShellMax = idCmdFirst + static_cast<UINT>(HRESULT_CODE(hr));
     PruneShellMenu(pMenu, hMenu, idCmdFirst, idShellMax, false);
+    AddInternalFolderOpenMenu(pMenu,hMenu,idCmdFirst,idShellMax,paths);
     // Full Shell menu with owner-draw / cascaded submenus via IContextMenu2/3
     m_shellMenuPaths = paths;
     TrackPopupShellMenu(pMenu, hMenu, ptScreen, idCmdFirst, idShellMax, false,
@@ -754,7 +828,7 @@ void CMainWnd::ShowFallbackContextMenu(const std::vector<ClipboardItem>& items, 
             if (items[0].isDir)
                 NavigateTo(items[0].path, true);
             else
-                ::ShellExecuteW(m_hWnd, L"open", items[0].path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                ShellPresentation::OpenDefaultFile(m_hWnd,items[0].path);
         }
         break;
     case kCmdCtxCopy: OnCopyClicked(); break;

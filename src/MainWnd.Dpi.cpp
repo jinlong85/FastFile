@@ -117,7 +117,7 @@ void CMainWnd::RefreshDpiFromWindow()
 void CMainWnd::ApplyDpiScaledFonts()
 {
     // XML Font entries use 96-DPI pixel sizes; re-register at current DPI.
-    // Prefer Segoe UI (Fluent); YaHei UI as CJK-friendly companion (id 4).
+    // Navigation uses Segoe UI Latin glyphs with Windows CJK font linking.
     const LPCTSTR face = _T("Segoe UI");
     const LPCTSTR faceCn = _T("Microsoft YaHei UI");
     m_PaintManager.AddFont(0, face, DpiScale(UiTokens::FontBody), false, false, false);
@@ -125,8 +125,9 @@ void CMainWnd::ApplyDpiScaledFonts()
     m_PaintManager.AddFont(1, face, DpiScale(UiTokens::FontBody), true, false, false);
     m_PaintManager.AddFont(2, face, DpiScale(UiTokens::FontSmall), false, false, false);
     m_PaintManager.AddFont(3, face, DpiScale(UiTokens::FontCaption), false, false, false);
-    m_PaintManager.AddFont(4, faceCn, DpiScale(UiTokens::FontBody), false, false, false);
+    m_PaintManager.AddFont(4, face, DpiScale(m_settings.navigationFont), false, false, false);
     m_PaintManager.AddFont(5, face, DpiScale(UiTokens::FontPreviewTitle), true, false, false);
+    m_PaintManager.AddFont(7, faceCn, DpiScale(UiTokens::FontTab), false, false, false);
     // Command-bar / navigation glyphs: 16 design px keeps them just above the 12px labels,
     // matching Explorer's icon-to-label ratio (was 18, which crowded the text).
     m_PaintManager.AddFont(6, _T("Segoe MDL2 Assets"), DpiScale(UiTokens::ToolbarGlyphPx), false, false, false);
@@ -139,9 +140,11 @@ void CMainWnd::ApplyDpiScaledChrome()
 {
     // Scale chrome bands + key panels from 96-DPI design sizes in main.xml.
     // Phase 3: command bar is 40px; separators/gaps DPI-scaled.
-    ScaleNamedFixed(m_PaintManager, _T("titlebar"), 0, UiTokens::TabBarH, m_dpi);
+    ScaleNamedFixed(m_PaintManager, _T("titlebar"), 0, m_settings.tabHeight, m_dpi);
     ScaleNamedFixed(m_PaintManager, _T("toolbar"), 0, UiTokens::ToolbarH, m_dpi);
-    ScaleNamedFixed(m_PaintManager, _T("favorites_bar"), 0, UiTokens::FavoritesBarH, m_dpi);
+    if (auto* divider = m_PaintManager.FindControl(_T("command_body_divider")))
+        divider->SetFixedHeight(DpiScaleHairline(UiTokens::Hairline));
+    ScaleNamedFixed(m_PaintManager, _T("favorites_bar"), 0, m_settings.favoritesHeight, m_dpi);
     ScaleNamedFixed(m_PaintManager, _T("address_bar"), 0, UiTokens::AddressBarH, m_dpi);
     // breadcrumb merged into address_bar (Explorer-style); no separate breadcrumb_bar
     ScaleNamedFixed(m_PaintManager, _T("status_bar"), 0, UiTokens::StatusBarH, m_dpi);
@@ -188,8 +191,9 @@ void CMainWnd::ApplyDpiScaledChrome()
             m_pLeftQuick->SetFixedHeight(DpiScale(m_leftQuickDesignH));
         UpdateLeftQuickAccessSpacing();
     }
-    ScaleNamedFixed(m_PaintManager, _T("fav_bar_label"), UiTokens::FavLabelW, 0, m_dpi);
-    ScaleNamedFixed(m_PaintManager, _T("fav_bar_hint"), 180, 0, m_dpi);
+    ScaleNamedFixed(m_PaintManager, _T("btn_favorite_toggle"), UiTokens::FavStarHitSize, m_settings.favoritesHeight-4, m_dpi);
+    ScaleNamedFixed(m_PaintManager, _T("fav_star_gap"), UiTokens::FavStarGap, 0, m_dpi);
+    ScaleNamedFixed(m_PaintManager, _T("fav_bar_hint"), 180, m_settings.favoritesHeight-4, m_dpi);
     // Divider between the Quick Access block and the This PC tree (the drag band DuiLib
     // provides sits at the bottom of left_quick, immediately above this line).
     ScaleNamedFixed(m_PaintManager, _T("left_nav_divider_host"), 0, 13, m_dpi);
@@ -220,7 +224,7 @@ void CMainWnd::ApplyDpiScaledChrome()
         _T("btn_copy"), _T("btn_paste"), _T("btn_cut"), _T("btn_share"),
         _T("btn_delete"), _T("btn_rename"),
         _T("btn_new"), _T("btn_newfolder"), _T("btn_sort"), _T("btn_view_menu"), _T("btn_more"),
-        _T("btn_toggle_preview"),
+        _T("btn_toggle_preview"), _T("btn_settings"),
         _T("btn_view_xlarge"), _T("btn_view_large"), _T("btn_view_medium"),
         _T("btn_view_list"), _T("btn_view_details"), _T("btn_view_tiles"),
     };
@@ -236,13 +240,14 @@ void CMainWnd::ApplyDpiScaledChrome()
     const BtnW widths[] = {
         { _T("btn_back"), UiTokens::ToolbarNavBtnW }, { _T("btn_forward"), UiTokens::ToolbarNavBtnW },
         { _T("btn_up"), UiTokens::ToolbarNavBtnW }, { _T("btn_refresh"), UiTokens::ToolbarNavBtnW },
-        { _T("btn_new"), 76 },
+        { _T("btn_new"), UiTokens::ToolbarTextBtnMinW },
         { _T("btn_cut"), UiTokens::ToolbarBtnW }, { _T("btn_copy"), UiTokens::ToolbarBtnW },
         { _T("btn_paste"), UiTokens::ToolbarBtnW }, { _T("btn_rename"), UiTokens::ToolbarBtnW },
         { _T("btn_share"), UiTokens::ToolbarBtnW }, { _T("btn_delete"), UiTokens::ToolbarBtnW },
-        { _T("btn_sort"), 76 },
-        { _T("btn_view_menu"), 76 },
+        { _T("btn_sort"), UiTokens::ToolbarTextBtnMinW },
+        { _T("btn_view_menu"), UiTokens::ToolbarTextBtnMinW },
         { _T("btn_more"), UiTokens::ToolbarBtnW },
+        { _T("btn_settings"), UiTokens::ToolbarBtnW },
         { _T("btn_toggle_preview"), UiTokens::ToolbarBtnW },
         { _T("btn_tab_add"), 32 },
         { _T("chk_recursive"), UiTokens::SearchChkW },
@@ -253,7 +258,7 @@ void CMainWnd::ApplyDpiScaledChrome()
         c->SetFixedWidth(DpiScale(bw.w));
     }
     if (CControlUI* addTab = m_PaintManager.FindControl(_T("btn_tab_add")))
-        addTab->SetFixedHeight(DpiScale(UiTokens::HitTabH));
+        addTab->SetFixedHeight(DpiScale(m_settings.tabHeight));
     // Search row: align with address (~28-32), not CmdBtnH 42
     {
         const int sh = DpiScale(UiTokens::SearchBoxH);
@@ -276,12 +281,12 @@ void CMainWnd::ApplyDpiScaledChrome()
         CControlUI* c = m_PaintManager.FindControl(name);
         if (!c) continue;
         c->SetFixedWidth(DpiScale(46));
-        c->SetFixedHeight(DpiScale(UiTokens::TitleBarH));   // 36: fills the tab row, >= 32 hit box
+        c->SetFixedHeight(DpiScale(m_settings.tabHeight));   // fills the compact tab row
     }
     // XML attributes are design values. Keep all non-client hit areas in the same DPI space.
     RECT sizeBox = { DpiScale(4), DpiScale(4), DpiScale(4), DpiScale(4) };
     m_PaintManager.SetSizeBox(sizeBox);
-    RECT caption = { 0, 0, 0, DpiScale(UiTokens::TitleBarH) };
+    RECT caption = { 0, 0, 0, DpiScale(m_settings.tabHeight) };
     m_PaintManager.SetCaptionRect(caption);
     m_PaintManager.SetMinInfo(DpiScale(900), DpiScale(540));
     if (m_pDirTree)

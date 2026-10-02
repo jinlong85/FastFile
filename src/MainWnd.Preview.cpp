@@ -3,6 +3,7 @@
 // Behaviour is unchanged; declarations live in MainWnd.h.
 
 #include "MainWndInternal.h"
+#include "ShellPresentation.h"
 
 namespace {
 
@@ -272,24 +273,16 @@ std::wstring CMainWnd::QueryShellTypeName(const std::wstring& path, bool isDir)
 
 void CMainWnd::FillPreviewMetaFromPath(const std::wstring& path, bool isDir)
 {
-    std::wstring typeName = QueryShellTypeName(path, isDir);
+    const auto props = ShellPresentation::ReadProperties(path);
+    std::wstring typeName = props.type.empty() ? QueryShellTypeName(path, isDir) : props.type;
     std::wstring sizeText = L"—";
     std::wstring mtimeText = L"—";
     std::wstring ctimeText = L"—";
 
-    WIN32_FILE_ATTRIBUTE_DATA fad = {};
-    if (::GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad)) {
-        const bool dirAttr = (fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-        if (dirAttr || isDir) {
-            sizeText = L"—";
-        } else {
-            const ULONGLONG bytes =
-                (static_cast<ULONGLONG>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
-            sizeText = FormatFileSize(bytes);
-        }
-        mtimeText = FormatFileTimeLocal(fad.ftLastWriteTime);
-        ctimeText = FormatFileTimeLocal(fad.ftCreationTime);
-    }
+    if (!isDir && props.hasSize) sizeText = FormatFileSize(props.size);
+    mtimeText = FormatFileTimeLocal(props.modified);
+    ctimeText = FormatFileTimeLocal(props.created);
+    if (CControlUI* label = m_PaintManager.FindControl(_T("preview_lbl_size"))) label->SetText(_T("大小"));
     SetPreviewMeta(typeName, sizeText, mtimeText, ctimeText);
     SetPreviewExtraMeta(path, L"", L"", L"", L"", L"");
 }
@@ -375,13 +368,15 @@ void CMainWnd::UpdatePreviewForCurrentFolder()
     if (m_pPreviewPane)
         m_pPreviewPane->SetVisible(true);
 
-    const int dirCount = static_cast<int>(m_listingDirs.size());
-    const int fileCount = static_cast<int>(m_listingFiles.size());
-    wchar_t summary[128] = {};
-    swprintf_s(summary, L"%d 个文件夹 · %d 个文件", dirCount, fileCount);
-    std::wstring sizeSummary = summary;
-    if (m_listingTruncated)
-        sizeSummary += L"（仅显示部分）";
+    std::wstring sizeSummary;
+    if (!m_currentPath.empty() && !IsThisPcPath(m_currentPath)) {
+        const auto counts = ShellPresentation::CountChildren(m_currentPath, m_showHidden);
+        if (counts.error == ERROR_SUCCESS) {
+            wchar_t summary[128] = {};
+            swprintf_s(summary, L"%u 个文件夹 · %u 个文件", counts.folders, counts.files);
+            sizeSummary = summary;
+        } else sizeSummary = L"无法读取目录内容"; // never present access/enumeration failure as zero
+    }
 
     if (m_currentPath.empty()) {
         if (m_pPreviewTitle) m_pPreviewTitle->SetText(_T("当前目录"));
@@ -395,7 +390,7 @@ void CMainWnd::UpdatePreviewForCurrentFolder()
     m_previewPath = m_currentPath;
     m_previewPathIsDir = true;
     m_previewFromSelection = false;
-    std::wstring title = IsThisPcPath(m_currentPath) ? L"此电脑" : GetLeafName(m_currentPath);
+    std::wstring title = IsThisPcPath(m_currentPath) ? L"此电脑" : GetShellDisplayName(m_currentPath);
     if (title.empty()) title = m_currentPath;
     if (m_pPreviewTitle) m_pPreviewTitle->SetText(title.c_str());
 
@@ -403,7 +398,10 @@ void CMainWnd::UpdatePreviewForCurrentFolder()
         // Explorer's This PC details: the machine icon, 类型 = 此电脑, 包含 = N 个驱动器.
         // No "7 个文件夹 · 0 个文件" and no folder icon here.
         wchar_t drives[64] = {};
-        swprintf_s(drives, L"%d 个驱动器", static_cast<int>(m_listingDirs.size()));
+        DWORD mask = ::GetLogicalDrives();
+        unsigned driveCount = 0;
+        for (; mask; mask >>= 1) driveCount += mask & 1;
+        swprintf_s(drives, L"%u 个驱动器", driveCount);
         if (CControlUI* lbl = m_PaintManager.FindControl(_T("preview_lbl_size")))
             lbl->SetText(_T("包含"));
         SetPreviewMeta(L"此电脑", drives, L"—", L"—");
@@ -433,7 +431,13 @@ void CMainWnd::UpdatePreviewForSelection()
 {
     if (!m_previewVisible) return;
     std::vector<ClipboardItem> items;
-    CollectSelectedItems(items);
+    if (m_shellBrowser && m_shellBrowser->IsCreated() && m_shellBrowser->IsVisible()) {
+        std::vector<std::pair<std::wstring, bool>> selected;
+        if (!m_shellBrowser->GetSelection(selected)) return;
+        for (const auto& item : selected) items.push_back({item.first,item.second});
+    } else {
+        CollectSelectedItems(items);
+    }
     if (items.size() == 1) {
         UpdatePreviewPath(items[0].path, items[0].isDir);
         return;
@@ -459,7 +463,7 @@ void CMainWnd::UpdatePreviewForSelection()
     if (m_pPreviewImage) m_pPreviewImage->SetBkImage(_T(""));
 
     CDuiString title;
-    title.Format(_T("已选择 %d 个项目"), (int)items.size());
+    title.Format(_T("已选择 %d 项"), (int)items.size());
     if (m_pPreviewTitle) m_pPreviewTitle->SetText(title.GetData());
 
     // Fast total: sum selected files only (skip folder recursion for UI snappiness).
@@ -487,17 +491,16 @@ void CMainWnd::UpdatePreviewPath(const std::wstring& path, bool isDir)
     if (path.empty()) { ClearPreview(); return; }
     if (m_pPreviewPane)
         m_pPreviewPane->SetVisible(true);
-    if (m_previewPath == path) return;
+    if (m_previewPath == path && m_previewFromSelection) return;
     m_previewPath = path;
     m_previewPathIsDir = isDir;
     m_previewFromSelection = true;
 
     std::wstring leaf = GetLeafName(path);
-    if (m_pPreviewTitle) m_pPreviewTitle->SetText(leaf.c_str());
+    const std::wstring displayName = GetShellDisplayName(path);
+    if (m_pPreviewTitle) m_pPreviewTitle->SetText(displayName.empty() ? leaf.c_str() : displayName.c_str());
     FillPreviewMetaFromPath(path, isDir);
-    if (isDir)
-        ClearPreviewExtraMeta();
-    else if (IsImageExtension(leaf))
+    if (!isDir && IsImageExtension(leaf))
         SetPreviewExtraMeta(path, QueryImageDimensions(path), L"", L"", L"", L"");
     else if (IsVideoExtension(leaf))
         FillVideoPreviewMeta(path);
@@ -515,7 +518,8 @@ void CMainWnd::UpdatePreviewPath(const std::wstring& path, bool isDir)
         return;
     }
     if (IsImageExtension(leaf)) {
-        if (LoadPreviewImage(path)) {
+        if (LoadPreviewShellThumbnail(path, DpiScale(UiTokens::PreviewThumbW),
+                DpiScale(UiTokens::PreviewThumbH)) || LoadPreviewImage(path)) {
             if (m_pPreviewText) m_pPreviewText->SetText(_T(""));
             return;
         }
@@ -553,6 +557,9 @@ void CMainWnd::UpdatePreviewPath(const std::wstring& path, bool isDir)
 // preview picture in sync with the live layout.
 void CMainWnd::SyncLayoutDependents()
 {
+    RevealSyncedTreeNode(); // DuiLib has now laid out newly expanded descendants
+    if (m_shellBrowser && m_shellBrowser->IsCreated() && m_pListHost)
+        m_shellBrowser->SetBounds(m_pListHost->GetPos());
     if (m_pBreadcrumb) {
         const int w = static_cast<int>(m_pBreadcrumb->GetWidth());
         if (w > 8 && w != m_breadcrumbFitW) {
@@ -714,6 +721,9 @@ void CMainWnd::ApplyPreviewImageBk(const std::wstring& pngPath, int imgPxW, int 
         m_PaintManager.RemoveImage(pngPath.c_str());
     }
 
+    // Round the content bounds, not the letterboxed control: portrait previews
+    // need the same soft corners even when they do not reach the panel edges.
+    if (RoundPreviewImage(pngPath)) m_PaintManager.RemoveImage(pngPath.c_str());
     CDuiString img;
     img.Format(_T("file='%s' dest='%d,%d,%d,%d' source='0,0,%d,%d'"),
         pngPath.c_str(), ox, oy, ox + dw, oy + dh, drawW, drawH);
@@ -721,6 +731,52 @@ void CMainWnd::ApplyPreviewImageBk(const std::wstring& pngPath, int imgPxW, int 
     m_pPreviewImage->Invalidate();
     if (m_pPreviewPane)
         m_pPreviewPane->NeedUpdate();
+}
+
+bool CMainWnd::RoundPreviewImage(const std::wstring& pngPath)
+{
+    using namespace Gdiplus;
+    const std::wstring temporary = pngPath + L".round.tmp";
+    bool saved = false;
+    {
+        Bitmap bitmap(pngPath.c_str());
+        if (bitmap.GetLastStatus() != Ok) return false;
+        const int w = bitmap.GetWidth(), h = bitmap.GetHeight();
+        BitmapData data{};
+        Rect bounds(0,0,w,h);
+        if (bitmap.LockBits(&bounds, ImageLockModeRead | ImageLockModeWrite, PixelFormat32bppARGB, &data) != Ok) return false;
+        int left=w,top=h,right=-1,bottom=-1;
+        for (int y=0;y<h;++y) {
+            BYTE* row=static_cast<BYTE*>(data.Scan0)+ptrdiff_t(y)*data.Stride;
+            for (int x=0;x<w;++x) if (row[x*4+3] > 0) {
+                left=(std::min)(left,x); right=(std::max)(right,x);
+                top=(std::min)(top,y); bottom=(std::max)(bottom,y);
+            }
+        }
+        const double radius=(std::min)(double(DpiScale(UiTokens::PreviewImageRound)),
+            double((std::min)(right-left+1,bottom-top+1))/2.0);
+        if (radius>0) for (int y=top;y<=bottom;++y) {
+            BYTE* row=static_cast<BYTE*>(data.Scan0)+ptrdiff_t(y)*data.Stride;
+            for (int x=left;x<=right;++x) {
+                if (x>=left+radius && x<right+1-radius) continue;
+                if (y>=top+radius && y<bottom+1-radius) continue;
+                const double cx=x<left+radius ? left+radius : right+1-radius;
+                const double cy=y<top+radius ? top+radius : bottom+1-radius;
+                int coverage=0;
+                for (int sy=0;sy<4;++sy) for (int sx=0;sx<4;++sx) {
+                    const double dx=x+(sx+0.5)/4.0-cx,dy=y+(sy+0.5)/4.0-cy;
+                    if (dx*dx+dy*dy<=radius*radius) ++coverage;
+                }
+                row[x*4+3]=BYTE((unsigned(row[x*4+3])*coverage+8)/16);
+            }
+        }
+        bitmap.UnlockBits(&data);
+        CLSID encoder{};
+        saved=GetPngEncoderClsid(&encoder) && bitmap.Save(temporary.c_str(), &encoder, nullptr)==Ok;
+    }
+    if (!saved) return false;
+    if (MoveFileExW(temporary.c_str(),pngPath.c_str(),MOVEFILE_REPLACE_EXISTING)) return true;
+    DeleteFileW(temporary.c_str()); return false;
 }
 
 bool CMainWnd::LoadPreviewImage(const std::wstring& path)

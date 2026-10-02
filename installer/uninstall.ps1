@@ -48,6 +48,16 @@ if (-not $Quiet) {
 Get-Process $AppName -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 400
 
+# Restore opt-in Shell handlers while the installed executable is still available.
+$taskRestoreExe = Join-Path $dir 'FastFile.exe'
+if (Test-Path -LiteralPath $taskRestoreExe) {
+    $taskRestoreProcess = Start-Process -FilePath $taskRestoreExe -ArgumentList '--restore-integration' -WindowStyle Hidden -Wait -PassThru
+    if ($taskRestoreProcess.ExitCode -ne 0) {
+        if (-not $Quiet) { Show-Info '无法恢复系统打开方式，卸载已停止。请在 FastFile 设置中关闭系统集成后重试。' }
+        exit 1
+    }
+}
+
 # Start Menu shortcut + registry entry
 try {
     $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) "$AppName.lnk"

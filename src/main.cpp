@@ -1,4 +1,4 @@
-// FastFile — lightweight file manager (P0 scaffold)
+﻿// FastFile — lightweight file manager (P0 scaffold)
 // Tech: DuiLib (XML skin) + C++ / Win32
 // Do NOT reverse or ship any 360 binaries; fresh open-source scaffold only.
 
@@ -115,6 +115,19 @@ std::vector<std::wstring> ParseOpenPaths()
     }
     ::LocalFree(argv);
     return paths;
+}
+
+bool ShellOpenRequested()
+{
+    int argc = 0;
+    auto argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    bool requested = false;
+    for (int i = 1; argv && i < argc; ++i) {
+        if (wcscmp(argv[i], L"--") == 0) break;
+        if (_wcsicmp(argv[i], L"--open") == 0) { requested = true; break; }
+    }
+    LocalFree(argv);
+    return requested;
 }
 
 // "--new-window" (used when a tab is dragged out of the window) must NOT be folded into an
@@ -239,10 +252,24 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPWSTR /*lpCmdLi
     EnablePerMonitorDpiAwareness();
     ::SetUnhandledExceptionFilter(FastFileCrashHandler);
 
+    int restoreArgc=0;auto restoreArgv=CommandLineToArgvW(GetCommandLineW(),&restoreArgc);
+    bool restoreIntegration=false;
+    for(int i=1;restoreArgv && i<restoreArgc;++i)if(wcscmp(restoreArgv[i],L"--restore-integration")==0)restoreIntegration=true;
+    LocalFree(restoreArgv);
+    if(restoreIntegration) {
+        FastFileSettings disabled;
+        return CMainWnd::ApplySystemIntegration(disabled) && CMainWnd::RestoreNativeFolderHandlers() ? 0 : 2;
+    }
+    CMainWnd::RestoreNativeFolderHandlers();
+
     // Single-instance: tray / second launch should restore the existing main HWND
     const std::vector<std::wstring> startupPaths = ParseOpenPaths();
+    // Existing Explorer views can keep a cached folder verb after association changes.
+    // Honor an explicit disable even for those stale --open invocations, before IPC.
+    if (ShellOpenRequested() && CMainWnd::RedirectDisabledShellOpen(startupPaths))
+        return 0;
     // ... unless the caller explicitly asked for a second window (tab dragged out).
-    if (!ForceNewWindowRequested() && ActivateExistingInstance(startupPaths))
+    if (!ForceNewWindowRequested() && (startupPaths.empty() || !FastFileSettings::Load(FastFileSettings::FilePath()).externalNewWindow) && ActivateExistingInstance(startupPaths))
         return 0;
 
     HRESULT hr = ::OleInitialize(nullptr);

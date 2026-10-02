@@ -1,4 +1,4 @@
-// FastFile - Win11 light chrome: UI tokens, window corners, item formatting
+﻿// FastFile - Win11 light chrome: UI tokens, window corners, item formatting
 // Implements CMainWnd members moved out of the original monolithic MainWnd.cpp.
 // Behaviour is unchanged; declarations live in MainWnd.h.
 
@@ -241,10 +241,17 @@ void CMainWnd::ApplyUiChromeTokens()
 
     // Title row = caption: no vertical inset, so the 32px band is fully usable by the tab cards
     // and the caption buttons (an inset here squashed both).
-    setInset(_T("titlebar"), 8, 0, 0, 0);
-    // Fluent pass: every chrome row shares the same 8px left inset as the tab strip, so the
-    // tab card, the back button and 新建 all line up on one vertical guide (Explorer does this).
+    setInset(_T("titlebar"), 0, 0, 0, 0);
+    // Content chrome retains its 8px inset; the titlebar stays flush with the window edge.
     setInset(_T("toolbar"), 8, 4, 8, 4);
+    setInset(_T("body_host"), 0, UiTokens::BodyTopGap, 0, 0);
+    if (auto* toolbar = dynamic_cast<CContainerUI*>(m_PaintManager.FindControl(_T("toolbar"))))
+        toolbar->SetChildPadding(DpiScale(UiTokens::ToolbarItemGap + m_settings.density*2));
+    // This DuiLib build skips bottom-only borders; use a dedicated painted separator.
+    if (auto* divider = m_PaintManager.FindControl(_T("command_body_divider"))) {
+        divider->SetFixedHeight(DpiScaleHairline(UiTokens::Hairline));
+        divider->SetBkColor(0xFFD0D0D0);
+    }
     // Favourite chips hang below the tab strip: the top inset keeps them off the strip and
     // lets the address row's own inset make the gaps above/below look even.
     setInset(_T("favorites_bar"), 8, UiTokens::FavBarPadTop, 8, UiTokens::FavBarPadBottom);
@@ -256,7 +263,7 @@ void CMainWnd::ApplyUiChromeTokens()
     // the divider and preview_body carries the content inset (its left inset equals the
     // rail width, so the preview text keeps its original distance from the divider).
     setPad(_T("preview_pane"), 0, 0, 0, 0);
-    setPad(_T("preview_body"), UiTokens::SidePaneScrollBarW, UiTokens::PreviewPad,
+    setPad(_T("preview_body"), UiTokens::PreviewPad - UiTokens::SidePaneScrollBarW, UiTokens::PreviewPad,
         UiTokens::PreviewPad, UiTokens::PreviewPad);
 
     // Chrome bands. Phase 6 (Explorer-style reference): the tab strip is a slightly darker
@@ -282,6 +289,8 @@ void CMainWnd::ApplyUiChromeTokens()
     setBk(_T("toolbar"), UiTokens::ColorContent);
     // Path / search fields: white rounded boxes on the chrome surface.
     for (LPCTSTR field : { _T("path_host"), _T("search_box") }) {
+        setPad(field, 0, 0, 0, 0);
+        setInset(field, 10, 2, 10, 2);
         if (CControlUI* c = m_PaintManager.FindControl(field)) {
             c->SetAttribute(_T("bkcolor"), UiTokens::ColorFieldBg);
             c->SetAttribute(_T("bordercolor"), UiTokens::ColorFieldBorder);
@@ -291,6 +300,7 @@ void CMainWnd::ApplyUiChromeTokens()
             c->SetAttribute(_T("borderround"), round.GetData());
         }
     }
+    setPad(_T("address_edit_host"), 0, 0, 0, 0);
     // status_bar top border only
     {
         CDuiString top;
@@ -298,7 +308,7 @@ void CMainWnd::ApplyUiChromeTokens()
         setBorder(_T("status_bar"), UiTokens::ColorBorderStrong, top.GetData());
         CDuiString right;
         right.Format(_T("0,0,%d,0"), DpiScaleHairline(UiTokens::Hairline));
-        setBorder(_T("left_panel"), border, right.GetData());
+        setBorder(_T("left_panel"), UiTokens::ColorBorder, right.GetData());
     }
     setBorder(_T("preview_pane"), _T("#00000000"), _T("0"));
     setBk(_T("preview_pane"), UiTokens::ColorContent);
@@ -355,8 +365,8 @@ void CMainWnd::ApplyUiChromeTokens()
     setBk(_T("left_nav_divider"), UiTokens::ColorSeparator);
     if (m_pDirTree) {
         m_pDirTree->SetAttribute(_T("bkcolor"), surf);
-        m_pDirTree->SetAttribute(_T("itemhotbkcolor"), UiTokens::ColorListHover);
-        m_pDirTree->SetAttribute(_T("itemselectedbkcolor"), UiTokens::ColorListSelected);
+        m_pDirTree->SetAttribute(_T("itemhotbkcolor"), UiTokens::ColorNavHover);
+        m_pDirTree->SetAttribute(_T("itemselectedbkcolor"), UiTokens::ColorNavSelected);
         m_pDirTree->SetAttribute(_T("itemtextcolor"), UiTokens::ColorTextPrimary);
         m_pDirTree->SetAttribute(_T("itemhottextcolor"), UiTokens::ColorTextPrimary);
         m_pDirTree->SetAttribute(_T("selitemtextcolor"), UiTokens::ColorTextPrimary);
@@ -381,7 +391,7 @@ void CMainWnd::ApplyUiChromeTokens()
     // Phase 3: preview pane density + Surface header chrome; status bar density
     // (the rail owns the pane's left edge; preview_body holds the content inset)
     setPad(_T("preview_pane"), 0, 0, 0, 0);
-    setPad(_T("preview_body"), UiTokens::SidePaneScrollBarW, UiTokens::PreviewPad,
+    setPad(_T("preview_body"), UiTokens::PreviewPad - UiTokens::SidePaneScrollBarW, UiTokens::PreviewPad,
         UiTokens::PreviewPad, UiTokens::PreviewPad);
     setPad(_T("status_bar"), UiTokens::StatusPadX, UiTokens::StatusPadY,
         UiTokens::StatusPadX, UiTokens::StatusPadY);
@@ -396,20 +406,6 @@ void CMainWnd::ApplyUiChromeTokens()
         m_pPreviewTitle->SetAttribute(_T("textcolor"), UiTokens::ColorTextPrimary);
         m_pPreviewTitle->SetAttribute(_T("font"), _T("5"));  // FontPreviewTitle
         m_pPreviewTitle->SetAttribute(_T("bkcolor"), UiTokens::ColorTransparent);
-    }
-    if (CControlUI* fl = m_PaintManager.FindControl(_T("fav_bar_label"))) {
-        fl->SetAttribute(_T("font"), _T("0"));
-        fl->SetAttribute(_T("textcolor"), UiTokens::ColorTextSecondary);
-        fl->SetAttribute(_T("valign"), _T("vcenter"));
-        // CJK glyphs fall back to a different font whose visual centre sits lower than the
-        // Latin glyphs of the chip labels, so the label looked misaligned. CLabelUI positions
-        // text from "textpadding", not "padding". Two extra design px of height plus an equal
-        // bottom text pad lift the text by half the pad and keep the box tall enough to avoid
-        // clipping the taller CJK fallback glyphs.
-        CDuiString tp;
-        tp.Format(_T("0,0,0,%d"), DpiScale(UiTokens::FavLabelBaselineLift * 2));
-        fl->SetAttribute(_T("textpadding"), tp);
-        fl->SetFixedHeight(DpiScale(UiTokens::FavChipH + 2));
     }
     if (CControlUI* fh = m_PaintManager.FindControl(_T("fav_bar_hint"))) {
         fh->SetAttribute(_T("font"), _T("0"));
@@ -428,7 +424,7 @@ void CMainWnd::ApplyUiChromeTokens()
     }) {
         if (CControlUI* lbl = m_PaintManager.FindControl(lblName)) {
             lbl->SetFixedWidth(DpiScale(UiTokens::PreviewMetaLabelW));
-            lbl->SetAttribute(_T("textcolor"), UiTokens::ColorTextMuted);
+            lbl->SetAttribute(_T("textcolor"), _T("#FF616161"));
             lbl->SetAttribute(_T("font"), _T("0"));  // FontPreviewMeta
         }
     }
@@ -440,6 +436,9 @@ void CMainWnd::ApplyUiChromeTokens()
     }) {
         if (CControlUI* v = m_PaintManager.FindControl(valName)) {
             v->SetAttribute(_T("font"), _T("0"));  // FontPreviewMeta
+            v->SetAttribute(_T("align"), _T("left"));
+            if (_tcscmp(valName, _T("preview_location")) == 0)
+                static_cast<CLabelUI*>(v)->SetTextStyle(DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS | DT_NOPREFIX);
             if (_tcscmp(valName, _T("preview_text")) == 0)
                 v->SetAttribute(_T("textcolor"), UiTokens::ColorTextMuted);
             else

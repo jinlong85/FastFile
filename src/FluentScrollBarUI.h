@@ -30,6 +30,9 @@ public:
 
     void SetExpanded(bool on);
     bool IsExpanded() const { return m_expanded; }
+    bool IsDragging() const { return (m_uThumbState & UISTATE_CAPTURED) != 0; }
+    void CancelGesture();
+    void DoEvent(DuiLib::TEventUI& event) override;
     // True when pt is on the bar, or within `margin` px of its docked-inner side.
     bool HitTestHover(const POINT& pt, int margin);
 

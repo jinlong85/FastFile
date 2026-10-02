@@ -3,6 +3,9 @@
 #include "UIlib.h"
 #include "UiTokens.h"
 #include "TabStripUI.h"
+#include "FastFileSettings.h"
+
+class ShellBrowserHost;
 
 #include <atomic>
 #include <condition_variable>
@@ -33,7 +36,7 @@ struct IContextMenu3;
 //           Phase2 left-nav/details density (UiTokens / Win11 Explorer),
 //           A visible scrollbars, B breadcrumb hits, C left nav splitter,
 //           D shell IContextMenu (items/blank/tree)
-class CMainWnd : public WindowImplBase
+class CMainWnd : public WindowImplBase, public ITranslateAccelerator
 {
 public:
     CMainWnd();
@@ -42,6 +45,11 @@ public:
     // Paths supplied by a Shell folder-open invocation.  The main window consumes these
     // after its controls and initial tab have been created.
     void SetStartupOpenPaths(std::vector<std::wstring> paths);
+    static bool RestoreNativeFolderHandlers();
+    static void ReadSystemIntegration(FastFileSettings& settings);
+    static bool ApplySystemIntegration(const FastFileSettings& settings);
+    static bool ShouldRedirectDisabledShellOpen();
+    static bool RedirectDisabledShellOpen(const std::vector<std::wstring>& paths);
 
     CDuiString GetSkinFolder() override;
     CDuiString GetSkinFile() override;
@@ -53,6 +61,7 @@ public:
     LRESULT HandleCustomMessage(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) override;
     LRESULT HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) override;
     LRESULT ResponseDefaultKeyEvent(WPARAM wParam) override;
+    LRESULT TranslateAccelerator(MSG* message) override;
 
     // DPI (96 baseline design units → physical pixels)
     int DpiScale(int px) const;
@@ -69,8 +78,19 @@ public:
     HWND GetSafeHwnd() const { return m_hWnd; }
     // Call after Create()/before CenterWindow so DPI is finalized.
     void EnsureDpiLayout();
+    void OnShellBrowserNavigation(std::wstring path);
+    void SyncShellViewSelection();
 
 private:
+    friend struct MainWndRegressionAccess;
+    static constexpr UINT kMsgCommitInlineRename = WM_APP + 0x451;
+    static constexpr UINT kMsgCancelInlineRename = WM_APP + 0x452;
+    static constexpr UINT kMsgShellNavigation = WM_APP + 0x453;
+    static constexpr UINT kMsgShellSelection = WM_APP + 0x454;
+    static constexpr UINT kMsgShellRename = WM_APP + 0x455;
+    static constexpr UINT kMsgShellFolderOpen = WM_APP + 0x456;
+    static constexpr UINT kMsgShellContextMenu = WM_APP + 0x457;
+    bool HandleInternalFolderOpenVerb(const std::wstring& verb,const std::vector<std::wstring>& paths);
     struct DirEntry {
         std::wstring name;
         std::wstring fullPath;
@@ -110,7 +130,9 @@ private:
         MediumIcons,
         List,
         Details,
-        Tiles
+        Tiles,
+        SmallIcons,
+        Content
     };
 
     enum class SortColumn {
@@ -134,10 +156,15 @@ private:
     void UpdateStatus(LPCTSTR text);
 
     void OnCopyClicked();
+    void OnCopyPaths();
     void OnPasteClicked();
     void OnCancelCopyClicked();
     void OnDeleteClicked(bool permanent = false);
     void OnRenameClicked();
+    bool BeginInlineRename(const ClipboardItem& item);
+    void CommitInlineRename();
+    void CancelInlineRename();
+    bool GetInlineRenameRect(const ClipboardItem& item, RECT& rect);
     void OnNewFolderClicked();
     void OnCutClicked();
     void OnShareClicked();
@@ -145,28 +172,39 @@ private:
     void OnSortMenuClicked();
     void OnViewMenuClicked();
     void OnMoreMenuClicked();
-    void OnFolderOpenHandlerMenuClicked();
     void FocusSearchBox();
     void ShowPropertiesForSelection();
 
     // Undo (Ctrl+Z) — only for operations FastFile performs itself
     struct UndoRecord {
-        enum class Kind { Rename, CreateFolder, Move } kind = Kind::Rename;
+        enum class Kind { Rename, CreateFolder, Move, Copy, ShellRename, ShellDelete } kind = Kind::Rename;
         std::wstring from;   // path before the operation
         std::wstring to;     // path after the operation
         // Kind::Move only: every (source, destination) pair of that one move operation,
         // so a single Ctrl+Z restores the whole batch.
         std::vector<std::pair<std::wstring, std::wstring>> moved;
+        std::vector<std::pair<std::wstring, std::wstring>> backups;
     };
     void PushUndo(UndoRecord::Kind kind, std::wstring from, std::wstring to);
     void PushMoveUndo(std::vector<std::pair<std::wstring, std::wstring>> pairs);
     void OnUndo();
+    void OnRedo();
+    bool ReplayHistory(UndoRecord& record, bool redo);
+    void ClearRedoHistory();
+    void TrackShellRename(WPARAM change, LPARAM process);
+    void FinishShellHistory();
+    void RefreshAfterHistory();
+    void FocusFileView();
+    void CycleKeyboardPane(bool reverse);
+    void ShowAddressHistory();
+    bool IsTreeKeyboardFocus() const;
+    bool HandleTreeShortcut(WPARAM key);
     void ShowToolbarPopupMenu(CControlUI* anchor, HMENU hMenu);
     void UpdateFavoritesHighlight();
     // Collapsible favourites bar (toggle lives in the 查看 menu, state in session.ini).
     void SetFavoritesBarVisible(bool visible);
 
-    // C: Horizontal favorites bar (persist %APPDATA%\FastFile\favorites.txt)
+    // C: Horizontal favorites bar (persist %APPDATA%\FastFile\favorites.json)
     struct FavoriteItem {
         std::wstring path;
         std::wstring displayName;
@@ -206,7 +244,6 @@ private:
     bool IsQuickAccessPinned(const std::wstring& path) const;
     void EnsureDefaultQuickRows();   // inserts any missing built-in row (keeps user order)
     void OpenQuickAccessTab(const std::wstring& path);
-    bool InvokeShellRename(const std::wstring& path);
 
     // Search / filter
     void ApplySearchFilter();
@@ -226,6 +263,7 @@ private:
     void ExpandTreeNode(CTreeNodeUI* node, bool navigate);
     void EnsureTreeChildren(CTreeNodeUI* node);
     void SyncTreeToPath(const std::wstring& path);
+    void RevealSyncedTreeNode();
     CTreeNodeUI* FindTreeNodeByPath(CTreeNodeUI* parent, const std::wstring& path) const;
     CTreeNodeUI* AddTreeFolderNode(CTreeNodeUI* parent, const std::wstring& path, const std::wstring& title);
     bool OnTreeFolderNotify(void* param);
@@ -251,9 +289,9 @@ private:
     LRESULT MessageHandler(UINT uMsg, WPARAM wParam, LPARAM lParam, bool& bHandled) override;
     // Custom DuiLib controls (TabStrip)
     CControlUI* CreateControl(LPCTSTR pstrClass) override;
-    // allowDuplicate: the "+" button / Ctrl+T must always open a fresh tab (Explorer behaviour),
-    // while folder hand-offs from other processes fold into the tab that already shows it.
-    void AddTab(const std::wstring& path, bool activate, bool allowDuplicate = false);
+    // Reuse the existing tab whenever an open-folder target is already present.
+    int FindTabForPath(const std::wstring& path) const;
+    void AddTab(const std::wstring& path, bool activate, bool forceNew = false);
     void OnNewTabRequested();
     std::wstring NewTabTargetForSelection() const;
     void CloseTab(int index);
@@ -265,11 +303,11 @@ private:
     void OpenExternalPaths(const std::vector<std::wstring>& paths, bool replaceInitialTab);
     static std::wstring ResolveFolderOpenTarget(const std::wstring& path);
 
-    // Optional per-user Folder/Directory/Drive open handler.  This deliberately leaves
-    // Explorer's desktop, taskbar and Start menu alone; it only changes what opens a folder.
-    bool IsFolderOpenHandlerEnabled() const;
-    bool EnableFolderOpenHandler();
-    bool DisableFolderOpenHandler();
+    void ShowSettings();
+    bool CommitSettings(FastFileSettings settings);
+    void ApplySettingsAppearance();
+    FastFileSettings m_settings;
+    bool m_openingExternalPaths=false;
 
     // Session persist
     void SaveSession() const;
@@ -284,6 +322,7 @@ private:
 
     // View modes
     void SetViewMode(ViewMode mode);
+    void ApplyShellViewMode();
     void UpdateViewModeButtons();
     bool IsTileViewMode() const;
     void ApplyTileLayoutMetrics();
@@ -370,6 +409,8 @@ private:
     // Hide shell-menu entries FastFile does not want to show (see the implementation)
     void PruneShellMenu(IContextMenu* pMenu, HMENU hMenu, UINT idCmdFirst, UINT idShellMax,
         bool backgroundMenu);
+    void AddInternalFolderOpenMenu(IContextMenu* menu, HMENU popup, UINT first, UINT last,
+        const std::vector<std::wstring>& paths);
     static void TidyMenuSeparators(HMENU hMenu);
     void ForwardShellMenuMessage(UINT uMsg, WPARAM wParam, LPARAM lParam, LRESULT* pResult, bool* handled);
     void RebuildBreadcrumb();
@@ -412,6 +453,7 @@ private:
     void ApplyPreviewImageBk(const std::wstring& pngPath, int imgPxW, int imgPxH, int frameDesignH);
     // Live thumb box for the preview pane (follows the splitter width)
     void PreviewImageBox(int& boxW, int& boxH) const;
+    bool RoundPreviewImage(const std::wstring& pngPath);
     // Re-fit breadcrumb / preview when the layout (not the window) changed
     void SyncLayoutDependents();
     void ReloadPreviewForWidth();
@@ -516,7 +558,11 @@ private:
     void IconActivateCursor();                 // Enter/Space: open the cursor item
 
     void CollectSelectedItems(std::vector<ClipboardItem>& out) const;
-    bool DeleteItems(const std::vector<ClipboardItem>& items, bool permanent = false);
+    bool PublishFileClipboard(const std::vector<ClipboardItem>& items, bool cut);
+    bool ReadFileClipboard(std::vector<ClipboardItem>& items, bool& cut) const;
+    static DWORD DeleteOperationFlags(bool permanent);
+    bool DeleteItems(const std::vector<ClipboardItem>& items, bool permanent = false,
+        std::vector<std::wstring>* completed = nullptr);
     bool RenameItem(const ClipboardItem& item, const std::wstring& newName);
     bool CreateNewFolder();
 
@@ -543,6 +589,7 @@ private:
     void ApplyFluentScrollBar(CScrollBarUI* sb, bool dockFar);
     // Expands the bar under (or just beside) the pointer and collapses the others.
     void UpdateFluentScrollBarHover(POINT clientPt);
+    void CancelScrollBarGestures();
     bool PreviewRailThumbRect(RECT& out) const;
     // Shared row metrics for the Quick Access list: the four built-in rows (XML) and the
     // runtime-pinned favorites must land on exactly the same pixels.
@@ -637,6 +684,13 @@ private:
     CHorizontalLayoutUI* m_pAddressEditHost = nullptr;
     CHorizontalLayoutUI* m_pPathHost = nullptr;
     CEditUI* m_pSearchEdit = nullptr;
+    CControlUI* m_pListHost = nullptr;
+    ShellBrowserHost* m_shellBrowser = nullptr;
+    std::vector<std::wstring> m_shellSelectionSnapshot;
+    HWND m_renameEdit = nullptr;
+    std::wstring m_renameOriginalPath;
+    bool m_renameIsDirectory = false;
+    bool m_finishingInlineRename = false;
     bool m_addressEditMode = false;
     CListUI* m_pFileList = nullptr;
     CTreeViewUI* m_pDirTree = nullptr;
@@ -767,6 +821,7 @@ private:
     int m_activeTab = -1;
     bool m_updatingTabs = false;
     bool m_syncingTree = false;
+    std::wstring m_treeRevealPath;
     bool m_suspendTreeSync = false;
     bool m_navigatingHistory = false;
 
@@ -783,6 +838,16 @@ private:
     // (source, destination) pairs of items moved by the running job; guarded by m_progressMutex.
     std::vector<std::pair<std::wstring, std::wstring>> m_moveUndoPairs;
     std::vector<UndoRecord> m_undoStack;
+    std::vector<UndoRecord> m_redoStack;
+    bool m_historyStarted = false;
+    ULONG m_shellRenameNotify = 0;
+    std::wstring m_pendingShellRename;
+    std::vector<std::wstring> m_recentShellSelection;
+    std::vector<std::pair<std::wstring, std::wstring>> m_appRenameNotifications;
+    bool m_shellHistoryPending = false;
+    bool m_shellHistoryRedo = false;
+    DWORD m_shellHistoryStarted = 0;
+    static constexpr UINT_PTR kTimerShellHistory = 0x7f13;
 
     std::map<std::wstring, std::wstring> m_iconCache;
     std::mutex m_iconCacheMutex;
@@ -851,6 +916,8 @@ private:
     static constexpr UINT_PTR kCmdCtxDelete = 9003;
     static constexpr UINT_PTR kCmdCtxRename = 9004;
     static constexpr UINT_PTR kCmdCtxRefresh = 9005;
+    static constexpr UINT_PTR kCmdShellRename = 0xFFF0; // outside the Shell command range (0x0001..0x7FFF)
+    static constexpr UINT_PTR kCmdShellNewTab = 0xFFF1;
     static constexpr UINT_PTR kCmdToggleHidden = 9201;
     // Commands FastFile adds to the Shell *folder background* menu (Explorer's own view menu),
     // kept well clear of the Shell's idCmdFirst..idCmdLast range.

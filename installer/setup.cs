@@ -199,6 +199,27 @@ internal static class Setup
         // program folder so Windows can never retain a default command pointing at an
         // uninstalled FastFile.exe.  If the user chose a different default meanwhile, that
         // choice wins and is left intact.
+        string installedExe = Path.Combine(dir, AppName + ".exe");
+        if (File.Exists(installedExe))
+        {
+            try
+            {
+                var restore = new ProcessStartInfo(installedExe, "--restore-integration");
+                restore.UseShellExecute = false;
+                restore.CreateNoWindow = true;
+                restore.WindowStyle = ProcessWindowStyle.Hidden;
+                using (var process = Process.Start(restore))
+                {
+                    if (!process.WaitForExit(15000) || process.ExitCode != 0)
+                        throw new IOException("系统打开方式恢复失败。");
+                }
+            }
+            catch
+            {
+                if (!quiet) MessageBox.Show("无法恢复系统打开方式，卸载已停止。请在 FastFile 设置中关闭系统集成后重试。", AppName);
+                return 1;
+            }
+        }
         RestoreFolderOpenHandler();
 
         try

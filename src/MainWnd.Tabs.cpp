@@ -1,8 +1,9 @@
-﻿// FastFile - tab strip, session persistence, per-folder view memory
+// FastFile - tab strip, session persistence, per-folder view memory
 // Implements CMainWnd members moved out of the original monolithic MainWnd.cpp.
 // Behaviour is unchanged; declarations live in MainWnd.h.
 
 #include "MainWndInternal.h"
+#include "FavoriteStarUI.h"
 
 // ---- Tabs ----------------------------------------------------------------
 
@@ -11,6 +12,8 @@ void CMainWnd::InitTabs()
     m_tabs.clear();
     m_activeTab = -1;
     if (m_pTabStrip) {
+        m_pTabStrip->SetBarHeight(m_settings.tabHeight);
+        m_pTabStrip->SetWidthPercent(m_settings.tabWidthPercent);
         m_pTabStrip->SetMetrics(static_cast<int>(m_dpi));
         m_pTabStrip->Clear();
     }
@@ -20,7 +23,9 @@ std::wstring CMainWnd::TabTitleForPath(const std::wstring& path) const
 {
     if (IsThisPcPath(path))
         return L"此电脑";
-    std::wstring leaf = GetLeafName(path);
+    std::wstring leaf = GetShellDisplayName(path);
+    if (path.size() <= 3 && path.size() >= 2 && path[1] == L':') return path.substr(0, 2);
+    if (leaf.empty()) leaf = GetLeafName(path);
     if (leaf.empty()) {
         if (path.size() >= 2 && path[1] == L':')
             return path.substr(0, 2);
@@ -36,8 +41,10 @@ void CMainWnd::RebuildTabStrip()
     // The strip is a self-drawn control: hand it the model (path / title / shell icon) and it
     // sizes, hit-tests and paints the tabs itself (see TabStripUI.cpp).
     const int tabIconPx = DpiScale(UiTokens::TabIconPx);
-    m_pTabStrip->SetMetrics(static_cast<int>(m_dpi));
-    m_pTabStrip->SetTabWidthRange(UiTokens::TabMinW, UiTokens::TabSelMinW, UiTokens::TabMaxW);
+    m_pTabStrip->SetBarHeight(m_settings.tabHeight);
+        m_pTabStrip->SetWidthPercent(m_settings.tabWidthPercent);
+        m_pTabStrip->SetMetrics(static_cast<int>(m_dpi));
+    m_pTabStrip->SetTabWidthRange(MulDiv(80,m_settings.tabWidthPercent,100), MulDiv(80,m_settings.tabWidthPercent,100), MulDiv(240,m_settings.tabWidthPercent,100));
     m_pTabStrip->Clear();
     for (int i = 0; i < static_cast<int>(m_tabs.size()); ++i) {
         const std::wstring title = TabTitleForPath(m_tabs[i].path);
@@ -52,7 +59,17 @@ void CMainWnd::RebuildTabStrip()
     m_updatingTabs = false;
 }
 
-void CMainWnd::AddTab(const std::wstring& path, bool activate, bool allowDuplicate)
+int CMainWnd::FindTabForPath(const std::wstring& path) const
+{
+    const auto target = IsThisPcPath(path) || path == L"此电脑" ? std::wstring(kThisPcPath) : NormalizePath(path);
+    for (int i = 0; i < static_cast<int>(m_tabs.size()); ++i) {
+        const auto candidate = IsThisPcPath(m_tabs[i].path) ? m_tabs[i].path : NormalizePath(m_tabs[i].path);
+        if (PathEquals(candidate, target)) return i;
+    }
+    return -1;
+}
+
+void CMainWnd::AddTab(const std::wstring& path, bool activate, bool forceNew)
 {
     std::wstring target = path.empty() ? GetDefaultStartPath() : path;
     if (target == L"此电脑")
@@ -63,14 +80,23 @@ void CMainWnd::AddTab(const std::wstring& path, bool activate, bool allowDuplica
             target = normalized;
     }
 
-    // One directory has one tab.  This also applies to folders opened by another process,
-    // so repeated clicks in Explorer simply bring the existing FastFile tab forward.
-    // Ctrl+T / the "+" button pass allowDuplicate: a new tab is always what the user asked for.
-    if (!allowDuplicate) {
-        for (int i = 0; i < static_cast<int>(m_tabs.size()); ++i) {
-            if (PathEquals(m_tabs[i].path, target)) {
-                if (activate)
-                    ActivateTab(i);
+    // All open-folder entry points share one directory / one tab, including + and Ctrl+T.
+    const int existing = FindTabForPath(target);
+    if (!forceNew && m_settings.reuseTabs && existing >= 0) {
+        if (activate && existing != m_activeTab) ActivateTab(existing);
+        return;
+    }
+
+    // Opening descendants continues the current browsing chain. Keep the exact
+    // existing-target lookup above this so another open tab still wins.
+    if (!forceNew && !m_openingExternalPaths && activate && m_activeTab >= 0 && m_activeTab < static_cast<int>(m_tabs.size()) &&
+        !IsThisPcPath(target) && !IsThisPcPath(m_currentPath)) {
+        std::wstring parent = NormalizePath(m_currentPath);
+        if (!parent.empty()) {
+            if (parent.back() != L'\\') parent.push_back(L'\\');
+            if (target.size() > parent.size() &&
+                _wcsnicmp(target.c_str(), parent.c_str(), parent.size()) == 0) {
+                NavigateToNow(target, true);
                 return;
             }
         }
@@ -147,7 +173,7 @@ std::wstring CMainWnd::NewTabTargetForSelection() const
 
 void CMainWnd::OnNewTabRequested()
 {
-    AddTab(NewTabTargetForSelection(), true, true);
+    AddTab(NewTabTargetForSelection(), true);
 }
 
 // ---- CTabStripUI notifications -------------------------------------------
@@ -156,6 +182,10 @@ CControlUI* CMainWnd::CreateControl(LPCTSTR pstrClass)
 {
     if (_tcsicmp(pstrClass, _T("TabStrip")) == 0)
         return new CTabStripUI;
+    if (_tcsicmp(pstrClass, _T("FavoriteStar")) == 0)
+        return new CFavoriteStarUI;
+    if (_tcsicmp(pstrClass, _T("PreviewPathLabel")) == 0)
+        return new CPreviewPathLabelUI;
     return nullptr;   // everything else goes through DuiLib's own factory
 }
 
@@ -217,7 +247,7 @@ void CMainWnd::OpenPathInNewWindow(const std::wstring& path, POINT screenPt)
     ::GetModuleFileNameW(nullptr, exe, MAX_PATH);
     std::wstring cmd = L"\"" + std::wstring(exe) + L"\" --new-window";
     if (!path.empty())
-        cmd += L" \"" + path + L"\"";
+        cmd += L" \"" + path + (IsThisPcPath(path) ? L"" : L"\\.") + L"\"";
     // Hand the clone its geometry so a dragged-out tab opens exactly as big as this window,
     // at the drop point, without the parent having to race the new process' own layout pass.
     if ((screenPt.x != 0 || screenPt.y != 0) && m_hWnd) {
@@ -295,6 +325,7 @@ void CMainWnd::OnTabStripContextMenu(int index, POINT screenPt)
 // 确定 / 取消) and so it inherits the app's window icon and DPI.
 bool CMainWnd::ConfirmCloseWithMultipleTabs()
 {
+    if(!m_settings.confirmClose)return true;
     TASKDIALOGCONFIG cfg = {};
     cfg.cbSize = sizeof(cfg);
     cfg.hwndParent = m_hWnd;
@@ -357,7 +388,13 @@ void CMainWnd::ActivateTab(int index)
         m_tabs[m_activeTab].searchFilter = m_searchFilter;
     }
     m_activeTab = index;
-    RebuildTabStrip();
+    // Switching existing tabs must not recreate them: rebuilding progressively
+    // clamps the strip's scroll position.
+    // Structural changes (new/closed tabs) still require a model rebuild.
+    if (m_pTabStrip && m_pTabStrip->GetCount() == static_cast<int>(m_tabs.size()))
+        m_pTabStrip->SetActiveTab(index);
+    else
+        RebuildTabStrip();
 
     const TabInfo& tab = m_tabs[m_activeTab];
     m_searchFilter = tab.searchFilter;
@@ -469,7 +506,8 @@ std::wstring CMainWnd::NormalizeViewKey(const std::wstring& path)
 
 CMainWnd::ViewMode CMainWnd::LoadFolderViewForPath(const std::wstring& path) const
 {
-    const ViewMode kDefault = ViewMode::Tiles;
+    const ViewMode kDefault = static_cast<ViewMode>(m_settings.defaultView);
+    if(!m_settings.rememberViews)return kDefault;
     std::wstring key = NormalizeViewKey(path);
     if (key.empty())
         return kDefault;
@@ -503,7 +541,7 @@ CMainWnd::ViewMode CMainWnd::LoadFolderViewForPath(const std::wstring& path) con
         std::wstring v = line.substr(eq + 1);
         if (::_wcsicmp(k.c_str(), key.c_str()) != 0) continue;
         int mode = _wtoi(v.c_str());
-        if (mode >= 0 && mode <= static_cast<int>(ViewMode::Tiles))
+        if (mode >= 0 && mode <= static_cast<int>(ViewMode::Content))
             return static_cast<ViewMode>(mode);
         break;
     }
@@ -512,6 +550,7 @@ CMainWnd::ViewMode CMainWnd::LoadFolderViewForPath(const std::wstring& path) con
 
 void CMainWnd::SaveFolderViewForPath(const std::wstring& path, ViewMode mode) const
 {
+    if(!m_settings.rememberViews)return;
     std::wstring key = NormalizeViewKey(path);
     if (key.empty())
         return;
@@ -542,7 +581,7 @@ void CMainWnd::SaveFolderViewForPath(const std::wstring& path, ViewMode mode) co
                 if (eq == std::wstring::npos) continue;
                 std::wstring k = line.substr(0, eq);
                 int v = _wtoi(line.substr(eq + 1).c_str());
-                if (!k.empty() && v >= 0 && v <= static_cast<int>(ViewMode::Tiles))
+                if (!k.empty() && v >= 0 && v <= static_cast<int>(ViewMode::Content))
                     entries[k] = v;
             }
         }
@@ -696,14 +735,16 @@ bool CMainWnd::LoadSession()
     if (count <= 0 || paths.empty())
         return false;
 
-    // User preference: always start in 此电脑, never restore the last folder. The rest of
-    // the session (view mode, preview/recursive/favourites-bar flags, column widths) is
-    // still restored below.
-    paths.clear();
-    filters.clear();
-    paths[0] = kThisPcPath;
-    count = 1;
-    active = 0;
+    if(m_settings.startup!=0) {
+        paths.clear();filters.clear();
+        const auto custom=ResolveFolderOpenTarget(m_settings.startupPath);
+        paths[0]=m_settings.startup==2 && !custom.empty() ? custom : std::wstring(kThisPcPath);
+        count=1;active=0;
+    }
+    if(GetFileAttributesW(FastFileSettings::FilePath().c_str())!=INVALID_FILE_ATTRIBUTES) {
+        m_sortColumn=static_cast<SortColumn>(m_settings.sortColumn);m_sortAscending=m_settings.sortAscending;
+        viewMode=m_settings.defaultView;
+    }
 
     m_tabs.clear();
     m_activeTab = -1;
@@ -720,7 +761,7 @@ bool CMainWnd::LoadSession()
     if (m_tabs.empty())
         return false;
 
-    if (viewMode >= 0 && viewMode <= static_cast<int>(ViewMode::Tiles))
+    if (viewMode >= 0 && viewMode <= static_cast<int>(ViewMode::Content))
         m_viewMode = static_cast<ViewMode>(viewMode);
     if (m_pChkRecursive)
         m_pChkRecursive->Selected(recursive != 0);
@@ -734,7 +775,7 @@ bool CMainWnd::LoadSession()
         active = 0;
     ActivateTab(active);
     RebuildBreadcrumb();
-    // Only the settings are restored — the folder is always 此电脑 (see above).
+    // Startup preferences decide whether paths are restored or replaced above.
     UpdateStatus(_T("已就绪"));
     return true;
 }

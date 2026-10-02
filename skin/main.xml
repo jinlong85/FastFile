@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <!-- FastFile Win11 Explorer-inspired chrome. Original assets only — no 360 trademarks.
      Design sizes are 96-DPI baseline; CMainWnd scales fonts/heights/icons at runtime.
      Phase 3: command-bar groups (Navigation | Clipboard | Organize | View).
@@ -6,16 +6,16 @@
      Phase 2: left nav + details list header/row density (UiTokens / Win11 Explorer).
      Phase 3b: preview pane + status bar density (UiTokens / Win11 Explorer).
      Phase 4: empty preview hides meta; scrollbar/nav density polish. -->
-<Window size="1180,740" sizebox="4,4,4,4" caption="0,0,0,36" mininfo="900,540">
+<Window size="1180,740" sizebox="4,4,4,4" caption="0,0,0,29" mininfo="900,540">
   <Font id="0" name="Segoe UI" size="12" default="true" />
   <Font id="1" name="Segoe UI" size="12" bold="true" />
   <Font id="2" name="Segoe UI" size="11" />
   <Font id="3" name="Segoe UI" size="10" />
-  <Font id="4" name="Microsoft YaHei UI" size="12" />
+  <Font id="4" name="Segoe UI" size="12" />
   <!-- Built-in Windows 11-style symbol font; no third-party icon assets. -->
   <Font id="6" name="Segoe MDL2 Assets" size="18" />
-  <!-- Tab labels: Explorer-style tabs read slightly larger than the body font. -->
-  <Font id="7" name="Microsoft YaHei UI" size="14" />
+  <!-- Compact tab labels match the body size, with room above and below. -->
+  <Font id="7" name="Microsoft YaHei UI" size="12" />
   <!-- A: visible light-theme vertical scrollbar (width/colors; DPI re-applied in code) -->
   <!-- 12 @96dpi everywhere: the file view's bar sits directly beside the preview rail, so all
        scrollbars use the navigation (left function area) thickness. -->
@@ -29,49 +29,50 @@
     <!-- Title row = caption: TabStrip | "+" | flexible drag area | min / max / close.
          Hit testing returns HTCAPTION for the empty part and HTCLOSE/HTMAXBUTTON/
          HTMINBUTTON for the system buttons (CMainWnd::HandleMessage, WM_NCHITTEST). -->
-    <HorizontalLayout name="titlebar" height="36" bkcolor="#00000000" inset="8,0,0,0" childvalign="vcenter">
+    <HorizontalLayout name="titlebar" height="29" bkcolor="#00000000" inset="0,0,0,0" childvalign="vcenter">
       <TabStrip name="tab_strip" />
-      <Button name="btn_tab_add" text="" width="32" height="32" bkcolor="#00000000" hotbkcolor="#14000000" pushedbkcolor="#22000000" borderround="4,4" bordersize="0" tooltip="新建标签（Ctrl+T）" />
+      <Button name="btn_tab_add" text="" width="32" height="29" bkcolor="#00000000" hotbkcolor="#14000000" pushedbkcolor="#22000000" borderround="4,4" bordersize="0" tooltip="新建标签（Ctrl+T）" />
       <Control name="caption_drag" width="40" />
-      <Button name="minbtn" text="−" width="46" height="36" font="0" textcolor="#FF3B3B3B" bkcolor="#00FFFFFF" hotbkcolor="#FFE0E0E0" pushedbkcolor="#FFD0D0D0" tooltip="最小化" />
-      <Button name="maxbtn" text="□" width="46" height="36" font="0" textcolor="#FF3B3B3B" bkcolor="#00FFFFFF" hotbkcolor="#FFE0E0E0" pushedbkcolor="#FFD0D0D0" tooltip="最大化" />
-      <Button name="restorebtn" text="❐" width="46" height="36" font="0" textcolor="#FF3B3B3B" bkcolor="#00FFFFFF" hotbkcolor="#FFE0E0E0" pushedbkcolor="#FFD0D0D0" tooltip="还原" visible="false" />
-      <Button name="closebtn" text="×" width="46" height="36" font="0" textcolor="#FF3B3B3B" bkcolor="#00FFFFFF" hotbkcolor="#FFE81123" hottextcolor="#FFFFFFFF" pushedbkcolor="#FFC50F1F" pushedtextcolor="#FFFFFFFF" tooltip="关闭" />
+      <Button name="minbtn" text="−" width="46" height="29" font="0" textcolor="#FF3B3B3B" bkcolor="#00FFFFFF" hotbkcolor="#FFE0E0E0" pushedbkcolor="#FFD0D0D0" tooltip="最小化" />
+      <Button name="maxbtn" text="□" width="46" height="29" font="0" textcolor="#FF3B3B3B" bkcolor="#00FFFFFF" hotbkcolor="#FFE0E0E0" pushedbkcolor="#FFD0D0D0" tooltip="最大化" />
+      <Button name="restorebtn" text="❐" width="46" height="29" font="0" textcolor="#FF3B3B3B" bkcolor="#00FFFFFF" hotbkcolor="#FFE0E0E0" pushedbkcolor="#FFD0D0D0" tooltip="还原" visible="false" />
+      <Button name="closebtn" text="×" width="46" height="29" font="0" textcolor="#FF3B3B3B" bkcolor="#00FFFFFF" hotbkcolor="#FFE81123" hottextcolor="#FFFFFFFF" pushedbkcolor="#FFC50F1F" pushedtextcolor="#FFFFFFFF" tooltip="关闭" />
     </HorizontalLayout>
 
-    <!-- C: Favorites bar under tabs (drag folders to pin). Same height as the address row. -->
-    <HorizontalLayout name="favorites_bar" height="36" bkcolor="#FFF3F3F3" inset="12,4,12,4" bordercolor="#FFE5E5E5" bordersize="0,0,0,1" childvalign="vcenter">
-      <Label name="fav_bar_label" text="★ 收藏" font="0" textcolor="#FF5A5A5A" width="48" height="28" valign="vcenter" endellipsis="true" />
-      <Label name="fav_bar_hint" text="拖入文件夹到此处以收藏" font="0" textcolor="#FF8A8A8A" width="220" height="28" align="left" valign="vcenter" />
+    <!-- C: Favorites bar under tabs (drag folders to pin). Compact height aligned with the tab row. -->
+    <HorizontalLayout name="favorites_bar" height="29" bkcolor="#FFF3F3F3" inset="8,2,8,2" bordercolor="#FFE5E5E5" bordersize="0,0,0,1" childvalign="vcenter">
+      <FavoriteStar name="btn_favorite_toggle" text="" width="32" height="25" tooltip="收藏当前文件夹" />
+      <Control name="fav_star_gap" width="8" />
+      <Label name="fav_bar_hint" text="拖入文件夹到此处" font="0" textcolor="#FF8A8A8A" width="220" height="25" align="left" valign="vcenter" />
       <HorizontalLayout name="favorites_strip" childvalign="vcenter" />
       <Control />
     </HorizontalLayout>
 
     <!-- Path + search: Explorer-style breadcrumb/address merge (favorites stay above) -->
-    <HorizontalLayout name="address_bar" height="36" bkcolor="#FFFFFFFF" inset="8,4,8,4" childvalign="vcenter" bordercolor="#FFE5E5E5" bordersize="0,0,0,1">
+    <HorizontalLayout name="address_bar" height="48" bkcolor="#FFFFFFFF" inset="8,6,8,6" childvalign="vcenter" bordercolor="#FFE5E5E5" bordersize="0,0,0,1">
       <Button name="btn_back" text="" width="32" height="32" tooltip="后退" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
       <Button name="btn_forward" text="" width="32" height="32" tooltip="前进" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
       <Button name="btn_up" text="" width="32" height="32" tooltip="上级" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
       <Button name="btn_refresh" text="" width="32" height="32" tooltip="刷新" textcolor="#FF3A3A3A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
       <Control name="gap_address_nav" width="4" />
-      <HorizontalLayout name="path_host" height="32" bkcolor="#FFFFFFFF" bordercolor="#FFE5E5E5" bordersize="1" borderround="4,4" padding="6,0,6,0" childvalign="vcenter">
+      <HorizontalLayout name="path_host" height="36" bkcolor="#FFFFFFFF" bordercolor="#FFE5E5E5" bordersize="1" borderround="6,6" inset="10,2,10,2" childvalign="vcenter">
         <HorizontalLayout name="breadcrumb" childpadding="0" childvalign="vcenter" />
-        <HorizontalLayout name="address_edit_host" visible="false" padding="4,0,4,0" childvalign="vcenter">
+        <HorizontalLayout name="address_edit_host" visible="false" childvalign="vcenter">
           <Edit name="edit_address" text="" textcolor="#FF1A1A1A" nativebkcolor="#FFFFFFFF" bkcolor="#FFFFFFFF" tipvalue="地址栏 · 输入路径后回车跳转" padding="0,0,0,0" />
         </HorizontalLayout>
       </HorizontalLayout>
       <Control width="4" />
-      <HorizontalLayout name="search_box" width="260" height="32" bkcolor="#FFFFFFFF" bordercolor="#FFE5E5E5" bordersize="1" borderround="4,4" padding="6,0,6,0" childvalign="vcenter" tooltip="输入即筛选；勾选「含子目录」后按回车开始递归搜索">
+      <HorizontalLayout name="search_box" width="260" height="36" bkcolor="#FFFFFFFF" bordercolor="#FFE5E5E5" bordersize="1" borderround="6,6" inset="10,2,10,2" childvalign="vcenter" tooltip="输入即筛选；勾选「含子目录」后按回车开始递归搜索">
         <Edit name="edit_search" text="" textcolor="#FFB0B0B0" nativebkcolor="#FFFFFFFF" bkcolor="#FFFFFFFF" tipvalue="搜索" padding="0,0,0,0" />
       </HorizontalLayout>
       <Option name="chk_recursive" text="☐ 含子目录" width="100" height="28" font="0" textcolor="#FF5A5A5A" selected="false" align="left" valign="vcenter" textpadding="4,0,4,0" bkcolor="#00FFFFFF" hotbkcolor="#FFE5E5E5" selectedbkcolor="#00FFFFFF" padding="6,0,0,0" tooltip="在当前文件夹及子文件夹中搜索" />
     </HorizontalLayout>
 
     <!-- Windows 11 command bar: New | edit commands | Sort / View | More. -->
-    <HorizontalLayout name="toolbar" height="40" bkcolor="#FFFFFFFF" inset="8,4,8,4" childvalign="vcenter" bordercolor="#FFE5E5E5" bordersize="0,0,0,1">
+    <HorizontalLayout name="toolbar" height="40" bkcolor="#FFFFFFFF" inset="8,4,8,4" childvalign="vcenter" childpadding="4" bordercolor="#FFE5E5E5" bordersize="0,0,0,1">
       <!-- Icon + label + chevron in one button: the glyph is applied as an image in code so the
            label keeps the UI font, and the whole button highlights as a unit on hover. -->
-      <Button name="btn_new" text="新建  ⌄" width="76" height="32" tooltip="新建" align="left" font="2" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
+      <Button name="btn_new" text="新建  ⌄" width="88" height="32" tooltip="新建" align="left" font="2" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
       <Control name="sep_new" width="1" height="20" bkcolor="#FFD0D0D0" />
       <Button name="btn_cut" text="" width="32" height="32" tooltip="剪切" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
       <Button name="btn_copy" text="" width="32" height="32" tooltip="复制" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
@@ -80,8 +81,8 @@
       <Button name="btn_share" text="" width="32" height="32" tooltip="共享" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
       <Button name="btn_delete" text="" width="32" height="32" tooltip="删除" textcolor="#FFB91C1C" bkcolor="#00FFFFFF" hotbkcolor="#FFFEE2E2" pushedbkcolor="#FFFECACA" borderround="4,4" />
       <Control name="sep_organize" width="1" height="20" bkcolor="#FFD0D0D0" />
-      <Button name="btn_sort" text="排序  ⌄" width="76" height="32" tooltip="排序" align="left" font="2" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
-      <Button name="btn_view_menu" text="查看  ⌄" width="76" height="32" tooltip="查看" align="left" font="2" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
+      <Button name="btn_sort" text="排序  ⌄" width="88" height="32" tooltip="排序" align="left" font="2" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
+      <Button name="btn_view_menu" text="查看  ⌄" width="88" height="32" tooltip="查看" align="left" font="2" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
       <Control name="sep_more" width="1" height="20" bkcolor="#FFD0D0D0" />
       <Button name="btn_more" text="•••" width="32" height="32" tooltip="更多选项" font="1" textcolor="#FF1A1A1A" bkcolor="#00FFFFFF" hotbkcolor="#22000000" pushedbkcolor="#33000000" borderround="4,4" />
       <Button name="btn_toggle_preview" text="" width="0" height="0" visible="false" tooltip="显示/隐藏预览窗格" />
@@ -97,11 +98,13 @@
       <!-- Keep newfolder id for ApplyChromeShellIcons / handlers (New menu default) -->
       <Button name="btn_newfolder" text="" width="0" height="0" visible="false" />
       <Control />
+      <Button name="btn_settings" text="" width="32" height="32" tooltip="设置" bkcolor="#00FFFFFF" hotbkcolor="#22000000" borderround="4,4" />
       <Label name="toolbar_hint" text="" font="3" textcolor="#FF8A8A8A" width="0" visible="false" />
     </HorizontalLayout>
 
 
-<HorizontalLayout name="body_host" bkcolor="#FFFFFFFF">
+<Control name="command_body_divider" height="1" bkcolor="#FFD0D0D0" />
+<HorizontalLayout name="body_host" bkcolor="#FFFFFFFF" inset="0,8,0,0">
       <!-- left_panel / preview_pane are HorizontalLayouts so the app can resize their
            fixed width; the grab band is hit-tested in CMainWnd::HitTestPaneDivider
            (+/- 8px around the divider line) so the cursor turns into a resize arrow
@@ -126,7 +129,7 @@
         <VerticalLayout name="left_thispc" bkcolor="#FFF3F3F3" padding="2,8,2,0">
           <Label name="nav_hdr_thispc" text="此电脑" font="0" textcolor="#FF5A5A5A" height="0" visible="false" />
           <Control height="0" visible="false" />
-          <TreeView name="dir_tree" bkcolor="#FFF3F3F3" visiblefolderbtn="true" visiblecheckbtn="false" itemminwidth="200" vscrollbar="true" hscrollbar="true" itemtextcolor="#FF1A1A1A" itemhottextcolor="#FF1A1A1A" selitemtextcolor="#FF1A1A1A" selitemhottextcolor="#FF1A1A1A" itemhotbkcolor="#FFE8F4FC" itemselectedbkcolor="#FFCCE8FF" itemselectedtextcolor="#FF1A1A1A" />
+          <TreeView name="dir_tree" bkcolor="#FFF3F3F3" visiblefolderbtn="true" visiblecheckbtn="false" itemminwidth="200" vscrollbar="true" hscrollbar="true" itemtextcolor="#FF1A1A1A" itemhottextcolor="#FF1A1A1A" selitemtextcolor="#FF1A1A1A" selitemhottextcolor="#FF1A1A1A" itemhotbkcolor="#FFF0F0F0" itemselectedbkcolor="#FFE8E8E8" itemselectedtextcolor="#FF1A1A1A" />
         </VerticalLayout>
       </VerticalLayout>
       </HorizontalLayout>
@@ -134,7 +137,7 @@
       <VerticalLayout name="list_host" bkcolor="#FFFFFFFF" padding="0,0,0,0">
         <!-- Empty state: UpdateEmptyStateHint() shows this when the view has no items. -->
         <Label name="list_empty_hint" text="" font="0" textcolor="#FF8A8A8A" height="30" padding="14,10,14,0" valign="vcenter" visible="false" endellipsis="true" />
-        <List name="file_list" bkcolor="#FFFFFFFF" itemtextcolor="#FF1A1A1A" itemselectedbkcolor="#FFCCE8FF" itemhotbkcolor="#FFE8F4FC" itemselectedtextcolor="#FF1A1A1A" vscrollbar="true" vscrollbarstyle="width=&quot;4&quot; showbutton1=&quot;false&quot; showbutton2=&quot;false&quot; bkcolor=&quot;transparent&quot; thumbcolor=&quot;#FFC4C4C4&quot;" itemvalign="vcenter" multiselect="true" bordercolor="#00000000" bordersize="0" headerbkcolor="#FFF3F3F3">
+        <List name="file_list" bkcolor="#FFFFFFFF" itemtextcolor="#FF1A1A1A" itemselectedbkcolor="#FFE0EEF9" itemhotbkcolor="#FFE8F4FC" itemselectedtextcolor="#FF1A1A1A" vscrollbar="true" vscrollbarstyle="width=&quot;4&quot; showbutton1=&quot;false&quot; showbutton2=&quot;false&quot; bkcolor=&quot;transparent&quot; thumbcolor=&quot;#FFC4C4C4&quot;" itemvalign="vcenter" multiselect="true" bordercolor="#00000000" bordersize="0" headerbkcolor="#FFF3F3F3">
           <ListHeader height="32" menu="true" bkcolor="#FFF3F3F3" bordercolor="#FFE5E5E5" bordersize="0,0,0,1">
             <ListHeaderItem name="hdr_name" text="名称" width="360" textcolor="#FF5A5A5A" sepwidth="4" sepcolor="#FFE5E5E5" dragable="true" />
             <ListHeaderItem name="hdr_mtime" text="修改日期" width="140" textcolor="#FF5A5A5A" sepwidth="4" sepcolor="#FFE5E5E5" dragable="true" />
@@ -154,10 +157,10 @@
              only visible track; preview_body's left inset equals the rail width so the
              preview text keeps its original 24px distance from the divider. -->
         <HorizontalLayout name="preview_pane" width="344" minwidth="260" maxwidth="760" bkcolor="#FFFFFFFF" padding="0,0,0,0">
-      <ScrollBar name="preview_rail" width="12" showbutton1="false" showbutton2="false" bkcolor="#FFF7F7F7" thumbcolor="#FFB5B5B5" />
-      <VerticalLayout name="preview_body" bkcolor="#00FFFFFF" padding="12,24,24,24" vscrollbar="true">
-        <Control name="preview_image" height="196" bkcolor="#FFFFFFFF" bordercolor="#00000000" bordersize="0" borderround="0,0" visible="false" />
-        <Control name="preview_gap_title" height="14" visible="false" />
+      <ScrollBar name="preview_rail" width="4" showbutton1="false" showbutton2="false" bkcolor="#FFF7F7F7" thumbcolor="#FFC4C4C4" />
+      <VerticalLayout name="preview_body" bkcolor="#00FFFFFF" padding="12,16,16,16" vscrollbar="true">
+        <Control name="preview_image" height="196" bkcolor="#FFFFFFFF" bordercolor="#00000000" bordersize="0" borderround="4,4" visible="false" />
+        <Control name="preview_gap_title" height="12" visible="false" />
         <Label name="preview_title" text="预览" font="5" textcolor="#FF1A1A1A" height="28" endellipsis="true" />
         <Control name="preview_gap_action" height="10" visible="false" />
         <Button name="btn_preview_share" text="共享" width="96" height="34" visible="false" align="center" textcolor="#FF303030" bkcolor="#FFFFFFFF" hotbkcolor="#FFF3F3F3" pushedbkcolor="#FFE5E5E5" bordercolor="#FFD6D6D6" bordersize="1" borderround="6,6" tooltip="共享" foreimage="" hotforeimage="" />
@@ -165,30 +168,30 @@
         <Control name="preview_sep_details" height="1" bkcolor="#FFE8E8E8" visible="false" />
         <Label name="preview_details_title" text="详细信息" font="0" textcolor="#FF303030" height="26" visible="false" valign="vcenter" />
         <HorizontalLayout name="preview_row_type" height="22" visible="false">
-          <Label name="preview_lbl_type" text="类型" font="0" textcolor="#FF808080" width="76" valign="vcenter" />
-          <Label name="preview_type" text="" font="0" textcolor="#FF5E5E5E" align="right" valign="vcenter" endellipsis="true" />
+          <Label name="preview_lbl_type" text="类型" font="0" textcolor="#FF616161" width="84" valign="vcenter" />
+          <Label name="preview_type" text="" font="0" textcolor="#FF1A1A1A" align="left" valign="vcenter" endellipsis="true" />
         </HorizontalLayout>
         <HorizontalLayout name="preview_row_size" height="22" visible="false">
-          <Label name="preview_lbl_size" text="大小" font="0" textcolor="#FF808080" width="76" valign="vcenter" />
-          <Label name="preview_size" text="" font="0" textcolor="#FF5E5E5E" align="right" valign="vcenter" endellipsis="true" />
+          <Label name="preview_lbl_size" text="大小" font="0" textcolor="#FF616161" width="84" valign="vcenter" />
+          <Label name="preview_size" text="" font="0" textcolor="#FF1A1A1A" align="left" valign="vcenter" endellipsis="true" />
         </HorizontalLayout>
         <HorizontalLayout name="preview_row_location" height="22" visible="false">
-          <Label name="preview_lbl_location" text="文件位置" font="0" textcolor="#FF808080" width="76" valign="vcenter" />
-          <Label name="preview_location" text="" font="0" textcolor="#FF5E5E5E" align="right" valign="vcenter" endellipsis="true" />
+          <Label name="preview_lbl_location" text="文件位置" font="0" textcolor="#FF616161" width="84" valign="vcenter" />
+          <PreviewPathLabel name="preview_location" text="" font="0" textcolor="#FF1A1A1A" align="left" valign="vcenter" endellipsis="true" />
         </HorizontalLayout>
         <HorizontalLayout name="preview_row_mtime" height="22" visible="false">
-          <Label name="preview_lbl_mtime" text="修改时间" font="0" textcolor="#FF808080" width="76" valign="vcenter" />
-          <Label name="preview_mtime" text="" font="0" textcolor="#FF5E5E5E" align="right" valign="vcenter" endellipsis="true" />
+          <Label name="preview_lbl_mtime" text="修改时间" font="0" textcolor="#FF616161" width="84" valign="vcenter" />
+          <Label name="preview_mtime" text="" font="0" textcolor="#FF1A1A1A" align="left" valign="vcenter" endellipsis="true" />
         </HorizontalLayout>
         <HorizontalLayout name="preview_row_ctime" height="22" visible="false">
-          <Label name="preview_lbl_ctime" text="创建时间" font="0" textcolor="#FF808080" width="76" valign="vcenter" />
-          <Label name="preview_ctime" text="" font="0" textcolor="#FF5E5E5E" align="right" valign="vcenter" endellipsis="true" />
+          <Label name="preview_lbl_ctime" text="创建时间" font="0" textcolor="#FF616161" width="84" valign="vcenter" />
+          <Label name="preview_ctime" text="" font="0" textcolor="#FF1A1A1A" align="left" valign="vcenter" endellipsis="true" />
         </HorizontalLayout>
-        <HorizontalLayout name="preview_row_dimensions" height="22" visible="false"><Label name="preview_lbl_dimensions" text="分辨率" font="0" textcolor="#FF808080" width="76" valign="vcenter" /><Label name="preview_dimensions" text="" font="0" textcolor="#FF5E5E5E" align="right" valign="vcenter" endellipsis="true" /></HorizontalLayout>
-        <HorizontalLayout name="preview_row_duration" height="22" visible="false"><Label name="preview_lbl_duration" text="时长" font="0" textcolor="#FF808080" width="76" valign="vcenter" /><Label name="preview_duration" text="" font="0" textcolor="#FF5E5E5E" align="right" valign="vcenter" endellipsis="true" /></HorizontalLayout>
-        <HorizontalLayout name="preview_row_framerate" height="22" visible="false"><Label name="preview_lbl_framerate" text="帧速率" font="0" textcolor="#FF808080" width="76" valign="vcenter" /><Label name="preview_framerate" text="" font="0" textcolor="#FF5E5E5E" align="right" valign="vcenter" endellipsis="true" /></HorizontalLayout>
-        <HorizontalLayout name="preview_row_bitrate" height="22" visible="false"><Label name="preview_lbl_bitrate" text="数据速率" font="0" textcolor="#FF808080" width="76" valign="vcenter" /><Label name="preview_bitrate" text="" font="0" textcolor="#FF5E5E5E" align="right" valign="vcenter" endellipsis="true" /></HorizontalLayout>
-        <HorizontalLayout name="preview_row_totalbitrate" height="22" visible="false"><Label name="preview_lbl_totalbitrate" text="总比特率" font="0" textcolor="#FF808080" width="76" valign="vcenter" /><Label name="preview_totalbitrate" text="" font="0" textcolor="#FF5E5E5E" align="right" valign="vcenter" endellipsis="true" /></HorizontalLayout>
+        <HorizontalLayout name="preview_row_dimensions" height="22" visible="false"><Label name="preview_lbl_dimensions" text="分辨率" font="0" textcolor="#FF616161" width="84" valign="vcenter" /><Label name="preview_dimensions" text="" font="0" textcolor="#FF1A1A1A" align="left" valign="vcenter" endellipsis="true" /></HorizontalLayout>
+        <HorizontalLayout name="preview_row_duration" height="22" visible="false"><Label name="preview_lbl_duration" text="时长" font="0" textcolor="#FF616161" width="84" valign="vcenter" /><Label name="preview_duration" text="" font="0" textcolor="#FF1A1A1A" align="left" valign="vcenter" endellipsis="true" /></HorizontalLayout>
+        <HorizontalLayout name="preview_row_framerate" height="22" visible="false"><Label name="preview_lbl_framerate" text="帧速率" font="0" textcolor="#FF616161" width="84" valign="vcenter" /><Label name="preview_framerate" text="" font="0" textcolor="#FF1A1A1A" align="left" valign="vcenter" endellipsis="true" /></HorizontalLayout>
+        <HorizontalLayout name="preview_row_bitrate" height="22" visible="false"><Label name="preview_lbl_bitrate" text="数据速率" font="0" textcolor="#FF616161" width="84" valign="vcenter" /><Label name="preview_bitrate" text="" font="0" textcolor="#FF1A1A1A" align="left" valign="vcenter" endellipsis="true" /></HorizontalLayout>
+        <HorizontalLayout name="preview_row_totalbitrate" height="22" visible="false"><Label name="preview_lbl_totalbitrate" text="总比特率" font="0" textcolor="#FF616161" width="84" valign="vcenter" /><Label name="preview_totalbitrate" text="" font="0" textcolor="#FF1A1A1A" align="left" valign="vcenter" endellipsis="true" /></HorizontalLayout>
         <Control name="preview_gap_text" height="12" visible="false" />
         <Label name="preview_text" text="" font="2" textcolor="#FF8A8A8A" align="left" valign="top" endellipsis="false" />
       </VerticalLayout>

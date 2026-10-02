@@ -1,5 +1,10 @@
 ﻿cmake_minimum_required(VERSION 3.16)
-project(FastFile VERSION 0.1.0 LANGUAGES CXX)
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" FASTFILE_VERSION LIMIT_COUNT 1)
+string(STRIP "${FASTFILE_VERSION}" FASTFILE_VERSION)
+if(NOT FASTFILE_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+  message(FATAL_ERROR "VERSION must contain a semantic version such as 1.0.9")
+endif()
+project(FastFile VERSION "${FASTFILE_VERSION}" LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -56,6 +61,7 @@ add_executable(FastFile WIN32
   src/MainWnd.Favorites.cpp
   src/MainWnd.FileOps.cpp
   src/MainWnd.Menus.cpp
+  src/MainWnd.Settings.cpp
   src/MainWnd.Integration.cpp
   src/MainWnd.Views.cpp
   src/MainWnd.Icons.cpp
@@ -65,9 +71,16 @@ add_executable(FastFile WIN32
   src/TabStripUI.h
   src/MainWnd.Preview.cpp
   src/MainWnd.DragDrop.cpp
+  src/ShellBrowserHost.cpp
+  src/ShellBrowserHost.h
   src/MainWnd.h
   src/MainWndInternal.h
+  src/FastFileCore.h
   src/UiTokens.h
+  src/FavoriteStarUI.h
+  src/FavoritesJson.h
+  src/ShellPresentation.h
+  src/TabLayout.h
   cmake/FastFile.manifest
 )
 
@@ -79,7 +92,7 @@ if(WIN32)
   set_property(SOURCE res/FastFile.rc APPEND PROPERTY
                OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/res/FastFile.ico")
 endif()
-target_link_libraries(FastFile PRIVATE duilib shell32 shlwapi propsys)
+target_link_libraries(FastFile PRIVATE duilib shell32 shlwapi propsys msimg32)
 if(MSVC)
   target_compile_options(FastFile PRIVATE /W3 /utf-8)
   # Emit FastFile.map: a crash report gives an RVA, the map turns it into a function name.
@@ -98,4 +111,46 @@ add_custom_command(TARGET FastFile POST_BUILD
   COMMENT "Copying skin resources next to FastFile.exe"
 )
 
-message(STATUS "FastFile P0 scaffold — DuiLib static + Win32 GUI")
+include(CTest)
+if(BUILD_TESTING)
+  get_target_property(FASTFILE_REGRESSION_SOURCES FastFile SOURCES)
+  list(FILTER FASTFILE_REGRESSION_SOURCES EXCLUDE REGEX "(^src/main[.]cpp$|^res/|^cmake/)")
+  add_executable(FastFileMainWndRegressionTests tests/MainWndRegressionTests.cpp ${FASTFILE_REGRESSION_SOURCES})
+  target_include_directories(FastFileMainWndRegressionTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(FastFileMainWndRegressionTests PRIVATE duilib shell32 shlwapi propsys msimg32)
+  if(MSVC)
+    target_compile_options(FastFileMainWndRegressionTests PRIVATE /utf-8 /wd4828 /MP)
+  endif()
+  add_dependencies(FastFileMainWndRegressionTests FastFile)
+  add_test(NAME FastFileMainWndRegressionTests COMMAND FastFileMainWndRegressionTests)
+  set_tests_properties(FastFileMainWndRegressionTests PROPERTIES TIMEOUT 120)
+  add_test(NAME FastFileUiPolishTests COMMAND FastFileMainWndRegressionTests --ui-polish-only)
+  set_tests_properties(FastFileUiPolishTests PROPERTIES TIMEOUT 30)
+  add_test(NAME FastFileShellActivationTests COMMAND FastFileMainWndRegressionTests --shell-activation-only)
+  set_tests_properties(FastFileShellActivationTests PROPERTIES TIMEOUT 60)
+  add_executable(FastFileFavoritesTests tests/FavoritesTests.cpp)
+  target_include_directories(FastFileFavoritesTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(FastFileFavoritesTests PRIVATE duilib gdiplus)
+  if(MSVC)
+    target_compile_options(FastFileFavoritesTests PRIVATE /utf-8 /wd4828)
+  endif()
+  add_test(NAME FastFileFavoritesTests COMMAND FastFileFavoritesTests)
+  add_executable(FastFileCoreTests tests/FastFileCoreTests.cpp)
+  target_include_directories(FastFileCoreTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  add_test(NAME FastFileCoreTests COMMAND FastFileCoreTests)
+  add_executable(FastFileShellBrowserTests
+    tests/ShellBrowserHostTests.cpp
+    src/ShellBrowserHost.cpp
+  )
+  target_include_directories(FastFileShellBrowserTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(FastFileShellBrowserTests PRIVATE shell32 shlwapi ole32 uuid propsys comctl32 msimg32)
+  add_test(NAME FastFileShellBrowserTests COMMAND FastFileShellBrowserTests)
+  add_test(NAME FastFileVersionSource
+    COMMAND "${CMAKE_COMMAND}"
+      "-DPROJECT_VERSION=${PROJECT_VERSION}"
+      "-DVERSION_FILE=${CMAKE_CURRENT_SOURCE_DIR}/VERSION"
+      "-DINSTALLER_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/installer/build_installer.ps1"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/CheckVersion.cmake")
+endif()
+
+message(STATUS "FastFile ${PROJECT_VERSION} — DuiLib static + Win32 GUI")

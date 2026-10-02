@@ -3,6 +3,7 @@
 // Behaviour is unchanged; declarations live in MainWnd.h.
 
 #include "MainWndInternal.h"
+#include "ShellPresentation.h"
 
 // ---- Directory tree ------------------------------------------------------
 
@@ -33,7 +34,7 @@ void CMainWnd::StyleTreeNode(CTreeNodeUI* node, const std::wstring& title, bool 
     // DuiLib CTreeNodeUI defaults to FixedWidth(250); left panel is ~220px, so labels
     // were clipped / only ellipsis remained visible. Stretch to list width instead.
     node->SetFixedWidth(0);
-    node->SetFixedHeight(DpiScale(UiTokens::TreeRowH)); // Phase2: Win11 Explorer tree density
+    node->SetFixedHeight(DpiScale(m_settings.NavigationRowHeight())); // Phase2: Win11 Explorer tree density
     node->SetVisibleCheckBtn(false);
     node->SetVisibleFolderBtn(hasChildrenHint);
 
@@ -69,8 +70,8 @@ void CMainWnd::StyleTreeNode(CTreeNodeUI* node, const std::wstring& title, bool 
     }
     // Hover / selected bk via list attrs on tree host; also paint option button
     if (COptionUI* itemBtn = node->GetItemButton()) {
-        itemBtn->SetAttribute(_T("hotbkcolor"), UiTokens::ColorListHover);
-        itemBtn->SetAttribute(_T("selectedbkcolor"), UiTokens::ColorListSelected);
+        itemBtn->SetAttribute(_T("hotbkcolor"), UiTokens::ColorNavHover);
+        itemBtn->SetAttribute(_T("selectedbkcolor"), UiTokens::ColorNavSelected);
     }
 
     if (CCheckBoxUI* folder = node->GetFolderButton()) {
@@ -116,6 +117,60 @@ CTreeNodeUI* CMainWnd::AddTreeFolderNode(CTreeNodeUI* parent, const std::wstring
     StyleTreeNode(node, title, true);
     ApplyTreeNodeIcon(node, path);
     return node;
+}
+
+bool CMainWnd::IsTreeKeyboardFocus() const
+{
+    if (m_shellBrowser && m_shellBrowser->OwnsWindow(::GetFocus())) return false;
+    for (CControlUI* control = m_PaintManager.GetFocus(); control; control = control->GetParent())
+        if (control == m_pDirTree) return true;
+    return false;
+}
+
+bool CMainWnd::HandleTreeShortcut(WPARAM key)
+{
+    if (!m_pDirTree) return false;
+    CTreeNodeUI* node = FindTreeNodeByPath(nullptr, m_currentPath);
+    if (!node) return false;
+    const bool expanded = node->GetFolderButton() && !node->GetFolderButton()->IsSelected();
+    auto activate = [&](CTreeNodeUI* target) {
+        if (!target || target->GetUserData().IsEmpty()) return;
+        NavigateTo(target->GetUserData().GetData(), true);
+        m_pDirTree->SetFocus();
+    };
+    if (key == VK_RIGHT || key == VK_ADD) {
+        if (!expanded) ExpandTreeNode(node, false);
+        else if (key == VK_RIGHT && node->GetCountChild() > 0) activate(node->GetChildNode(0));
+        return true;
+    }
+    if (key == VK_LEFT || key == VK_SUBTRACT) {
+        if (expanded) {
+            m_pDirTree->SetItemExpand(false, node);
+            if (auto* button = node->GetFolderButton()) { button->Selected(true); button->SetText(L"\xE76C"); }
+        } else if (key == VK_LEFT) activate(node->GetParentNode());
+        return true;
+    }
+    if (key == VK_UP || key == VK_DOWN || key == VK_HOME || key == VK_END) {
+        std::vector<CTreeNodeUI*> visible;
+        for (int i = 0; i < m_pDirTree->GetCount(); ++i) {
+            CControlUI* control = m_pDirTree->GetItemAt(i);
+            if (control && control->IsVisible() && control->GetInterface(DUI_CTR_TREENODE)) {
+                auto* item = static_cast<CTreeNodeUI*>(control);
+                if (item->GetUserData() != CDuiString(kPendingMarker)) visible.push_back(item);
+            }
+        }
+        auto current = std::find(visible.begin(), visible.end(), node);
+        if (current != visible.end()) {
+            int index = int(current - visible.begin());
+            if (key == VK_HOME) index = 0;
+            else if (key == VK_END) index = int(visible.size()) - 1;
+            else index += key == VK_DOWN ? 1 : -1;
+            if (index >= 0 && index < int(visible.size())) activate(visible[index]);
+        }
+        return true;
+    }
+    if (key == VK_RETURN) { activate(node); return true; }
+    return false;
 }
 
 bool CMainWnd::OnTreeFolderNotify(void* param)
@@ -245,7 +300,8 @@ void CMainWnd::EnsureTreeChildren(CTreeNodeUI* node)
 
     for (const auto& name : subdirs) {
         std::wstring full = JoinPath(path, name);
-        CTreeNodeUI* child = AddTreeFolderNode(node, full, name);
+        std::wstring displayName = GetShellDisplayName(full);
+        CTreeNodeUI* child = AddTreeFolderNode(node, full, displayName.empty() ? name : displayName);
         if (!child) continue;
         AttachPendingChild(child);
         child->SetVisible(false); // parent ExpandTreeNode will show
@@ -261,7 +317,7 @@ void CMainWnd::OnTreeNodeActivate(CTreeNodeUI* node)
     // Single click: select + navigate only. Do NOT expand/collapse here —
     // +/- folder button (OnTreeFolderNotify) owns expand/collapse so that
     // clicking a folder never auto-collapses already-expanded branches.
-    node->Select(true);
+    node->Select(!IsThisPcPath(ud.GetData()) && !IsQuickAccessPinned(ud.GetData()));
     NavigateTo(ud.GetData(), true);
 }
 
@@ -299,6 +355,12 @@ void CMainWnd::SyncTreeToPath(const std::wstring& path)
 {
     if (!m_pDirTree || m_syncingTree) return;
     m_syncingTree = true;
+    m_treeRevealPath.clear();
+    for (int i = 0; i < m_pDirTree->GetCount(); ++i) {
+        if (auto* row = static_cast<CTreeNodeUI*>(m_pDirTree->GetItemAt(i)->GetInterface(DUI_CTR_TREENODE)))
+            row->Select(false, false);
+    }
+    const bool quickOwnsSelection = IsThisPcPath(path) || IsQuickAccessPinned(path);
 
     if (IsThisPcPath(path)) {
         CTreeNodeUI* root = FindTreeNodeByPath(nullptr, kThisPcPath);
@@ -323,64 +385,57 @@ void CMainWnd::SyncTreeToPath(const std::wstring& path)
     std::wstring norm = NormalizePath(path);
     if (norm.empty()) { m_syncingTree = false; return; }
 
-    std::vector<std::wstring> chain;
-    if (norm.size() >= 2 && norm[1] == L':') {
-        std::wstring drive = norm.substr(0, 2) + L"\\";
-        chain.push_back(drive);
-        size_t start = 3;
-        while (start < norm.size()) {
-            size_t slash = norm.find_first_of(L"\\/", start);
-            if (slash == std::wstring::npos) {
-                chain.push_back(norm);
-                break;
-            }
-            chain.push_back(norm.substr(0, slash));
-            start = slash + 1;
-        }
-        if (chain.empty() || !PathEquals(chain.back(), norm))
-            chain.push_back(norm);
-    }
+    const auto chain = ShellPresentation::AncestorPaths(norm);
 
     CTreeNodeUI* node = FindTreeNodeByPath(nullptr, kThisPcPath);
     if (node)
         ExpandTreeNode(node, false);
 
-    CTreeNodeUI* last = nullptr;
-    for (size_t i = 0; i < chain.size(); ++i) {
-        const auto& prefix = chain[i];
-        CTreeNodeUI* found = FindTreeNodeByPath(nullptr, prefix);
+    CTreeNodeUI* last = node;
+    for (const auto& prefix : chain) {
+        if (last) ExpandTreeNode(last, false);
+        CTreeNodeUI* found = FindTreeNodeByPath(last, prefix);
+        if (!found) found = FindTreeNodeByPath(nullptr, prefix);
         if (!found && last) {
-            EnsureTreeChildren(last);
-            ExpandTreeNode(last, false);
-            found = FindTreeNodeByPath(last, prefix);
+            // Explicit navigation must also reveal a hidden folder or one beyond the
+            // lazy enumeration cap. Its identity and display name still come from Shell.
+            DWORD attrs = GetFileAttributesW(prefix.c_str());
+            if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+                std::wstring title = GetShellDisplayName(prefix);
+                if (title.empty()) title = GetLeafName(prefix);
+                found = AddTreeFolderNode(last, prefix, title);
+                if (found) { AttachPendingChild(found); found->SetVisible(true); }
+            }
         }
-        if (!found)
-            found = FindTreeNodeByPath(nullptr, prefix);
-        if (found) {
-            // Expand ancestors so the leaf is visible; do NOT expand the leaf
-            // itself — folder label click is select+navigate only; +/- expands.
-            if (i + 1 < chain.size())
-                ExpandTreeNode(found, false);
-            last = found;
-        }
+        if (!found) break;
+        last = found;
     }
-    if (last)
-        last->Select(true);
-
-    // Scroll the selected node into view. CListUI::EnsureVisible only understands top-level
-    // items and our chain is nested, so use the node's own rect (DuiLib lays tree nodes out in
-    // absolute client coordinates) and scroll by the same pixel delta it would use.
-    if (last && m_pDirTree) {
+    if (last && PathEquals(last->GetUserData().GetData(), norm)) {
+        last->Select(!quickOwnsSelection, false);
+        m_treeRevealPath = norm;
         m_pDirTree->NeedUpdate();
-        const RECT rcItem = last->GetPos();
-        const RECT rcTree = m_pDirTree->GetPos();
-        if (rcItem.bottom > rcItem.top && rcTree.bottom > rcTree.top) {
-            int dy = 0;
-            if (rcItem.top < rcTree.top) dy = rcItem.top - rcTree.top;
-            else if (rcItem.bottom > rcTree.bottom) dy = rcItem.bottom - rcTree.bottom;
-            if (dy != 0) m_pDirTree->Scroll(0, dy);
-        }
     }
 
     m_syncingTree = false;
+}
+
+// Run after layout, not while ExpandTreeNode still has stale/zero child rectangles.
+void CMainWnd::RevealSyncedTreeNode()
+{
+    if (!m_pDirTree || m_treeRevealPath.empty()) return;
+    CTreeNodeUI* target = FindTreeNodeByPath(nullptr, m_treeRevealPath);
+    if (!target || !target->IsVisible()) return;
+    CContainerUI* viewport = m_pDirTree->GetList();
+    if (!viewport) return;
+    RECT view = viewport->GetPos();
+    RECT item = target->GetPos();
+    if (item.bottom <= item.top || view.bottom <= view.top) return;
+    int dy = item.top < view.top ? item.top - view.top :
+        item.bottom > view.bottom ? item.bottom - view.bottom : 0;
+    if (dy) {
+        SIZE scroll = viewport->GetScrollPos();
+        scroll.cy += dy;
+        viewport->SetScrollPos(scroll);
+    }
+    m_treeRevealPath.clear();
 }

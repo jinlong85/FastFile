@@ -3,6 +3,7 @@
 // Behaviour is unchanged; declarations live in MainWnd.h.
 
 #include "MainWndInternal.h"
+#include "FastFileCore.h"
 
 std::wstring CMainWnd::GetDefaultStartPath()
 {
@@ -71,7 +72,13 @@ std::wstring CMainWnd::NormalizePath(const std::wstring& path)
 
     wchar_t expanded[MAX_PATH * 4] = {};
     DWORD expLen = ::ExpandEnvironmentStringsW(trimmed.c_str(), expanded, _countof(expanded));
-    const wchar_t* src = (expLen > 0 && expLen < _countof(expanded)) ? expanded : trimmed.c_str();
+    std::wstring source = (expLen > 0 && expLen < _countof(expanded)) ? expanded : trimmed;
+    // Folder open commands ending in a quoted drive root can arrive as C:".
+    // After trimming the quote, C: must mean the root here, never the drive's CWD.
+    if (source.size() == 2 && source[1] == L':' &&
+        ((source[0] >= L'A' && source[0] <= L'Z') || (source[0] >= L'a' && source[0] <= L'z')))
+        source += L'\\';
+    const wchar_t* src = source.c_str();
 
     wchar_t full[MAX_PATH * 4] = {};
     DWORD fullLen = ::GetFullPathNameW(src, _countof(full), full, nullptr);
@@ -88,42 +95,17 @@ std::wstring CMainWnd::NormalizePath(const std::wstring& path)
 
 std::wstring CMainWnd::ParentPath(const std::wstring& path)
 {
-    if (path.empty())
-        return {};
-    if (path.size() == 3 && path[1] == L':' && (path[2] == L'\\' || path[2] == L'/'))
-        return {};
-
-    std::wstring p = path;
-    while (!p.empty() && (p.back() == L'\\' || p.back() == L'/'))
-        p.pop_back();
-    size_t pos = p.find_last_of(L"\\/");
-    if (pos == std::wstring::npos)
-        return {};
-    if (pos == 2 && p[1] == L':')
-        return p.substr(0, 3);
-    return p.substr(0, pos);
+    return FastFileCore::ParentPath(path);
 }
 
 std::wstring CMainWnd::FormatFileSize(ULONGLONG bytes)
 {
-    wchar_t buf[64] = {};
-    if (bytes < 1024ULL)
-        swprintf_s(buf, L"%llu B", bytes);
-    else if (bytes < 1024ULL * 1024ULL)
-        swprintf_s(buf, L"%.1f KB", bytes / 1024.0);
-    else if (bytes < 1024ULL * 1024ULL * 1024ULL)
-        swprintf_s(buf, L"%.1f MB", bytes / (1024.0 * 1024.0));
-    else
-        swprintf_s(buf, L"%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0));
-    return buf;
+    return FastFileCore::FormatFileSize(static_cast<std::uint64_t>(bytes));
 }
 
 std::wstring CMainWnd::GetLeafName(const std::wstring& path)
 {
-    size_t slash = path.find_last_of(L"\\/");
-    if (slash == std::wstring::npos)
-        return path;
-    return path.substr(slash + 1);
+    return FastFileCore::GetLeafName(path);
 }
 
 void CMainWnd::PumpUiMessages()

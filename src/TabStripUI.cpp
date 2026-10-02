@@ -1,7 +1,8 @@
-﻿// FastFile - Explorer-style tab strip implementation (see TabStripUI.h for the contract).
+// FastFile - Explorer-style tab strip implementation (see TabStripUI.h for the contract).
 
 #include "MainWndInternal.h"
 #include "TabStripUI.h"
+#include "TabLayout.h"
 
 #include <gdiplus.h>
 
@@ -94,8 +95,8 @@ void CTabStripUI::SetMetrics(int dpi)
     m_dpi = dpi > 0 ? dpi : 96;
     // The strip owns the whole title row: the active tab's card has to reach the row's bottom
     // edge so it merges with the surface below (a shorter strip floated the card above it).
-    SetMinHeight(Scaled(UiTokens::TabBarH, m_dpi));
-    SetFixedHeight(Scaled(UiTokens::TabBarH, m_dpi));
+    SetMinHeight(Scaled(m_barHeight, m_dpi));
+    SetFixedHeight(Scaled(m_barHeight, m_dpi));
     if (m_font) { delete m_font; m_font = nullptr; }
     if (m_fontFamily) { delete m_fontFamily; m_fontFamily = nullptr; }
     RecalcRects();
@@ -109,20 +110,6 @@ void CTabStripUI::SetDarkMode(bool dark)
     Invalidate();
 }
 
-void CTabStripUI::StartAnimTimer()
-{
-    if (!m_pManager || m_animating) return;
-    m_animating = true;
-    m_pManager->SetTimer(this, 1, 16);
-}
-
-void CTabStripUI::AnimateAppear(int index)
-{
-    if (index < 0 || index >= (int)m_tabs.size()) return;
-    m_tabs[index].born = ::GetTickCount();
-    StartAnimTimer();
-}
-
 int CTabStripUI::Add(const std::wstring& path, const std::wstring& title,
     const std::wstring& iconBmp, int iconPx, bool activate)
 {
@@ -130,14 +117,12 @@ int CTabStripUI::Add(const std::wstring& path, const std::wstring& title,
     tab.path = path;
     tab.title = title;
     tab.iconPx = iconPx;
-    tab.born = ::GetTickCount();
     m_tabs.push_back(std::move(tab));
     const int index = (int)m_tabs.size() - 1;
     if (!iconBmp.empty()) SetTabIcon(index, iconBmp, iconPx);
     if (activate) m_active = index;
     RecalcRects();
     if (activate) EnsureTabVisible(index);
-    StartAnimTimer();
     Invalidate();
     return index;
 }
@@ -149,14 +134,12 @@ void CTabStripUI::Insert(int index, const std::wstring& path, const std::wstring
     tab.path = path;
     tab.title = title;
     tab.iconPx = iconPx;
-    tab.born = ::GetTickCount();
     if (index < 0) index = 0;
     if (index > (int)m_tabs.size()) index = (int)m_tabs.size();
     m_tabs.insert(m_tabs.begin() + index, std::move(tab));
     SetTabIcon(index, iconBmp, iconPx);
     if (m_active >= index) ++m_active;
     RecalcRects();
-    StartAnimTimer();
     Invalidate();
 }
 
@@ -180,7 +163,6 @@ void CTabStripUI::Clear()
     m_tabs.clear();
     m_active = m_hot = m_hotClose = m_hotPlus = m_pressed = m_dragFrom = -1;
     m_dragging = false;
-    if (m_pManager && m_animating) { m_pManager->KillTimer(this, 1); m_animating = false; }
 }
 
 bool CTabStripUI::Select(int index)
@@ -213,6 +195,8 @@ void CTabStripUI::SetTabTitle(int index, const std::wstring& title)
 {
     if (index < 0 || index >= (int)m_tabs.size()) return;
     m_tabs[index].title = title;
+    RecalcRects();
+    if (m_active >= 0) EnsureTabVisible(m_active);
     Invalidate();
 }
 
@@ -259,24 +243,22 @@ SIZE CTabStripUI::EstimateSize(SIZE szAvailable)
 void CTabStripUI::RecalcRects(bool notifyOnly)
 {
     const int n = (int)m_tabs.size();
-    const int top = m_rcItem.top + Scaled(2, m_dpi);
+    const int top = m_rcItem.top;
     const int bottom = m_rcItem.bottom;
     const int gap = Scaled(UiTokens::TabCardGap, m_dpi);
     const int plusW = Scaled(32, m_dpi);
-    const int avail = (std::max)(0, static_cast<int>(m_rcItem.right - m_rcItem.left) - plusW - gap);
+    const int avail = (std::max)(0, static_cast<int>(m_rcItem.right - m_rcItem.left) - plusW - gap - n * gap);
     (void)notifyOnly;
 
-    // Explorer geometry: each tab is sized by its own measured title (clamped to the min/max
-    // range), never by "divide the row by the tab count" - that is what squeezed eight tabs
-    // down to a single glyph each. When the row runs out of room the strip scrolls instead of
-    // shrinking further.
-    m_contentW = 0;
+    std::vector<int> preferred;
     for (int i = 0; i < n; ++i)
-        m_contentW += TabWidth(i) + gap;
-    // A tab card is always exactly as wide as its own title needs - never stretched towards
-    // "+" or the caption buttons (that would paint the card under them and leave the tab text
-    // with no visible boundary). Overflow scrolls; see EnsureTabVisible()/ClampScroll().
-    for (auto& t : m_tabs) t.singleWidth = 0;
+        preferred.push_back((std::clamp)(MeasureTabWidth(i), Scaled(m_minTabW, m_dpi), Scaled(m_maxTabW, m_dpi)));
+    const auto widths = TabLayout::Fit(preferred, Scaled(m_minTabW, m_dpi), avail);
+    m_contentW = 0;
+    for (int i = 0; i < n; ++i) {
+        m_tabs[i].width = widths[i];
+        m_contentW += widths[i] + gap;
+    }
     ClampScroll();
 
     int x = m_rcItem.left - m_scrollX;
@@ -296,8 +278,8 @@ void CTabStripUI::RecalcRects(bool notifyOnly)
         plusX = m_rcItem.right - plusW;
     if (plusX < m_rcItem.left)
         plusX = m_rcItem.left;
-    m_plus = { plusX, (top + bottom - Scaled(32, m_dpi)) / 2,
-               plusX + plusW, (top + bottom + Scaled(32, m_dpi)) / 2 };
+    m_plus = { plusX, (top + bottom - Scaled(m_barHeight, m_dpi)) / 2,
+               plusX + plusW, (top + bottom + Scaled(m_barHeight, m_dpi)) / 2 };
 }
 
 // Natural width of one tab: icon + gap + measured title + (close button when shown).
@@ -307,7 +289,7 @@ int CTabStripUI::MeasureTabWidth(int index) const
     const int iconPad = Scaled(10, m_dpi);
     const int iconPx = Scaled(16, m_dpi);
     const int iconGap = Scaled(6, m_dpi);
-    const int closeSlot = Scaled(22, m_dpi);
+    const int closeSlot = Scaled(28, m_dpi);
 
     int textW = 0;
     if (m_pManager && !m_tabs[index].title.empty()) {
@@ -324,13 +306,15 @@ int CTabStripUI::MeasureTabWidth(int index) const
             ::ReleaseDC(m_pManager->GetPaintWindow(), dc);
         }
     }
-    return iconPad + iconPx + iconGap + textW + closeSlot + Scaled(6, m_dpi);
+    return MulDiv(iconPad + iconPx + iconGap + textW + closeSlot + Scaled(10, m_dpi), m_widthPercent, 100);
 }
 
 int CTabStripUI::TabWidth(int index) const
 {
+    if (index >= 0 && index < static_cast<int>(m_tabs.size()) && m_tabs[index].width > 0)
+        return m_tabs[index].width;
     int w = MeasureTabWidth(index);
-    const int minW = Scaled(index == m_active ? m_selMinTabW : m_minTabW, m_dpi);
+    const int minW = Scaled(m_minTabW, m_dpi);
     const int maxW = Scaled(m_maxTabW, m_dpi);
     if (w < minW) w = minW;
     if (w > maxW) w = maxW;
@@ -372,6 +356,7 @@ void CTabStripUI::SetPos(RECT rc, bool bNeedInvalidate)
 {
     CContainerUI::SetPos(rc, bNeedInvalidate);
     RecalcRects();
+    if (m_active >= 0) EnsureTabVisible(m_active);
 }
 
 CTabStripUI::HitInfo CTabStripUI::HitTest(POINT pt) const
@@ -519,19 +504,6 @@ void CTabStripUI::DoEvent(TEventUI& event)
         }
     }
 
-    if (event.Type == UIEVENT_TIMER) {
-        const DWORD now = ::GetTickCount();
-        bool busy = false;
-        for (const auto& t : m_tabs)
-            if (t.born && now - t.born < 160) { busy = true; break; }
-        Invalidate();
-        if (!busy) {
-            if (m_pManager) m_pManager->KillTimer(this, 1);
-            m_animating = false;
-        }
-        return;
-    }
-
     CContainerUI::DoEvent(event);
 }
 
@@ -572,7 +544,18 @@ void CTabStripUI::DrawTabIcon(Gdiplus::Graphics& g, int index, const RECT& rc)
     const int y = (rc.top + rc.bottom - px) / 2;
     if (t.icon && t.icon->GetLastStatus() == Gdiplus::Ok) {
         g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+        const auto saved = g.Save();
+        Gdiplus::GraphicsPath clip;
+        const float r = static_cast<float>(Scaled(2, m_dpi));
+        const float d = 2.0f * r;
+        clip.AddArc(float(x), float(y), d, d, 180.0f, 90.0f);
+        clip.AddArc(x + px - d, float(y), d, d, 270.0f, 90.0f);
+        clip.AddArc(x + px - d, y + px - d, d, d, 0.0f, 90.0f);
+        clip.AddArc(float(x), y + px - d, d, d, 90.0f, 90.0f);
+        clip.CloseFigure();
+        g.SetClip(&clip, Gdiplus::CombineModeIntersect);
         g.DrawImage(t.icon, Gdiplus::Rect(x, y, px, px));
+        g.Restore(saved);
     }
 }
 
@@ -581,27 +564,20 @@ void CTabStripUI::DrawTabText(Gdiplus::Graphics& g, int index, const RECT& rc, C
     if (!m_pManager) return;
     HFONT hf = m_pManager->GetFont(7);
     if (!hf) hf = m_pManager->GetFont(0);
-    LOGFONTW lf = {};
-    if (hf) ::GetObjectW(hf, sizeof(lf), &lf);
-
-    Gdiplus::FontFamily family(lf.lfFaceName[0] ? lf.lfFaceName : L"Segoe UI");
-    Gdiplus::Font font(&family, (Gdiplus::REAL)Scaled(13, m_dpi), Gdiplus::FontStyleRegular,
-        Gdiplus::UnitPixel);
-    Gdiplus::SolidBrush brush(Gdiplus::Color(255, GetRValue(color), GetGValue(color), GetBValue(color)));
-
-    Gdiplus::StringFormat fmt;
-    fmt.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
-    fmt.SetTrimming(Gdiplus::StringTrimmingEllipsisCharacter);
-    fmt.SetLineAlignment(Gdiplus::StringAlignmentCenter);
-    fmt.SetAlignment(Gdiplus::StringAlignmentNear);
-
-    const int left = rc.left + Scaled(10, m_dpi) + Scaled(16, m_dpi) + Scaled(6, m_dpi);
-    const int right = rc.right - Scaled(22, m_dpi);
-    if (right <= left) return;
-    Gdiplus::RectF text((Gdiplus::REAL)left, (Gdiplus::REAL)rc.top,
-        (Gdiplus::REAL)(right - left), (Gdiplus::REAL)(rc.bottom - rc.top));
-    g.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
-    g.DrawString(m_tabs[index].title.c_str(), -1, &font, text, &fmt, &brush);
+    RECT text = {rc.left + Scaled(32, m_dpi), rc.top,
+        rc.right - Scaled(34, m_dpi), rc.bottom};
+    if (text.right <= text.left) return;
+    // Use the exact HFONT that MeasureTabWidth measures. GDI+ DrawString adds its
+    // own font metrics/padding and previously truncated labels that should fit.
+    HDC dc = g.GetHDC();
+    const int saved = SaveDC(dc);
+    if (hf) SelectObject(dc, hf);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, color);
+    DrawTextW(dc, m_tabs[index].title.c_str(), -1, &text,
+        DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+    RestoreDC(dc, saved);
+    g.ReleaseHDC(dc);
 }
 
 void CTabStripUI::DrawCloseGlyph(Gdiplus::Graphics& g, const RECT& rc, bool hot)
@@ -682,21 +658,9 @@ bool CTabStripUI::DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopControl
         }
     }
 
-    const DWORD now = ::GetTickCount();
     for (int i = 0; i < (int)m_tabs.size(); ++i) {
         RECT rc = m_tabs[i].body;
         if (rc.right < rcClip.left || rc.left > rcClip.right) continue;   // scrolled out
-        // short slide-in for a fresh tab
-        if (m_tabs[i].born) {
-            const DWORD age = now - m_tabs[i].born;
-            if (age < 160) {
-                const int shift = Scaled(10, m_dpi) * (int)(160 - age) / 160;
-                rc.left += shift;
-                rc.right += shift;
-            } else {
-                m_tabs[i].born = 0;
-            }
-        }
         const bool selected = (i == m_active);
         const bool hovered = (i == m_hot && !selected);
         DrawTabGlass(g, rc, selected, hovered);
@@ -708,6 +672,14 @@ bool CTabStripUI::DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopControl
             if (i != m_active && m_hotClose != i) { /* show a quiet X for hovered idle tabs */ }
             DrawCloseGlyph(g, cr, m_hotClose == i);
         }
+    }
+    // Quiet separators do not consume tab width or change hit targets.
+    Gdiplus::SolidBrush separator(Gdiplus::Color(m_dark ? 0xFF505050 : 0xFFCFCFCF));
+    const int lineH=Scaled(16,m_dpi);
+    for(size_t i=1;i<m_tabs.size();++i) {
+        const int x=m_tabs[i-1].body.right+Scaled(UiTokens::TabCardGap,m_dpi)/2;
+        if(x>=rcClip.left && x<rcClip.right)
+            g.FillRectangle(&separator,x,m_rcItem.top+(m_rcItem.bottom-m_rcItem.top-lineH)/2,1,lineH);
     }
     DrawPlusGlyph(g, m_plus);
     (void)pal;

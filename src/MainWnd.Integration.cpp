@@ -1,16 +1,12 @@
-// FastFile - optional integration with Windows folder open actions.
-//
-// This is intentionally a *folder opener*, not a replacement Windows shell.  It changes
-// the current user's default verb for Folder, Directory and Drive to a FastFile-owned verb;
-// desktop.exe, taskbar, Start, file pickers and all machine-wide settings remain untouched.
+// FastFile - external folder activation and migration of obsolete owned Shell verbs.
 
 #include "MainWndInternal.h"
 
 namespace {
 
 constexpr wchar_t kFastFileVerb[] = L"FastFile.open";
+constexpr wchar_t kExplorerVerb[] = L"FastFile.WindowsExplorer";
 constexpr wchar_t kClassesRoot[] = L"Software\\Classes\\";
-constexpr wchar_t kBackupRoot[] = L"Software\\FastFile\\FolderHandlerBackup\\";
 
 struct FolderClass {
     const wchar_t* name;
@@ -25,11 +21,6 @@ constexpr FolderClass kFolderClasses[] = {
 std::wstring ClassShellKey(const wchar_t* className)
 {
     return std::wstring(kClassesRoot) + className + L"\\shell";
-}
-
-std::wstring BackupKey(const wchar_t* className)
-{
-    return std::wstring(kBackupRoot) + className;
 }
 
 bool ReadRegString(HKEY root, const std::wstring& subKey, const wchar_t* valueName,
@@ -100,68 +91,84 @@ bool WriteRegDword(HKEY root, const std::wstring& subKey, const wchar_t* valueNa
     return write == ERROR_SUCCESS;
 }
 
-bool BackupShellDefault(const wchar_t* className)
+bool IsFastFileCommand(const std::wstring& command)
 {
-    const std::wstring backup = BackupKey(className);
-    DWORD alreadySaved = 0;
-    if (ReadRegDword(HKEY_CURRENT_USER, backup, L"Saved", alreadySaved) && alreadySaved == 1)
-        return true;
-
-    std::wstring previous;
-    const bool hadPrevious = ReadRegString(HKEY_CURRENT_USER, ClassShellKey(className), nullptr, previous);
-    if (!WriteRegDword(HKEY_CURRENT_USER, backup, L"Saved", 1)
-        || !WriteRegDword(HKEY_CURRENT_USER, backup, L"ShellDefaultPresent", hadPrevious ? 1 : 0))
-        return false;
-    return !hadPrevious || WriteRegString(HKEY_CURRENT_USER, backup, L"ShellDefault", previous);
+    int argc = 0;
+    auto argv = CommandLineToArgvW(command.c_str(), &argc);
+    wchar_t exe[32768]{};
+    GetModuleFileNameW(nullptr, exe, _countof(exe));
+    const bool matches = argv && argc && (_wcsicmp(PathFindFileNameW(argv[0]), L"FastFile.exe") == 0
+        || _wcsicmp(argv[0], exe) == 0);
+    LocalFree(argv);
+    return matches;
 }
 
 bool RestoreShellDefault(const wchar_t* className)
 {
-    const std::wstring backup = BackupKey(className);
-    DWORD saved = 0;
-    if (!ReadRegDword(HKEY_CURRENT_USER, backup, L"Saved", saved) || saved != 1)
-        return true;
-
-    const std::wstring shellKey = ClassShellKey(className);
+    const auto shell=ClassShellKey(className);
     std::wstring current;
-    if (ReadRegString(HKEY_CURRENT_USER, shellKey, nullptr, current)
-        && ::_wcsicmp(current.c_str(), kFastFileVerb) == 0) {
-        DWORD hadPrevious = 0;
-        std::wstring previous;
-        if (ReadRegDword(HKEY_CURRENT_USER, backup, L"ShellDefaultPresent", hadPrevious)
-            && hadPrevious != 0 && ReadRegString(HKEY_CURRENT_USER, backup, L"ShellDefault", previous)) {
-            if (!WriteRegString(HKEY_CURRENT_USER, shellKey, nullptr, previous))
-                return false;
-        } else {
-            HKEY key = nullptr;
-            if (::RegOpenKeyExW(HKEY_CURRENT_USER, shellKey.c_str(), 0, KEY_SET_VALUE, &key)
-                == ERROR_SUCCESS) {
-                const LONG result = ::RegDeleteValueW(key, nullptr);
-                ::RegCloseKey(key);
-                if (result != ERROR_SUCCESS && result != ERROR_FILE_NOT_FOUND)
-                    return false;
-            }
-        }
+    if(!ReadRegString(HKEY_CURRENT_USER,shell,nullptr,current))return true;
+    if(_wcsicmp(current.c_str(),kFastFileVerb)!=0 && _wcsicmp(current.c_str(),kExplorerVerb)!=0)return true;
+    std::wstring command;
+    if(ReadRegString(HKEY_CURRENT_USER,shell+L"\\"+current+L"\\command",nullptr,command)) {
+        int argc=0;auto argv=CommandLineToArgvW(command.c_str(),&argc);
+        const bool owned=_wcsicmp(current.c_str(),kFastFileVerb)==0 ? IsFastFileCommand(command)
+            : argv && argc && _wcsicmp(PathFindFileNameW(argv[0]),L"explorer.exe")==0;
+        LocalFree(argv);if(!owned)return true;
     }
-    return true;
-}
-
-std::wstring CurrentExecutablePath()
-{
-    std::vector<wchar_t> buffer(32768, L'\0');
-    const DWORD copied = ::GetModuleFileNameW(nullptr, buffer.data(),
-        static_cast<DWORD>(buffer.size()));
-    if (copied == 0 || copied >= buffer.size() - 1)
-        return {};
-    return std::wstring(buffer.data(), copied);
+    HKEY key=nullptr;
+    if(RegOpenKeyExW(HKEY_CURRENT_USER,shell.c_str(),0,KEY_SET_VALUE,&key)!=ERROR_SUCCESS)return false;
+    const LONG result=RegDeleteValueW(key,nullptr);RegCloseKey(key);
+    return result==ERROR_SUCCESS || result==ERROR_FILE_NOT_FOUND;
 }
 
 void NotifyAssociationChanged()
 {
-    ::SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+    ::SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSH, nullptr, nullptr);
+    wchar_t roots[512]{};
+    const DWORD length = GetLogicalDriveStringsW(_countof(roots), roots);
+    if (length && length < _countof(roots)) {
+        for (const wchar_t* root = roots; *root; root += wcslen(root) + 1)
+            SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW | SHCNF_FLUSH, root, nullptr);
+    }
+    PIDLIST_ABSOLUTE computer = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderIDList(FOLDERID_ComputerFolder, 0, nullptr, &computer))) {
+        SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_IDLIST | SHCNF_FLUSH, computer, nullptr);
+        CoTaskMemFree(computer);
+    }
 }
 
 } // namespace
+
+bool CMainWnd::ShouldRedirectDisabledShellOpen()
+{
+    DWORD enabled = 1;
+    return ReadRegDword(HKEY_CURRENT_USER, L"Software\\FastFile", L"FolderHandlerEnabled", enabled)
+        && enabled == 0;
+}
+
+bool CMainWnd::RedirectDisabledShellOpen(const std::vector<std::wstring>& paths)
+{
+    if (paths.empty() || !ShouldRedirectDisabledShellOpen()) return false;
+    wchar_t windows[MAX_PATH]{};
+    if (!GetWindowsDirectoryW(windows, _countof(windows))) return false;
+    const auto explorer = std::wstring(windows) + L"\\explorer.exe";
+    bool opened = false;
+    for (const auto& path : paths) {
+        const auto target = NormalizePath(path);
+        if (target.empty()) continue;
+        std::wstring command = L"\"" + explorer + L"\" \"" + target + L"\\.\"";
+        STARTUPINFOW startup = {sizeof(startup)};
+        PROCESS_INFORMATION process{};
+        if (CreateProcessW(explorer.c_str(), command.data(), nullptr, nullptr, FALSE, 0,
+                nullptr, windows, &startup, &process)) {
+            CloseHandle(process.hThread);
+            CloseHandle(process.hProcess);
+            opened = true;
+        }
+    }
+    return opened;
+}
 
 std::wstring CMainWnd::ResolveFolderOpenTarget(const std::wstring& path)
 {
@@ -211,6 +218,7 @@ void CMainWnd::OpenExternalPaths(const std::vector<std::wstring>& paths, bool re
         return;
     }
 
+    m_openingExternalPaths=true;
     size_t first = 0;
     if (replaceInitialTab && m_activeTab >= 0 && m_activeTab < static_cast<int>(m_tabs.size())) {
         // InitWindow has finished constructing the default tab, so direct navigation is safe.
@@ -220,65 +228,26 @@ void CMainWnd::OpenExternalPaths(const std::vector<std::wstring>& paths, bool re
     for (; first < targets.size(); ++first)
         AddTab(targets[first], true);
 
+    m_openingExternalPaths=false;
     CDuiString status;
     status.Format(_T("已用 FastFile 打开 %d 个文件夹"), static_cast<int>(targets.size()));
     UpdateStatus(status.GetData());
 }
 
-bool CMainWnd::IsFolderOpenHandlerEnabled() const
+bool CMainWnd::RestoreNativeFolderHandlers()
 {
-    for (const FolderClass& cls : kFolderClasses) {
-        std::wstring current;
-        if (!ReadRegString(HKEY_CURRENT_USER, ClassShellKey(cls.name), nullptr, current)
-            || ::_wcsicmp(current.c_str(), kFastFileVerb) != 0)
-            return false;
-    }
-    return true;
-}
-
-bool CMainWnd::EnableFolderOpenHandler()
-{
-    const std::wstring exe = CurrentExecutablePath();
-    if (exe.empty())
-        return false;
-
-    // Never overwrite an existing per-user verb of the same name.  It is very unlikely,
-    // but declining is safer than destroying a separately installed tool's integration.
-    for (const FolderClass& cls : kFolderClasses) {
-        HKEY existing = nullptr;
-        const std::wstring verbKey = ClassShellKey(cls.name) + L"\\" + kFastFileVerb;
-        if (::RegOpenKeyExW(HKEY_CURRENT_USER, verbKey.c_str(), 0, KEY_QUERY_VALUE,
-                &existing) == ERROR_SUCCESS) {
-            ::RegCloseKey(existing);
-            return false;
+    bool changed=false;
+    for(const auto& cls:kFolderClasses) {
+        HKEY key=nullptr;std::wstring current;
+        if(ReadRegString(HKEY_CURRENT_USER,ClassShellKey(cls.name),nullptr,current)
+            && (_wcsicmp(current.c_str(),kFastFileVerb)==0 || _wcsicmp(current.c_str(),kExplorerVerb)==0))changed=true;
+        for(const auto* verb:{kFastFileVerb,kExplorerVerb}) {
+            if(RegOpenKeyExW(HKEY_CURRENT_USER,(ClassShellKey(cls.name)+L"\\"+verb).c_str(),0,KEY_READ,&key)==ERROR_SUCCESS) {
+                changed=true;RegCloseKey(key);
+            }
         }
     }
-
-    for (const FolderClass& cls : kFolderClasses) {
-        if (!BackupShellDefault(cls.name)) {
-            DisableFolderOpenHandler();
-            return false;
-        }
-    }
-
-    const std::wstring command = L"\"" + exe + L"\" --open \"%1\"";
-    for (const FolderClass& cls : kFolderClasses) {
-        const std::wstring shellKey = ClassShellKey(cls.name);
-        const std::wstring verbKey = shellKey + L"\\" + kFastFileVerb;
-        if (!WriteRegString(HKEY_CURRENT_USER, shellKey, nullptr, kFastFileVerb)
-            || !WriteRegString(HKEY_CURRENT_USER, verbKey, nullptr, L"使用 FastFile 打开")
-            || !WriteRegString(HKEY_CURRENT_USER, verbKey, L"Icon", exe + L",0")
-            || !WriteRegString(HKEY_CURRENT_USER, verbKey + L"\\command", nullptr, command)) {
-            DisableFolderOpenHandler();
-            return false;
-        }
-    }
-    NotifyAssociationChanged();
-    return true;
-}
-
-bool CMainWnd::DisableFolderOpenHandler()
-{
+    if(!changed)return true;
     bool ok = true;
     bool allDefaultsRestored = true;
     for (const FolderClass& cls : kFolderClasses) {
@@ -287,19 +256,19 @@ bool CMainWnd::DisableFolderOpenHandler()
             allDefaultsRestored = false;
             continue;
         }
-        std::wstring current;
-        if (ReadRegString(HKEY_CURRENT_USER, ClassShellKey(cls.name), nullptr, current)
-            && ::_wcsicmp(current.c_str(), kFastFileVerb) == 0) {
-            // Do not remove the command while it is still the default: leaving a working
-            // FastFile association is safer than producing a dead default verb.
-            ok = false;
-            allDefaultsRestored = false;
-            continue;
+        for(const auto* verb:{kFastFileVerb,kExplorerVerb}) {
+            const auto verbKey=ClassShellKey(cls.name)+L"\\"+verb;
+            std::wstring command;
+            if(ReadRegString(HKEY_CURRENT_USER,verbKey+L"\\command",nullptr,command)) {
+                int argc=0;auto argv=CommandLineToArgvW(command.c_str(),&argc);
+                const bool owned=_wcsicmp(verb,kFastFileVerb)==0 ? IsFastFileCommand(command)
+                    : argv && argc && _wcsicmp(PathFindFileNameW(argv[0]),L"explorer.exe")==0;
+                LocalFree(argv);
+                if(!owned)continue;
+            }
+            const LONG erase=RegDeleteTreeW(HKEY_CURRENT_USER,verbKey.c_str());
+            if(erase!=ERROR_SUCCESS && erase!=ERROR_FILE_NOT_FOUND)ok=false;
         }
-        const std::wstring verbKey = ClassShellKey(cls.name) + L"\\" + kFastFileVerb;
-        const LONG erase = ::RegDeleteTreeW(HKEY_CURRENT_USER, verbKey.c_str());
-        if (erase != ERROR_SUCCESS && erase != ERROR_FILE_NOT_FOUND)
-            ok = false;
     }
     if (allDefaultsRestored) {
         const LONG eraseBackup = ::RegDeleteTreeW(HKEY_CURRENT_USER,
@@ -307,47 +276,172 @@ bool CMainWnd::DisableFolderOpenHandler()
         if (eraseBackup != ERROR_SUCCESS && eraseBackup != ERROR_FILE_NOT_FOUND)
             ok = false;
     }
+    if (allDefaultsRestored && !WriteRegDword(HKEY_CURRENT_USER, L"Software\\FastFile", L"FolderHandlerEnabled", 0))
+        ok = false;
     NotifyAssociationChanged();
     return ok;
 }
 
-void CMainWnd::OnFolderOpenHandlerMenuClicked()
-{
-    if (!m_hWnd)
-        return;
 
-    if (IsFolderOpenHandlerEnabled()) {
-        const int answer = ::MessageBoxW(m_hWnd,
-            L"停止后，文件夹、目录和磁盘会恢复为之前的默认打开方式。\n\n"
-            L"Windows 的桌面、任务栏和开始菜单从未被替换。\n\n"
-            L"要停止由 FastFile 打开系统文件夹吗？",
-            L"FastFile - 系统文件夹打开", MB_ICONQUESTION | MB_YESNO | MB_DEFBUTTON2);
-        if (answer != IDYES)
-            return;
-        if (DisableFolderOpenHandler())
-            UpdateStatus(_T("已恢复系统文件夹原来的打开方式"));
-        else
-            ::MessageBoxW(m_hWnd, L"恢复关联时遇到问题；原来的设置没有被强行覆盖。",
-                L"FastFile", MB_ICONWARNING | MB_OK);
-        return;
+namespace {
+constexpr wchar_t kSettingsVerb[]=L"FastFile.SettingsOpen";
+constexpr wchar_t kIntegrationRoot[]=L"Software\\FastFile\\IntegrationBackupV1";
+constexpr wchar_t kOwner[]=L"FastFile.Settings.Integration.v1";
+struct RegistryValue {
+    bool exists=false;DWORD type=REG_NONE;std::vector<BYTE> bytes;
+};
+RegistryValue GetRaw(const std::wstring& path,const wchar_t* name) {
+    RegistryValue value;HKEY key=nullptr;
+    if(RegOpenKeyExW(HKEY_CURRENT_USER,path.c_str(),0,KEY_QUERY_VALUE,&key)!=ERROR_SUCCESS)return value;
+    DWORD size=0;
+    if(RegQueryValueExW(key,name,nullptr,&value.type,nullptr,&size)==ERROR_SUCCESS) {
+        value.bytes.resize(size);DWORD count=size;
+        if(RegQueryValueExW(key,name,nullptr,&value.type,value.bytes.data(),&count)==ERROR_SUCCESS)value.exists=true;
+    }RegCloseKey(key);return value;
+}
+bool PutRaw(const std::wstring& path,const wchar_t* name,const RegistryValue& value) {
+    HKEY key=nullptr;
+    if(!value.exists) {
+        LONG open=RegOpenKeyExW(HKEY_CURRENT_USER,path.c_str(),0,KEY_SET_VALUE,&key);
+        if(open==ERROR_FILE_NOT_FOUND)return true;if(open!=ERROR_SUCCESS)return false;
+        LONG result=RegDeleteValueW(key,name);RegCloseKey(key);return result==ERROR_SUCCESS || result==ERROR_FILE_NOT_FOUND;
     }
-
-    const int answer = ::MessageBoxW(m_hWnd,
-        L"FastFile 将接管当前用户的文件夹、目录和磁盘的默认“打开”动作。\n"
-        L"双击文件夹或盘符时会在 FastFile 中打开，已运行的窗口会新建标签。\n\n"
-        L"不会替换 Windows 桌面、任务栏、开始菜单或系统文件选择窗口；\n"
-        L"可随时在“更多选项”中关闭并恢复原来的打开方式。\n\n"
-        L"现在启用吗？",
-        L"FastFile - 使用 FastFile 打开系统文件夹",
-        MB_ICONINFORMATION | MB_YESNO | MB_DEFBUTTON2);
-    if (answer != IDYES)
-        return;
-
-    if (EnableFolderOpenHandler()) {
-        UpdateStatus(_T("已启用：系统文件夹将使用 FastFile 打开"));
-    } else {
-        ::MessageBoxW(m_hWnd,
-            L"无法启用系统文件夹打开。为保护现有设置，FastFile 没有覆盖任何同名关联。",
-            L"FastFile", MB_ICONWARNING | MB_OK);
+    if(RegCreateKeyExW(HKEY_CURRENT_USER,path.c_str(),0,nullptr,0,KEY_SET_VALUE,nullptr,&key,nullptr)!=ERROR_SUCCESS)return false;
+    LONG result=RegSetValueExW(key,name,0,value.type,value.bytes.data(),DWORD(value.bytes.size()));RegCloseKey(key);
+    return result==ERROR_SUCCESS;
+}
+struct TreeValue {std::wstring relative,name;RegistryValue value;};
+struct TreeSnapshot {
+    std::wstring path;bool existed=false;std::vector<std::wstring> nodes;std::vector<TreeValue> values;
+    explicit TreeSnapshot(const std::wstring& root):path(root) {
+        HKEY key=nullptr;if(RegOpenKeyExW(HKEY_CURRENT_USER,path.c_str(),0,KEY_READ,&key)==ERROR_SUCCESS) {
+            existed=true;Capture(key,L"");RegCloseKey(key);
+        }
     }
+    void Capture(HKEY key,const std::wstring& relative) {
+        nodes.push_back(relative);
+        DWORD nameMax=0,dataMax=0;RegQueryInfoKeyW(key,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&nameMax,&dataMax,nullptr,nullptr);
+        std::vector<wchar_t> name(nameMax+2);std::vector<BYTE> bytes(dataMax+1);
+        for(DWORD index=0;;++index) {
+            DWORD count=DWORD(name.size()),size=DWORD(bytes.size()),type=0;
+            LONG result=RegEnumValueW(key,index,name.data(),&count,nullptr,&type,bytes.data(),&size);
+            if(result==ERROR_NO_MORE_ITEMS)break;if(result!=ERROR_SUCCESS)continue;
+            RegistryValue value;value.exists=true;value.type=type;value.bytes.assign(bytes.begin(),bytes.begin()+size);
+            values.push_back({relative,std::wstring(name.data(),count),std::move(value)});
+        }
+        for(DWORD index=0;;++index) {
+            wchar_t child[256]{};DWORD count=_countof(child);
+            LONG result=RegEnumKeyExW(key,index,child,&count,nullptr,nullptr,nullptr,nullptr);
+            if(result==ERROR_NO_MORE_ITEMS)break;if(result!=ERROR_SUCCESS)continue;
+            HKEY sub=nullptr;if(RegOpenKeyExW(key,child,0,KEY_READ,&sub)==ERROR_SUCCESS) {
+                Capture(sub,relative.empty()?child:relative+L"\\"+child);RegCloseKey(sub);
+            }
+        }
+    }
+    bool Restore() const {
+        LONG erase=RegDeleteTreeW(HKEY_CURRENT_USER,path.c_str());
+        bool ok=erase==ERROR_SUCCESS || erase==ERROR_FILE_NOT_FOUND;
+        if(!existed)return ok;
+        for(const auto& relative:nodes) {
+            HKEY key=nullptr;const auto node=relative.empty()?path:path+L"\\"+relative;
+            if(RegCreateKeyExW(HKEY_CURRENT_USER,node.c_str(),0,nullptr,0,KEY_WRITE,nullptr,&key,nullptr)!=ERROR_SUCCESS)ok=false;
+            if(key)RegCloseKey(key);
+        }
+        for(const auto& value:values) {
+            const auto node=value.relative.empty()?path:path+L"\\"+value.relative;
+            if(!PutRaw(node,value.name.c_str(),value.value))ok=false;
+        }return ok;
+    }
+};
+struct IntegrationClass {const wchar_t* id;const wchar_t* cls;bool computer;};
+constexpr IntegrationClass integrationClasses[]={
+    {L"Folder",L"Folder",false},{L"Directory",L"Directory",false},{L"Drive",L"Drive",false},
+    {L"Computer",L"CLSID\\{20D04FE0-3AEA-1069-A2D8-08002B30309D}",true}
+};
+bool OwnSettingsVerb(const std::wstring& verb) {
+    std::wstring owner;return ReadRegString(HKEY_CURRENT_USER,verb,L"FastFile.Owner",owner) && owner==kOwner;
+}
+bool KeyExists(const std::wstring& path) {
+    HKEY key=nullptr;LONG result=RegOpenKeyExW(HKEY_CURRENT_USER,path.c_str(),0,KEY_READ,&key);
+    if(key)RegCloseKey(key);return result==ERROR_SUCCESS;
+}
+bool SaveIntegrationDefault(const std::wstring& shell,const std::wstring& backup) {
+    if(KeyExists(backup))return true;
+    const RegistryValue value=GetRaw(shell,nullptr);
+    if(!WriteRegDword(HKEY_CURRENT_USER,backup,L"HadDefault",value.exists?1:0)
+        || !WriteRegDword(HKEY_CURRENT_USER,backup,L"DefaultType",value.type))return false;
+    RegistryValue data=value;data.exists=true;data.type=REG_BINARY;return PutRaw(backup,L"DefaultData",data);
+}
+bool RestoreIntegrationDefault(const std::wstring& shell,const std::wstring& backup) {
+    std::wstring current;ReadRegString(HKEY_CURRENT_USER,shell,nullptr,current);
+    if(current==kSettingsVerb) {
+        DWORD exists=0,type=REG_SZ;
+        if(!ReadRegDword(HKEY_CURRENT_USER,backup,L"HadDefault",exists))return false;
+        ReadRegDword(HKEY_CURRENT_USER,backup,L"DefaultType",type);
+        RegistryValue original=GetRaw(backup,L"DefaultData");original.exists=exists!=0;original.type=type;
+        if(!PutRaw(shell,nullptr,original))return false;
+    }
+    LONG result=RegDeleteTreeW(HKEY_CURRENT_USER,backup.c_str());return result==ERROR_SUCCESS || result==ERROR_FILE_NOT_FOUND;
+}
+}
+void CMainWnd::ReadSystemIntegration(FastFileSettings& settings) {
+    DWORD flag=0;
+    ReadRegDword(HKEY_CURRENT_USER,L"Software\\FastFile",L"IntegrationMenu",flag);settings.contextMenu=flag!=0;
+    flag=0;ReadRegDword(HKEY_CURRENT_USER,L"Software\\FastFile",L"IntegrationFolders",flag);settings.defaultFolders=flag!=0;
+    flag=0;ReadRegDword(HKEY_CURRENT_USER,L"Software\\FastFile",L"IntegrationComputer",flag);settings.defaultComputer=flag!=0;
+}
+bool CMainWnd::ApplySystemIntegration(const FastFileSettings& settings) {
+    FastFileSettings old;ReadSystemIntegration(old);
+    const bool disabling=!settings.contextMenu && !settings.defaultFolders && !settings.defaultComputer;
+    bool recoveryNeeded=false;
+    if(disabling)for(const auto& cls:integrationClasses)
+        recoveryNeeded=recoveryNeeded || OwnSettingsVerb(ClassShellKey(cls.cls)+L"\\"+kSettingsVerb)
+            || KeyExists(std::wstring(kIntegrationRoot)+L"\\"+cls.id);
+    if(!recoveryNeeded && old.contextMenu==settings.contextMenu && old.defaultFolders==settings.defaultFolders && old.defaultComputer==settings.defaultComputer)return true;
+    wchar_t executable[32768]{};if(!GetModuleFileNameW(nullptr,executable,_countof(executable)))return false;
+    std::vector<TreeSnapshot> trees;
+    struct DefaultSnapshot {std::wstring shell;RegistryValue value;};std::vector<DefaultSnapshot> defaults;
+    const wchar_t* flagNames[]={L"IntegrationMenu",L"IntegrationFolders",L"IntegrationComputer"};
+    RegistryValue flags[3];for(int i=0;i<3;++i)flags[i]=GetRaw(L"Software\\FastFile",flagNames[i]);
+    // Validate all private verb keys before mutating anything; a foreign same-name entry
+    // is never overwritten, even when the user asks to enable the handler.
+    for(const auto& cls:integrationClasses) {
+        const auto verb=ClassShellKey(cls.cls)+L"\\"+kSettingsVerb;
+        if(KeyExists(verb) && !OwnSettingsVerb(verb))return false;
+        trees.emplace_back(verb);trees.emplace_back(std::wstring(kIntegrationRoot)+L"\\"+cls.id);
+        const auto shell=ClassShellKey(cls.cls);defaults.push_back({shell,GetRaw(shell,nullptr)});
+    }
+    auto rollback=[&] {
+        for(auto it=trees.rbegin();it!=trees.rend();++it)it->Restore();
+        for(const auto& entry:defaults)PutRaw(entry.shell,nullptr,entry.value);
+        for(int i=0;i<3;++i)PutRaw(L"Software\\FastFile",flagNames[i],flags[i]);
+        NotifyAssociationChanged();return false;
+    };
+    for(const auto& cls:integrationClasses) {
+        // Folder also covers Control Panel, Recycle Bin and other virtual namespaces.
+        // Keep its default intact; Directory/Drive handle filesystem targets, and
+        // Computer has its own explicitly supported namespace command.
+        const bool enabled=cls.computer?settings.defaultComputer:(settings.defaultFolders && wcscmp(cls.id,L"Folder")!=0);
+        const bool menu=cls.computer?settings.defaultComputer:settings.contextMenu;
+        const auto shell=ClassShellKey(cls.cls),verb=shell+L"\\"+kSettingsVerb;
+        const auto backup=std::wstring(kIntegrationRoot)+L"\\"+cls.id;
+        if(enabled) {
+            if(!SaveIntegrationDefault(shell,backup))return rollback();
+        } else if(KeyExists(backup) && !RestoreIntegrationDefault(shell,backup))return rollback();
+        if(enabled || menu) {
+            const auto target=cls.computer?std::wstring(kThisPcPath):std::wstring(L"%1");
+            const auto command=L"\""+std::wstring(executable)+L"\" --shell-folder \""+target+L"\"";
+            if(!WriteRegString(HKEY_CURRENT_USER,verb,L"FastFile.Owner",kOwner)
+                || !WriteRegString(HKEY_CURRENT_USER,verb,nullptr,L"使用 FastFile 打开")
+                || !WriteRegString(HKEY_CURRENT_USER,verb,L"Icon",L"\""+std::wstring(executable)+L"\",0")
+                || !WriteRegString(HKEY_CURRENT_USER,verb+L"\\command",nullptr,command))return rollback();
+            if(enabled && !WriteRegString(HKEY_CURRENT_USER,shell,nullptr,kSettingsVerb))return rollback();
+        } else if(KeyExists(verb)) {
+            if(RegDeleteTreeW(HKEY_CURRENT_USER,verb.c_str())!=ERROR_SUCCESS)return rollback();
+        }
+    }
+    if(!WriteRegDword(HKEY_CURRENT_USER,L"Software\\FastFile",flagNames[0],settings.contextMenu)
+        || !WriteRegDword(HKEY_CURRENT_USER,L"Software\\FastFile",flagNames[1],settings.defaultFolders)
+        || !WriteRegDword(HKEY_CURRENT_USER,L"Software\\FastFile",flagNames[2],settings.defaultComputer))return rollback();
+    NotifyAssociationChanged();return true;
 }

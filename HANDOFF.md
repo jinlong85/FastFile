@@ -1,17 +1,232 @@
-# FastFile — 交接说明（给后续 AI / 开发者）
+﻿# FastFile — 交接说明（给后续 AI / 开发者）
 
-更新日期：2026-09-29（Asia/Shanghai）
+更新日期：2026-10-02（Asia/Shanghai）
 
-> 2026-09-28：已纳入 Git 版本管理；原 8000 行单文件 `src\MainWnd.cpp` 已拆分为 14 个编译单元（见「源码结构」）。
+## 接手先读：当前状态与验证入口（2026-10-02）
+
+本节是最新状态入口。下方按日期保留开发历史；旧章节中的「当前」、测试数量、默认打开行为和待办仅代表当时状态，冲突时以本节及随后两节修复记录为准，再核对实际源码。协作要求见 [AGENTS.md](AGENTS.md)，功能说明见 [README.md](README.md)，面向用户的变更见 [CHANGELOG.md](CHANGELOG.md)。
+
+- 技术栈仍为 C++ / Win32 / DuiLib，普通文件区由 Windows ExplorerBrowser 承载。不要改换 UI 框架。
+- 本地工作区包含大量未提交修改及未跟踪的源码、测试；接手先检查工作区，不要用 reset / clean 或只复制 Git 已跟踪文件的方式丢弃当前实现。本次未提交或推送代码。
+- [VERSION](VERSION) 仍为 **1.0.9**。最新安装包记录为 2026-10-01；2026-10-02 的设置、视图和打开行为修复只更新源码构建，**未重建安装包**。安装版不能据此视为已包含修复。
+- 最新完整验证：Release x64 构建成功，CTest **7/7 通过，106.94 秒**。构建日志为 `build-ui/shell-activation-final-build.log`，测试日志为 `build-ui/shell-activation-final-tests.log`。这些日志和二进制属于本地忽略产物，换机器后需重新生成。
+- 测试通过后才将 `build-ui/Release` 的 exe、map 和 skin 更新到常用 `build/Release`。两处 exe 的 SHA-256 已核对一致：`737DD15580C453F8BBE0911FFB701968B149D914A9E8214A03D37789937176AB`。这是本次交付快照，后续重构建应重新核对。
+- 交付时保留用户正在运行的旧窗口；旧进程不能热更新。常用路径已有新版文件，但用户需要退出旧窗口并重新启动。旧文件备份为 `build/Release/FastFile.before-shell-activation.exe`，它不是新版启动入口。
+
+### 本轮修改应从哪里读
+
+| 入口 / 文件 | 当前职责与不能退回的行为 |
+| --- | --- |
+| [src/main.cpp](src/main.cpp) | 解析外部启动参数、单实例查找、WM_COPYDATA 转发；旧缓存 `--open` 的停用重定向只在启动入口处理。明确的 `--shell-folder` 不受历史默认接管停用标记拦截。 |
+| [src/MainWnd.cpp](src/MainWnd.cpp) | `kMsgOpenExternalPaths` 接收端直接打开 FastFile；不要重新无条件调用 `RedirectDisabledShellOpen`，否则会再次启动 Explorer。 |
+| [src/MainWnd.Settings.cpp](src/MainWnd.Settings.cpp)、[src/MainWnd.Integration.cpp](src/MainWnd.Integration.cpp) | 设置保存与系统集成注册。测试必须核对实际生成的 Directory / Drive 注册命令，不能仅模拟主窗口内部消息。 |
+| [src/ShellBrowserHost.cpp](src/ShellBrowserHost.cpp)、[src/ShellBrowserHost.h](src/ShellBrowserHost.h) | 显示前初始化目标视图，列表 / 详细信息统一为 26 逻辑像素行高；处理原生视图导航、激活与右键入口。 |
+| [src/MainWnd.Menus.cpp](src/MainWnd.Menus.cpp) | 保留原生 Shell 菜单；文件夹 / 磁盘的新窗口、新标签命令转为 FastFile 新标签，缺少入口时补充中文命令。 |
+| [src/MainWnd.Nav.cpp](src/MainWnd.Nav.cpp)、[src/MainWnd.Tabs.cpp](src/MainWnd.Tabs.cpp) | 目标目录视图状态、标签导航与复用；显式新标签强制新建并保留原标签，过期完成通知不能改写当前标签。 |
+| [tests/MainWndRegressionTests.cpp](tests/MainWndRegressionTests.cpp)、[tests/ShellBrowserHostTests.cpp](tests/ShellBrowserHostTests.cpp) | 本轮回归、真实 Shell 视图与菜单、隔离桌面及生产入口多进程启动测试。测试登记见 [CMakeLists.txt](CMakeLists.txt)。 |
+
+### 构建、验证与更新常用程序
+
+在项目根目录使用 VS 2022 x64 工具链，先构建独立候选目录。已有 `build-ui` 缓存的源码路径或生成器不匹配时，使用新的候选目录，勿直接删除未知用途目录。
+
+```powershell
+cmake -S . -B build-ui -G "Visual Studio 17 2022" -A x64 -DBUILD_TESTING=ON
+if ($LASTEXITCODE -ne 0) { throw "配置失败" }
+cmake --build build-ui --config Release --parallel 8
+if ($LASTEXITCODE -ne 0) { throw "构建失败" }
+ctest --test-dir build-ui -C Release --output-on-failure
+if ($LASTEXITCODE -ne 0) { throw "回归失败" }
+```
+
+系统右键专项可用 `ctest --test-dir build-ui -C Release -R '^FastFileShellActivationTests$' --output-on-failure` 定位问题，但不替代交付前完整回归。当前七项为 `FastFileMainWndRegressionTests`、`FastFileUiPolishTests`、`FastFileShellActivationTests`、`FastFileFavoritesTests`、`FastFileCoreTests`、`FastFileShellBrowserTests`、`FastFileVersionSource`。主窗口测试使用隔离桌面；启动专项还隔离用户注册表与配置，不为测试切换用户真实系统集成开关。
+
+修复缺陷应先确认回归能复现旧行为，再确认修复后通过。临时恢复旧源码验证后，恢复最终源码并刷新其修改时间，避免增量构建复用旧对象文件。所有相关测试、Release x64 及适用运行验证通过后，才更新常用 exe / map / skin，并核对候选与常用 exe 哈希；失败候选不得覆盖常用程序。安装包更新需另行构建和验证，不等同于复制 exe。
+
+### 尚未完成的本轮验收
+
+- 用户正常桌面上逐项点击系统右键「使用 FastFile 打开」，分别检查已有窗口和完全退出后的首次启动，覆盖文件夹与磁盘。自动测试已覆盖真实注册命令、进程启动与转发；尚未收到用户重启新版后的实际使用确认。
+- 正常界面中检查鼠标 / 键盘右键的新标签入口、重复目录和子目录保留原标签，以及列表 / 详细信息往返时首帧间距。相关自动运行回归已通过，本轮未人工逐项点选菜单验收。
+- 如需交付安装版，重新打包并验证安装路径、注册命令及安装后运行；目前没有包含本轮修复的新安装包。
+
+## 系统右键「使用 FastFile 打开」转发修复（2026-10-02）
+
+- 用户实际状态：Directory / Drive 的 `FastFile.SettingsOpen` 命令正确指向常用 FastFile.exe，参数 `--shell-folder`；但历史 `FolderHandlerEnabled=0` 与新的 `IntegrationFolders=1` 同时存在。新进程绕过仅针对旧 `--open` 的启动重定向后，通过 WM_COPYDATA 转发给已有窗口；已有窗口的 kMsgOpenExternalPaths 又无条件调用 RedirectDisabledShellOpen，主动启动 Explorer。这是上一轮内部打开 / 新标签测试遗漏的外部启动链路。
+- 接收端现在直接 BringToForeground / OpenExternalPaths。旧缓存 `--open` 的停用判断仍在启动入口处理，不影响明确的 `--shell-folder`、裸路径和 FastFile 窗口之间的转发。未改用户的真实注册表开关、目录默认值、文件关联或视图间距。
+- 新增第 7 项 CTest：FastFileShellActivationTests。测试从生产 ApplySystemIntegration 读取注册命令，经真实 ShellExecuteEx 的 FastFile.SettingsOpen verb 启动独立进程；测试进程编译同一 src/main.cpp 生产入口（改名入口函数），只增加隔离桌面 / 注册表的启动准备和 Create 完成标记，不替代参数解析、单实例查找、WM_COPYDATA 或主窗口打开逻辑。覆盖目录、磁盘根、子目录向已有窗口转发并退出，以及无已有窗口时创建 FastFile、打开准确目录并正常关闭保存。历史停用标记为 0；真实用户集成状态保持原值。
+- 原接收端恢复后，目录 / 磁盘 / 子目录出现 3 个预期失败，首次启动通过：`build-ui/shell-activation-before-tests.log`（21.49 秒）。修复后专项通过。首次启动测试等待 Create 完成才关闭窗口，避免测试提前关闭尚在初始化的窗口造成假失败。
+- 主窗口回归改用隔离桌面，避免共享桌面的焦点 / 输入影响。剪切后的剪贴板断言在 1 秒内等待剪贴板可读取，并严格检查移动标记、项目数和准确路径；不重新发送剪切命令，避免剪贴板观察器短暂占用导致即时读取假失败。
+- 先在 build-ui 构建测试版；最终 Release x64 构建及全部 7 项 CTest 通过（106.94 秒），日志 `build-ui/shell-activation-final-build.log`、`build-ui/shell-activation-final-tests.log`。通过后才将已验证的 exe / map / skin 复制至 build/Release，并校验 exe SHA-256 与候选完全相同。运行中的旧窗口保留，旧文件为 `build/Release/FastFile.before-shell-activation.exe`；用户需退出旧窗口后启动新版，旧进程不能热更新。未重建安装包；未人工逐项点击系统右键菜单，真实注册命令和多进程启动 / 接收 / 首次启动由上述自动运行验证覆盖。
+
+## 非紧凑文件视图与原生菜单新标签（2026-10-02）
+
+- 间距根因：原有 26 逻辑像素加宽只针对 FVM_LIST，在主窗口处理异步导航完成后才应用；新 Shell 视图先显示默认窄行，FVM_DETAILS 则一直使用原行高。并非一个全局紧凑开关即可修复。
+- 列表 / 详细信息共用 26 逻辑像素行高。进入目标目录前保存其记忆模式，在 OnViewCreated（视图显示前）设置模式、表头、间距和图标。重复应用同模式不再先恢复窄行；DPI 改变仍重建间距。详细信息保留原生文本、列、选择 / 焦点绘制，真实 Shell 小图标在项目后绘制阶段补画。Navigate 提前记录目标路径，失败时还原，确保同步创建回调中的详细信息列和原始分组快照属于目标目录。
+- 菜单根因：已有内部路由只识别 open / explore，遗漏 opennewwindow；主文件区还直接运行 Shell 自有菜单。现在文件区的 NM_RCLICK、WM_CONTEXTMENU（含键盘入口）统一走主窗口的 IContextMenu2/3 菜单。文件系统目录 / 磁盘的 opennewwindow / opennewtab 改为 FastFile 新标签，原标签保留；原生菜单没有提供该命令时补上「在新选项卡中打开」。显式新标签绕过同目录复用和子目录沿当前标签导航策略，异步完成不会切回旧同路径标签。过期导航通知不再改写当前标签。普通文件、压缩文件及不支持的虚拟选择保留原生处理；未改用户系统集成开关或文件关联。
+- 回归覆盖统一行高与真实图标、重复应用的间距稳定性、目录往返时不经主窗口完成处理也已具备正确间距、目标分组快照、实际鼠标右键通知及键盘菜单入口、真实磁盘 / 目录菜单的补充入口、新窗口 / 新标签命令（含大小写）、磁盘 / 重复目录 / 子目录的新标签及原标签保留、完成后选中状态、文件 / 无效混合选择保护、过期通知和真实 Shell 导航复用。
+- 临时恢复旧列表独有间距和遗漏新窗口命令后，两项专项出现预期失败，见 `build/noncompact-menu-before-tests.log`；单独取消显示前初始化后，目录往返专项复现失败，见 `build/noncompact-first-view-before-tests.log`。恢复源文件时刷新修改时间，避免增量构建继续使用复现版对象文件；最终源码不含诊断输出或复现开关。
+- 最终 Release x64 构建及全部 6 项 CTest 通过（104.96 秒），日志 `build/noncompact-menu-build.log`、`build/noncompact-menu-final-tests.log`。包括真实主窗口 / Shell 浏览器自动运行验证；未做人工逐项点选菜单验收。常用 `build/Release/FastFile.exe` 已更新；运行中的旧窗口保留，旧文件移为 `build/Release/FastFile.before-noncompact-menu.exe`，需重新启动新版才能使用修复。未重建安装包。
+
+## 标签栏取消自动横向动画（2026-10-02）
+
+- 根因：Add / Insert 给标签记录创建时间并启动 16ms 定时器，绘制时在 160ms 内横移最多 10 逻辑像素；重建标签栏会让全部标签重新播放。绘制位移与关闭按钮 / 点击区域的最终位置也短暂不一致。
+- 删除创建时间、动画状态、动画入口、定时器及横向绘制位移；新增、插入、切换、标题更新、重排和关闭标签直接显示最终布局。保留宽度算法、滚轮滚动、选中标签进入视野、末尾 +、栏高和分界线。
+- 回归在 96 / 144 / 192 DPI 比较首帧和 180ms 后的全部绘制像素及布局，覆盖上述操作以及溢出标签的手动滚动。移除旧测试将创建时间强制清零的操作，避免掩盖动画。
+- 临时恢复旧创建时间和横向绘制位移后，专项在三个 DPI 出现 3 个预期失败，日志 `build-ui/tab-motion-before-tests.log`；恢复修复源码重新编译后专项通过，日志 `build-ui/tab-motion-final-tests.log`。
+- Release x64 构建及全部 6 项 CTest 通过（103.22 秒），日志 `build/tab-no-animation-build.log`、`build/tab-no-animation-tests.log`；常用 `build/Release/FastFile.exe` 已更新。实际窗口截图确认新版可运行；人工新增标签检查被用户输入及窗口最小化打断，未完成此项人工操作验收。真实主窗口运行回归及多 DPI 绘制检查已通过。未重建安装包。
+
+## FastFile 内部磁盘 / 目录打开（2026-10-02）
+
+- 根因：`ShellBrowserHost::DefaultCommand` 只处理普通文件，遇到 `SFGAO_FOLDER` 返回 `S_FALSE`，嵌入 Shell 文件区继续执行系统默认目录命令，可能启动 Explorer。旧回归只断言目录返回 `S_FALSE`，未验证真实主窗口内部激活，漏掉了这一行为。
+- 文件系统目录和磁盘默认命令现返回 `S_OK`，通过独立 `kMsgShellFolderOpen` 将路径交给主窗口；在回调退出后导航，更新当前标签、历史、树与详情，避免在 Shell 激活回调中重建视图。内部打开不依赖系统接管开关，也不调用注册表目录打开命令。多目录激活的后续路径交给标签入口处理。
+- 导航区 / 快捷区的 Shell 菜单保留原文案和图标，只将文件系统目录的标准 `open` / `explore` 命令路由为内部导航；其他菜单命令和普通文件关联保留。ZIP 等具有 `SFGAO_FOLDER` 的实际文件与不支持的虚拟对象继续交给 Shell 处理。
+- 回归补上真实磁盘选择、无外部启动且收到内部请求、两种接管配置状态下主窗口进入磁盘、普通目录内部激活、目录菜单路由、普通文件和属性命令不被接管、压缩目录行为。
+- 交付验证：常用 `build/Release/FastFile.exe` 已更新，Release x64 构建和全部 6 项 CTest 通过（93.41 秒），日志 `build/internal-folder-build.log`、`build/internal-folder-tests.log`。使用独立配置实际双击「软件 (D:)」，原 FastFile 窗口 / 当前标签进入 D: 根目录，面包屑、树及右侧详情同步，磁盘内容正常显示，窗口列表未新增 Windows Explorer。未改用户真实系统接管选项；未重建安装包。
+
+
+## 2026-10-02 设置功能
+
+- 新增 `FastFileSettings.h` 与 `MainWnd.Settings.cpp`，分别维护偏好数据、UTF-16 原子保存、四页 Win32 设置对话框及即时外观更新；编译单元已登记 CMake 和 VS 项目。命令栏右端齿轮沿用自绘抗锯齿图标与 32 逻辑像素热区。
+- 设置页：常规与标签（启动位置、外部窗口、复用、关闭确认）、外观（密度、导航字号、栏高、标签宽度、导航滚动条）、浏览（视图、记忆、排序、分组）、系统集成（菜单、目录磁盘默认入口、桌面此电脑、恢复）。布局尺寸仍为 96 DPI 逻辑单位。默认 29 高度、150% 标签宽度、12 导航字号保持已有外观。
+- `%APPDATA%\FastFile\settings.ini` 不包含能开启系统集成的字段。原会话 / 收藏 / 快捷 / 文件夹视图配置继续使用各自文件；设置窗口取消不修改配置。外部新路径使用新标签，已有路径是否复用由设置控制；内部连续目录导航保持既有行为。
+- 可选集成默认关闭，用当前用户 `Software\Classes` 的私有 `FastFile.SettingsOpen` 命令；仅 Directory / Drive 接管默认，Folder 通用虚拟命名空间默认保持原值；此电脑使用单独 CLSID。新命令参数为 `--shell-folder`，不受历史 `--open` 停用重定向影响。
+- 原默认值（存在性、类型及原始字节）备份到 `Software\FastFile\IntegrationBackupV1`。关闭时只恢复仍指向本程序的默认项；同名外来私有命令拒绝覆盖。失败尝试事务恢复。恢复能处理命令已写入、状态旗标尚未写入的中断情形。图片和视频关联完全不改；显式启动 Explorer 的其他应用和系统文件对话框不被接管。
+- 卸载新增 `--restore-integration` 无窗口恢复入口，安装器与 PowerShell 卸载脚本在恢复失败时停止卸载。安装器源码已独立编译、脚本语法已检查；本次未重建或实际安装 / 卸载安装包。
+- 新回归覆盖配置往返、边界值、失败保存、启动模式、复用设置、外观更新、四页实际对话框与保存 / 取消、隔离注册表的独立开关及恢复、Shell 分组与返回原分组、齿轮多 DPI 热区。系统集成测试用进程级注册表隔离，不开启用户真实接管。
+- 交付验证：常用 `build/Release/FastFile.exe` 已更新，Release x64 和全部 6 项 CTest 通过（95.04 秒），日志 `build/settings-build.log`、`build/settings-tests.log`。四页真实 Win32 对话框运行测试覆盖保存 / 取消；早期取消回归遇到初始化可见性时序，增加初始化及显示检查、回收定时器后最终全套通过。人工窗口检查齿轮入口及常规页面；其他页面交互由上述运行测试完成。Shell 分组使用真实 ExplorerBrowser 检查，默认入口恢复使用隔离注册表检查。未启用用户真实默认接管，也未实际运行安装 / 卸载流程；安装器源码编译与卸载脚本语法通过。未重建安装包。
+
+
+> 当前开发基线：最新安装包版本记录为 **1.0.9**。近期完成第十七批的文件区键盘导航、命令栏双色图标，以及第十八批的 Fluent 悬停滚动条。仓库根目录 `VERSION` 是版本号唯一来源，CMake 与安装脚本均从此读取。
 >
-> 2026-09-29：完成「第二批～第十二批」共 11 轮修复/打磨（含安装程序、应用图标、右键菜单、崩溃修复、可选文件夹打开接管）。
+> 2026-09-28：已纳入 Git 版本管理；原 8000 行单文件 `src\MainWnd.cpp` 已拆分为多个职责单元（见「源码结构」）。
 >
-> 2026-09-29（晚）：第十三批（顶部功能区整体改版）+ 第十四批（标签栏改为自绘 `CTabStripUI`，
-> 标题行按 Win11/360 规范重排，`Ctrl+Tab` 与拖出标签开窗修复）。DWM Mica Alt 仍默认关闭，
-> 原因见「DWM / Mica 现状」。
+> 主要能力已覆盖浏览、标签、多视图、搜索、文件操作、Shell 集成、预览和安装；当前建议重点转向回归验证、测试覆盖和发布可靠性。已知功能边界见 README 的「已知限制」。
 > 面向使用者的版本记录见 [CHANGELOG.md](CHANGELOG.md)；下面的「开发日志」按批次保留完整细节。
 
-## 开发日志索引（2026-09-29）
+## 命令栏间距、图标与文件区边界（2026-10-02）
+
+- 用户反馈命令栏拥挤、图标锯齿，文件分组标题像侵入工具栏。命令按钮原 childpadding 为 0，标签按钮宽 76；现增加 4 逻辑像素间距，新建 / 排序 / 查看宽 88，图标与文字距离由 4 改为 6。图标仍为 16 逻辑像素，按钮热区仍高 32，工具栏仍高 40；标签和收藏栏的 29 高度不变。
+- 命令图标沿用现有原创矢量路径，先按最终物理尺寸的 4 倍绘制，再用 GDI+ 高质量缩小至准确的当前 DPI 像素，DuiLib 1:1 显示，不放大 16px 位图。过滤后的 RGB 固定 #1A1A1A，只保留过滤 Alpha 表示边缘覆盖；否则双三次插值在透明边缘可能改变 RGB。禁用图标最后统一乘 40% Alpha。缓存键和文件版本升为 v6，避免复用旧图。
+- 根因：当前 DuiLib 的 PaintBorder 外层判断仅检查 left>0，因此 `0,0,0,1` 的底边配置不绘制。本轮不改第三方内核，改用独立 `command_body_divider` 实色控件（1 逻辑像素向上取整、#D0D0D0），并给 body_host 增加 8 逻辑像素顶部 inset，让左侧导航、主文件区和右侧详情共享顶部留白；Shell 分组 / 缩略图和滚动布局保持原生。
+- 回归覆盖 96 / 144 / 192 DPI 的命令按钮间距、标签按钮宽度、分隔线的实际绘制像素和文件区 inset，以及命令图标物理尺寸、边缘 Alpha 层次、精确正文色和禁用透明度。恢复旧间距 / 宽度 / 无分隔 / 无留白的行为后专项出现 22 个预期失败（`build-ui/command-before-tests.log`）；修复后的图标专项通过。
+- 交付：常用 `build/Release/FastFile.exe` 已更新，Release x64 和全部 6 项 CTest 通过（83.96 秒），日志 `build/command-spacing-build.log`、`build/command-spacing-tests.log`；像素回归调用完整 `Paint` 入口设置绘制区域，而非直接 DoPaint。150% 实际下载目录检查清晰水平分隔线、「昨天」和「上周」分组标题在线下且留白充足、命令间距增加；选中 12.png 后剪切 / 复制 / 重命名 / 删除正常启用，右侧 PNG 图像、2048×2048 分辨率及预览同步，查看按钮正常打开菜单。原运行文件保留为 `build/Release/FastFile.before-command-spacing.exe`，未强制关闭旧窗口；未重建安装包。
+
+## 标签与收藏栏收紧（2026-10-02）
+
+- 用户要求两栏高度缩为原来的 80%；由 36 改为 29 逻辑像素（36×0.8 取整）。XML 初始高度、DPI 运行时高度、标题栏系统按钮和 caption 命中矩形同步修改；+ 的宽度继续为 32，但高度适配 29，避免超出标题行。
+- 文字保持 12、Shell 图标保持 16 逻辑像素；收藏芯片、星标热区和空栏提示统一为 25 逻辑像素高，保留上下各 2 的留白。星标宽度仍 32，因此图形尺寸及收藏首项横向位置不变。标签宽度、关闭槽、浅色分界线、首标签贴边和末尾 + 保持。
+- 新回归覆盖 96 / 144 / 192 DPI 的两栏、窗口按钮、caption 热区、收藏按钮和提示高度、字体与图标尺寸，以及短竖线绘制和 + 不越界。恢复旧高度后专项出现 27 个预期失败（`build-ui/compact-before-tests.log`），修复后的初次 UI 专项通过。
+- 交付：常用 `build/Release/FastFile.exe` 已更新；Release x64 构建和全部 6 项 CTest 通过（84.34 秒），日志 `build/compact-bands-build.log`、`build/compact-bands-tests.log`。150% 实际新窗口检查标签/收藏两栏收紧、星标与六个收藏短名居中且无裁切，随后选中 D: 并 Ctrl+T 打开第二标签，确认两标签同高、图标和关闭按钮居中、短竖线及末尾 + 正常。原正在运行的可执行文件留存为 `build/Release/FastFile.before-compact-bands.exe`，未强制关闭用户窗口；未重建安装包。
+
+## 原生文件夹菜单与标签边缘（2026-10-02）
+
+- 用户要求取消本程序对系统文件夹默认打开方式的管理。旧恢复逻辑仍注册 `FastFile.WindowsExplorer` 并将其设为 Folder / Directory / Drive 的默认命令，导致右键菜单出现「使用 Windows 文件资源管理器打开」。现删除接管菜单及注册入口，启动时仅清理历史上由本程序拥有的 `FastFile.open` / `FastFile.WindowsExplorer` 命令和默认值，移除用户层覆盖后继承 Windows 本身的设置，不再安装自定义 Explorer 命令。其他工具的默认项、菜单项及同名但指向其他程序的命令保留。此前关于可选接管系统文件夹的记录由本节取代。
+- 文件双击仍遵循 Windows 当前有效关联，保留上一轮默认图片打开修复；本轮不修改任何文件格式的默认应用。
+- 标签标题栏 XML 和运行时左 inset 同时改为 0，第一张标签贴合窗口边缘；标签间增加居中的 16 逻辑像素高、1 物理像素宽淡色竖线，浅色 #CFCFCF、深色 #505050。既有宽度增加 50%、36 逻辑行高、关闭槽和末尾 + 的布局保持。
+- 回归覆盖旧两种默认命令的清理、无关默认项与同名第三方命令保护，以及 96 / 144 / 192 DPI 下首标签边缘和浅深主题分界线的实际绘制像素。临时恢复旧绘制后 UI 专项出现 3 个预期失败，恢复修复后通过；日志 `build-ui/tab-separator-before-tests.log`。
+- 常用 `build/Release/FastFile.exe` 已更新，Release x64 构建与全部 6 项 CTest 通过（84.11 秒），日志 `build/native-menu-tabs-final-build.log`、`build/native-menu-tabs-final-tests.log`。实际启动新版后，当前用户 Folder / Directory / Drive 的两个历史命令键及默认覆盖均已清除，窗口首标签无左侧空白。实际右键菜单和多标签视觉验收被用户鼠标操作打断，未声称这两项运行检查完成；自动绘制和注册表回归已通过。
+- 为保留用户正在使用的旧窗口，在其运行期间将旧可执行文件重命名为 `build/Release/FastFile.before-native-menu-tabs.exe`，再生成常用路径的新版本；旧窗口未被强制关闭，不能热更新，需要用户改用新窗口。未重建安装包。
+
+## 历史工作区记录：UI 精致度（2026-10-01）
+
+- 默认文件打开修复：嵌入视图原 `ICommDlgBrowser::OnDefaultCommand` 一直返回 S_FALSE，文件双击/Enter 交给旧式视图默认命令；普通 ShellExecuteEx 空 verb 调用也在开发机复现默认照片程序已存在却弹选择框，必须传入官方查询的生效关联；旧 DuiLib 列表、搜索结果和应用菜单另固定调用 open。文件激活现在读取触发视图的实际选择，通过官方 `IApplicationAssociationRegistration::QueryCurrentDefault(AT_FILEEXTENSION, AL_EFFECTIVE)` 查询当前生效 ProgID，再将动态查询结果作为 `SEE_MASK_CLASSNAME` 交给 `ShellExecuteExW` 执行默认操作（空 lpVerb），不手动读取/写入 UserChoice、不拼接打开程序命令；查询不到默认关联时保留普通 Shell 调用及系统选择窗口；`SEE_MASK_NOASYNC` 保持 STA 启动完成所需的宿主生命周期。OnDefaultCommand、原生 LVN_ITEMACTIVATE 和非编辑态 Enter 共用同一处理；取消/失败也返回 S_OK 防止视图再次打开。文件夹、虚拟对象和空选择仍返回 S_FALSE，保留 Shell 原生导航。搜索/旧列表/应用菜单共用默认打开函数；旧列表失败不再显示「已打开」。不修改用户默认关联，显式右键「打开方式」保留原生菜单行为。
+- 默认打开回归：真实 Shell 文件选择传入记录启动器，检查只启动准确选中文件、使用官方查询的有效关联/默认操作、无关联时保留系统回退、取消后不再回落、空选择不启动、磁盘/文件夹仍交给 Shell 导航。
+- 默认打开交付验证：常用 `build/Release/FastFile.exe` 已更新；Release x64 和全部 6 项 CTest 通过（88.12 秒，`build/default-open-final-build.log`、`build/default-open-final-tests.log`）。补上空白区域激活通知检查后，最终构建及受影响 Shell 专项再次通过（`build/default-open-acceptance-build.log`、`build/default-open-acceptance-tests.log`）。正常用户环境实测 Enter：`12.png` 直接进入 Windows「照片」，JPEG 直接进入已设置的 XnView MP，均不显示选择窗口；没有修改默认关联或代点「始终」。普通调用的失败已实测复现，最终有效关联调用成功。开发机用户操作导致早期窗口验收被中断，之后完成上述实际检查；临时诊断代码已移除。未重建安装包。
+
+
+- 媒体比例修复（取代下方原生图像列表绘制记录）：之前把 Shell 的正方形图像列表槽按同样的目标宽高绘制，媒体内容随槽被压成方形。大/超大图标改用 `IShellItemImageFactory` 的原始 `THUMBNAILONLY` 位图，按实际位图宽高等比缩小并居中，保持 128/160 逻辑像素槽和统一行高；不裁切、不放大小图标。项目在 ITEMPREPAINT 一次完成，避免原生多行名称残留。
+- 关联程序标识从 Shell 的 TypeOverlay 资源获取；无该设置时查询默认打开程序的 Shell 图标，显式空 TypeOverlay 则不画。标识单独绘制，不与媒体共同缩放，尺寸最多 20 逻辑像素且不超过实际源图标尺寸；不改变文件关联。原生图像列表的胶片边框不再参与缩略图绘制。缓存随项目图像清理并释放 HICON。
+- 比例回归：生成 120×240 竖图、240×120 横图、120×120 方图，逐项检查两种视图实际绘制像素的比例和居中；合成测试窗口在切换视图后恢复宿主布局，避免 0×0 子窗口导致误判。关联标识回归用进程隔离的注册表检查 TypeOverlay、缓存复用/释放及显式空值，不修改真实用户关联。
+- 本次交付验证：常用 `build/Release/FastFile.exe` 已更新；Release x64 构建和全部 6 项 CTest 通过（83.84 秒），日志 `build/aspect-build.log`、`build/aspect-tests.log`。150% 下载目录实际检查大/超大图标横向视频等比显示、系统播放器标识、整格选中与右侧同一视频；`12.png` 图片预览和 2048×2048 分辨率正确。使用独立配置验收，未重建安装包。
+
+
+- 标签默认宽度增加 50%：自然内容宽度（图标、文字、固定关闭槽及边距）乘 1.5，默认宽度范围由 80～240 改为 120～360 逻辑像素；选中/未选中仍同高、同宽，实际图标/文字/关闭槽尺寸保持原值，既有拥挤时压缩及横向滚动算法不变，+ 继续紧跟末标签。回归检查测量值与原内容宽度的 1.5 倍、选中切换不改变宽度、36 逻辑行高及 + 的位置。
+- 媒体默认 Windows 缩略图：大/超大图标项目从原生 Shell 文件视图 `LVSIL_NORMAL` 图像列表绘制，保留系统缩略图装饰和关联程序 TypeOverlay；缩略图不可用时继续使用 Shell 工厂图像/类型图标回退。原生图像列表可能比固定槽大，用 `ImageList_DrawIndirect` 的 `ILD_SCALE` 缩小到槽内，不放大较小图标，不自己拼贴播放器图标或读写用户文件关联。相片/视频/音频通过 Windows perceived type 判定，其他文件、目录和磁盘保留原路径。
+- 新媒体加载注意：完全跳过原生项目绘制会让新枚举的文件始终停留在类型图标。现 ITEMPREPAINT 允许 Shell 正常加载并请求 ITEMPOSTPAINT，再绘制固定槽、单行名称及整格选中底；测试显示实际窗口并验证新生成图片的颜色内容及原生图像列表绘制。右侧图片优先获取 Windows Shell 缩略图（失败再解码原图），视频继续 Shell 缩略图；右侧详情、分辨率及预览圆角/边距保持原行为。打开程序标识的有无遵循 Windows 当前关联及 TypeOverlay 设置。
+- 应用图标：用户指定 `D:\Icons\图标美化\Komfort-Zone-Unibody-Hds-Bootcamp.ico` 原样复制到 `res/FastFile.ico`，资源 ID 1 保持不变，包含 16/32/48/128/256 尺寸。同步更新 `.rc` 源以触发 MSBuild 资源编译。回归加载实际 FastFile.exe 资源，逐项比较图标尺寸及图像字节与 ICO 源，避免只复制文件而未更新程序。
+- 标签/媒体/图标验证：常用 `build/Release/FastFile.exe` 已更新，Release x64 及全部 6 项 CTest 通过（82.58 秒），日志 `build/media-tabs-build.log`、`build/media-tabs-tests.log`。150% 下载目录测试窗口已观察到视频胶片边框和系统播放器标识；最终可见窗口回归验证新生成图片确实加载缩略图、右侧优先 Shell 图像且分辨率保留、固定网格选中颜色与导航/滚动行为、标签自然宽度乘 1.5 和 + 跟随。ICO 源与仓库资源 SHA256 一致，最终 exe 全部图标资源字节比对通过。最终常用窗口已启动；用户正在操作其他窗口，未继续抢占焦点做截图。未重建安装包。
+
+- 删除权限交互：旧用户删除路径使用 `SHFileOperation` 并设置 `FOF_NOERRORUI | FOF_SILENT`，屏蔽权限不足时的系统交互；其十进制 120 为旧 Shell 返回码 `DE_ACCESSDENIEDSRC`（0x78），不是 Win32 `GetLastError` 的 120。普通删除还额外显示了自定义确认框。用户删除现改用 `IFileOperation`，设置主窗口为 owner，不关闭系统错误/进度 UI，允许权限提示；普通删除设置 `FOFX_RECYCLEONDELETE | FOFX_ADDUNDORECORD | FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_WANTNUKEWARNING`，取消例行确认但保留不能回收时的警告。Shift+Delete 保留明确的永久删除确认，执行仍走同一 Shell 接口。
+- 删除完成处理：检查 HRESULT 与 `GetAnyOperationsAborted`；取消/跳过按非成功处理，批量中实际删除成功的路径仍加入历史并刷新列表，保留的路径不加入撤销记录。输入解析失败不会执行已排队部分。内部撤销副本清理继续走专用无交互临时目录清理接口，不让清理产生用户权限窗口。工具栏、Delete/Ctrl+D、Shift+Delete 和应用删除菜单共用这一入口。
+- 删除回归更新：普通删除不出现 FastFile 确认框且可撤销/重做，永久删除取消仍保留文件；配置断言覆盖回收标志、撤销标志、无法回收警告、错误/进度 UI 未被抑制、两种删除允许权限提示。交互回归入口 `FastFileMainWndRegressionTests --delete-permission-check` / `--delete-partial-check` 仅使用自身临时目录的 ACL 测试文件，需在系统权限对话框选择「取消」，之后验证保留文件与完成路径并恢复临时 ACL；不对用户的 C: 根目录 DLL 执行删除。
+- 删除交付验证：常用 `build/Release/FastFile.exe` 已更新，Release x64 和全部 6 项 CTest 通过（79.57 秒），日志 `build/delete-shell-build.log`、`build/delete-shell-tests.log`。实际运行两种 ACL 交互回归均显示 Windows 原生「你需要提供管理员权限才能删除此文件」及「继续 / 跳过 / 取消」。单项取消后保留文件、完成数 0；批量取消保留受保护项、此前普通项进入回收站且完成数 1；两次回归 0 failures，临时 ACL 已恢复。未代用户点击管理员「继续」或执行 UAC 授权，因此提权后的成功删除未作运行验收；用户的两个根目录 DLL 保留。未重建安装包。
+
+- 列表视图增加上下间距：仅 `FVM_LIST` 使用 26 逻辑像素高的透明图标槽（150% 约 39～40 物理像素行高）。原生 Shell 列表负责项目排列和交互；项目绘制保留 Shell 名称、原字体、原尺寸小图标、叠加标记及剪切变淡，并绘制整行选中底和焦点框。普通 `LVM_SETICONSPACING` 对列表行高无效；Shell 图标槽尺寸输入按 96 DPI 单位传入。Shell 枚举和排序可能在内部恢复小图标列表，绘制前检查并恢复行高；单张透明占位图列表不会覆盖保存的 Shell 图标来源。切换视图、重新绑定列表和销毁时恢复原 Shell 图标列表，销毁本程序的透明占位列表。回归覆盖真实列表行高、原物理尺寸 Shell 图标实际绘制、Shell 内部刷新后间距与图标保留、详细信息视图间距恢复。
+- 列表间距交付：常用 `build/Release/FastFile.exe` 已更新；Release x64 构建和全部 6 项 CTest 通过（77.41 秒），日志 `build/list-spacing-build.log`、`build/list-spacing-tests.log`。150% 实际窗口复核 C: 根目录列表，文件夹上下留白增加、Shell 图标正常，选中 Program Files 时右侧名称与路径同步正确。未重建安装包。
+
+- 磁盘大图标边缘：实测 Shell `GetImage(ICONONLY)` 返回的 C: 192 / 240 像素位图中分别有约 465 / 689 个半透明像素 RGB 通道超过 Alpha，直接 `AlphaBlend(AC_SRC_ALPHA)` 导致边缘断线或彩色溢出。缓存前将具有此特征的位图转换为预乘 Alpha，并清除全透明像素中的 RGB；已预乘图像和不透明图片不重复乘 Alpha。回归覆盖直 Alpha、已预乘、透明脏 RGB、不透明像素，以及真实 Shell 磁盘位图。
+- 「此电脑」原生平铺行高固定为 64 逻辑像素（150% 为 96 物理像素），增加上下磁盘项目的留白；图标大小、标题、容量条和容量文案继续由 Shell 绘制。切换视图前恢复原生尺寸，保留宽度配置，反复切换不累计增加。真实 Shell 平铺行高和重复设置均有回归。
+- 平铺接口注意：Shell 列表包装层会把 `LVM_SETTILEVIEWINFO` 输入再按 DPI 缩放，因此传入 96 DPI 单位；读取的项目矩形 / TileViewInfo 为物理像素。固定高度时同时固定为原项目宽度（允许取整误差 1 物理像素），避免自动宽度重算而减少列数；Shell 返回的附加私有 flags 不直接 OR 到 `LVTVIF_FIXEDSIZE` 中。
+- 磁盘边缘与平铺交付：常用 `build/Release/FastFile.exe` 已更新；Release x64 构建、全部 6 项 CTest 通过（79.05 秒），日志 `build/icon-alpha-build.log`、`build/icon-alpha-tests.log`。150% 实际窗口检查大图标与超大图标的磁盘斜边、圆角不再有原来的断线 / 杂色；切到平铺后保持多列布局，上下项目留白增加，标题 / 容量条 / 可用空间文案无裁切。未重建安装包。
+
+- 导航字体收紧：用户同意快速访问和目录树统一从 13 改为 12 逻辑像素（150% 为 18 物理像素），共享字体 4 改为 Segoe UI 常规体，中文通过 Windows 字体链接回退；开发机 Segoe UI 字体链接包含 Microsoft YaHei UI。XML 初始配置和 DPI 重注册同步修改，行高、图标尺寸、正文色、点击区域保持原值。100% / 150% / 200% 回归覆盖字号、字体、常规字重与行高不变；修改前六项新断言失败。
+- 导航字体验收：常用 `build/Release/FastFile.exe` 已更新，Release x64 构建和全部 6 项 CTest 通过（77.37 秒）；日志 `build/nav-font-build.log`、`build/nav-font-tests.log`。150% 实际窗口确认「此电脑 / 文档 / 图片」、`Win11x64 (C:)`、`AMD`、`Program Files` 及 `Program Files (x86)` 正常显示，中英文垂直居中、字号一致，没有方框或裁切；左侧行高、图标和滚动条保持原尺寸。未重建安装包。
+- 完整回归暴露既有剪贴板恢复问题：保存 `OleGetClipboard` 的实时对象、清空剪贴板后将该对象恢复并 `OleFlushClipboard`，会在 ole32 中异常退出。测试现先枚举格式并取出独立 STGMEDIUM 数据到 Shell 数据对象，再执行剪贴板测试及恢复；应用文件操作不变。
+
+- 本轮最终交付：常用 `build/Release/FastFile.exe` 已重新构建（2026-10-01 19:49）。Release x64 和全部 6 项 CTest 通过（77.88 秒），日志为 `build/nav-capture-canonical-build.log`、`build/nav-capture-canonical-tests.log`。150% 实际窗口复测：树滑块拖动松开后选中 `12.png`，鼠标无按键移到滑块并沿轨道下移，树位置保持不变；滚轮仍可滚动。常态 / 悬停滑块为 12 / 18 物理像素，点击区域为 18 物理像素。再次切换另一张图片时，右侧预览、PNG 本地化类型和 2048 × 2048 分辨率均随选中项更新。未重建安装包。
+
+- 滚动条复测时发现，树焦点残留会让 `UpdatePreviewForSelection` 通过通用文件操作选择逻辑取到当前目录；预览现直接读取可见 Shell 列表选择，树键盘文件操作仍保留原目标规则。补充树焦点残留时文件预览不变的回归。Shell 大图标绘制只处理 `LVCDI_ITEM`，在原生项目矩形不与视口相交时跳过缩略图，避免将分组通知或不可见项目当成文件取图；两项均有回归覆盖。
+
+- 用户复测补充：常用 `build/Release/FastFile.exe` 当时仍是 12:34 的旧产物，上一轮只提供了 `build-ui/Release` 的独立测试版，宽度修改没有进入常用路径。另发现丢失 BUTTONUP / 捕获转移后的滚动状态未清理：DuiLib 的逻辑点击对象、捕获标记和滚动定时器可能残留，导致回到滚动条后纯悬停也滚动。补齐窗口 CAPTURECHANGED / CANCELMODE / KILLFOCUS 取消，滚动控件在无左键的移动 / 定时器消息中清理手势；DuiLib 仅对指定控件清除逻辑捕获，不释放别的原生窗口捕获，正常释放先清逻辑标记以避开同步通知重入。
+
+- 左侧树滚动条后续修复：常态滑块 8、悬停 / 拖动 12、实际点击区域始终保留 12 逻辑像素（150% 为 12 / 18 / 18 物理像素）。原实现仅向内容区覆盖绘制宽滑块，点击区域仍为窄轨；窗口还会将滚动条按下识别成文件拖拽。现将滚动条手势交回 DuiLib 独占，拖动中不收窄，并在每个鼠标移动消息立即更新滚动位置，避免快速释放丢失 50ms 定时器尚未处理的位移。主区和预览条的既有常态宽度保留。
+- 滚动条修复验证：回归修复前复现点击区域过窄、滚动条按下启动文件拖拽识别、捕获中收窄三个失败；修复后专项通过，另覆盖快速拖动立即更新、移出轨道继续拖动和释放结束捕获。Release x64 构建与全部 6 项 CTest 通过（89.00 秒，`build/nav-scroll-tests.log`）；真实窗口上下拖动左侧树滑块，鼠标横向移出轨道后仍能滚动，释放正常，无文件拖拽图标。截图 `build/nav-scroll-acceptance.jpg`。
+
+- 大 / 超大图标沿用原生 Shell 浏览器和缩略图工厂，通过 Win32 兼容列表绘制固定 128 / 160 逻辑像素图像槽、单行居中文件名、整格浅蓝选中和浅灰悬停。Shell 格距接口会内部处理 DPI，传入 96 DPI 格距；图像请求和实际绘制使用窗口物理像素，避免 150% 二次放大。其他视图保留 Shell 绘制、详细信息四列表头和原生文件操作。
+- 预览边距 16、圆角 4、标题间距 12；类型从 Shell 注册的 MUI 资源和类型信息取得，路径优先保留父目录及文件名。无选中时继续统计真实子项。命令图标以 16 逻辑像素生成，正文色 #1A1A1A；禁用图标整体 Alpha 为 40%。
+- 滚动条静止宽 4 逻辑像素（150% 为 6 物理像素）、#C4C4C4，悬停加宽；Shell 自身的凹边移除，分隔交给 DuiLib 的 1 逻辑像素 #E5E5E5 边。树和快捷项统一 13 逻辑像素，导航完成时重放 PIDL 展开、嵌套滚入与单处浅灰高亮；首次启动立即绘出包含「图片」的默认快捷行。
+- 标签选中和未选中同为 36 逻辑像素，图标圆角 2；保留原宽度算法、关闭槽、末标签旁的 +、星标短名收藏和目录搜索占位。
+- 专项测试 `FastFileUiPolishTests` 覆盖 96 / 144 / 192 DPI；Shell 测试增加真实 DPI 格距、选中滚入不丢选择、整格颜色与无凹边回归。运行验收使用独立 `build-ui/runtime-profile`，不改用户常用配置。测试版位于 `build-ui/Release/FastFile.exe`；本次未重建安装包，安装包版本记录仍为上文的 1.0.9。
+- 验证：Release x64 构建成功，全部 6 项 CTest 通过（81.18 秒）。150% 实际「刘诗诗」目录验证大图标固定槽、1 (583).jpg 整格选中与右侧同图、类型「JPEG 图像」、分辨率 5304 × 7952、树展开至该目录；「图片」快捷单处浅灰高亮、无选中命令变淡与真实计数、星标短名收藏、标签等高及末尾 + 均完成运行检查。日志在 `build/ui-final-tests.log`，截图在 `build/ui-acceptance-150.jpg`。
+
+## 常用快捷键与撤销 / 重做修复（2026-10-01）
+
+- Ctrl+Z 原因：原生文件列表键盘消息不经过主窗口，且原撤销记录未包含复制、新建目录、原生 Shell 重命名和回收站删除。统一在 DuiLib 消息预处理入口转发宿主命令，文本编辑窗口保留自身的剪贴板和撤销行为；文件区剩余按键仍交给 Shell。
+- 当前会话撤销 / 重做覆盖复制、整批移动、新建文件夹、应用重命名、原生重命名和回收站删除。复制撤销将副本移入同一目标目录的隐藏临时目录，重做移回；清除重做历史或退出时清理暂存。目标同名冲突不会覆盖；非空新建目录不直接删除；未完成操作保留历史以便重试。
+- 原生 Shell 操作通过背景菜单的 canonical undo / redo 调用。即使指定 NOASYNC 仍可能异步完成，因此计时器确认实际路径后才推进历史；将预期重命名通知单独排除，避免延迟通知被误认为新操作并清空重做栈。
+- 补齐 Ctrl+Y / Ctrl+Shift+Z、Ctrl+Insert / Shift+Insert、Ctrl+Shift+C、Ctrl+D、Ctrl+R、Ctrl+N、Ctrl+F4、Ctrl+数字选标签、Ctrl+E / F3、F4 地址历史、F6 / Shift+F6、Ctrl+Shift+E、Alt+P / Alt+Shift+P、Ctrl+Shift+1…8、F11 最大化 / 还原、导航树方向键和数字键盘加减。小图标与内容视图追加枚举，保持旧配置数值兼容。完整清单见 README。
+- 验证：Release x64 构建及全部 5 项 CTest 通过；回归覆盖上述按键入口、原生异步撤销 / 重做顺序、多项和文件夹复制、同名重做冲突、非空目录撤销保护、剪贴板与文本编辑保护、树操作及 8 个视图模式。
+- 150% 真实窗口验收：复制 → 撤销 → 重做、F2 原生重命名 → 撤销 → 重做均成功，源与目标 SHA256 一致；Ctrl+Shift+6 显示四列表头，Ctrl+Shift+4 隐藏表头；Ctrl+E、Ctrl+L、Escape、F4 地址历史均正常。
+- 安装包 1.0.9 已重新生成；内嵌 FastFile.exe 和 skin/main.xml 的 SHA256 均与本次 Release 产物一致。
+
+## 当前功能区、地址栏与搜索修复（2026-09-30）
+
+- 系统快捷键修复：原生 ExplorerBrowser 文件列表拥有独立子窗口，Ctrl+C / X / V、Delete 等消息未经过主窗口；仅调用 Shell 视图 TranslateAccelerator 也未执行宿主文件命令。主窗口现注册 DuiLib ITranslateAccelerator，在消息分派前将 Shell 文件区快捷键转入现有操作入口，其他按键继续交给原生视图；Shell 重命名 Edit 保留文字编辑键。判断编辑状态时优先检查实际 HWND 焦点，避免搜索框残留的 DuiLib 焦点吞掉文件快捷键。Ctrl+A 同步改为选中原生 Shell 项目，未选中旧自绘列表。
+- 复制 / 剪切此前仅保存内部 m_clipboard，现发布 Windows CF_HDROP + Preferred DropEffect；粘贴每次读取系统剪贴板，支持资源管理器互通，避免剪贴板已清空后粘贴旧内部数据。命令栏粘贴状态监听 WM_CLIPBOARDUPDATE。既有后台复制 / 移动、删除确认与回收站操作保留。
+- 自动回归：在独占临时目录创建真实 Shell 浏览器，通过 DuiLib 消息入口验证 Ctrl+A、复制与粘贴内容、剪切移动标志及结果、Delete 取消 / 确认、Shift+Delete、系统空剪贴板及重命名编辑保护；测试保存并还原原剪贴板。Release x64 构建及全部 5 项 CTest 通过。
+- 真实窗口验收：150% 隔离配置中选中文本文件，Ctrl+C → 切换收藏目标目录 → 点空列表 → Ctrl+V，目标文件与源文件 SHA256 一致；Ctrl+A 选中原生项目，Delete 显示确认且取消保留文件，F2 进入 Shell 编辑框，框内 Ctrl+A 全选文件名，Escape 退出。安装包已重建并核对内嵌程序及皮肤与 Release 产物一致。
+
+- 系统文件夹开关原先要求 Folder / Directory / Drive 三项全部指向 FastFile 才勾选，部分残留关联因此被显示为未启用；现在逐项读取当前用户和合并 Classes 的有效默认动作，任一 FastFile 关联均标记启用。启用确认列出实际打开程序，重复启用可修复本程序旧关联。取消即为三类对象设置独立的 Windows Explorer 动作，不依赖缺失的旧备份，也不覆盖第三方原有命令。关联变更使用 SHChangeNotify + SHCNF_FLUSH 通知 Shell。
+- 已打开的 Windows「此电脑」视图实测会缓存旧盘符动作，关联通知和根目录刷新并不能保证立即丢弃。因此显式取消时保存 FolderHandlerEnabled=0，启动入口在单实例转发前检查关联专用 `--open` 调用，已有窗口的外部路径消息接收端也检查关闭状态，直接交给 explorer.exe；启用时清除这项关闭状态。普通启动、应用内导航和拖出新窗口保持 FastFile 行为。
+- 地址栏行高 48、内部字段高 36、圆角 6、左右内边距 10（均为逻辑像素）；四枚导航图标缩为 16，改为浅灰并用双倍分辨率绘制。收藏栏高度不变。
+- 搜索统一沿用既有结果列表。旧隐藏逻辑向当前视图查询 IOleWindow 失败，原生浏览器父窗口仍盖住结果；现在通过 IShellView 获取并隐藏实际浏览器容器，导航完成后也重放可见状态。清空恢复原生视图。
+- 更多菜单的隐藏项目开关此前未同步 Shell 枚举。浏览器站点提供 ICommDlgBrowser2，通过 SHOWALLFILES 枚举并在 IncludeObject 按本程序设置筛选，不修改 Windows 全局隐藏设置。回归覆盖隐藏文件显示与隐藏两个方向。
+- 回归覆盖真实搜索输入通知、匹配 / 无匹配 / 清空、浏览器窗口实际显隐、字段尺寸和圆角，以及隔离注册表中的部分残留关联、第三方默认检测、重复启用和无备份恢复 Windows。
+- 验证：Release x64 构建与全部 5 项 CTest 通过。150% 真实窗口确认地址栏样式、下载目录搜索显示匹配文件且清空恢复目录；启用后的外部目录进入 FastFile 标签，取消后的普通目录、C 盘以及缓存旧动作的 Windows「此电脑」双击均交给 Windows 文件资源管理器，FastFile 不新增 C: 标签。最终保留开关取消状态，Folder / Directory / Drive 均默认 Windows。
+
+## 当前 Shell 视图与导航回归修复（2026-09-30）
+
+- 下级目录复用：AddTab 在同目录已有标签检查后，对规范化路径按目录分隔符边界判断是否为当前目录后代；新增目标属于当前目录下级时改走当前标签导航并记录后退历史。连续子目录、收藏及外部打开入口共用规则；已有目标标签仍优先激活，类似 Program Files / Program Files-Other 的同前缀相邻目录仍可另开标签。回归覆盖多级连续打开、后退、已有子目录标签优先和目录边界。Release x64 与全部 5 项 CTest 通过；使用隔离 APPDATA 真实窗口验证收藏连续打开 Root → Level1 → Level2 始终一个标签，后退回 Level1，Root-Other 可新增标签，再点 Level1 复用已有标签。
+- 标签文字由 14 调整为 12 逻辑像素（150% 下 21 → 18 物理像素），采用独立 FontTab token；XML 初始字体与 DPI 重注册保持一致，继续使用微软雅黑 UI 常规字重。标签高度、图标、关闭槽不变，宽度测量和绘制共用字体 7。新增 100% / 150% / 200% 字体度量回归，覆盖 Program Files、此电脑和图片的文字宽高，并沿用标签切换几何稳定性检查。字号回归修复前 12 项断言失败，修复后 Release x64 与全部 5 项 CTest 通过；150% 真实窗口验证 Program Files 完整显示、此电脑比例协调、切换无位移。
+- 盘符根与标签唯一性：旧关联命令 `--open "%1"` 遇到 `C:\` 时，末尾反斜杠会让命令行解析结果变成 `C:"`；去掉引号后 `GetFullPathNameW("C:")` 解析到该盘工作目录（本次为 Release）。`NormalizePath` 现在先将裸盘符补成根目录，再解析完整路径，兼容已启用的旧关联；新关联使用 `--open "%1\."` 避免末尾反斜杠转义引号。移除 `allowDuplicate`，所有 AddTab 入口均复用已有目录；普通导航和 Shell 导航完成也优先激活已有标签，比较时统一绝对路径、尾分隔符和大小写。根路径与重复打开回归在修复前六项失败，修复后全部通过；Release x64 和 5 项测试通过。150% 真实窗口验证双击 C 盘进入 `C:\`，再次双击切回同一 C: 标签，点击「+」不产生重复。
+- 标签切换位移回归：`ActivateTab` 原先每次调用 `RebuildTabStrip`，清空后重新 `Add` 全部标签，导致全部重播 160 毫秒滑入动画，并在逐项添加时钳制横滚位置。现在已有标签切换只调用 `SetActiveTab`，新增 / 关闭等结构变化仍重建。主窗口测试在切换后立即检查矩形、宽度、滚动位置和动画时间戳；修复前四次失败，修复后通过。Release x64 构建、全部 5 项测试及 150% 真实窗口来回点击验证通过。
+- 列头只随 `ViewMode::Details`（原生 `FVM_DETAILS`）显示；`ShellBrowserHost::SetViewMode` 设置 `FWF_NOCOLUMNHEADER | FWF_NOHEADERINALLVIEWS`，普通目录详细信息固定名称、修改日期、类型、大小四列。导航完成后即使路径与当前路径相同，也重新应用模式，避免异步创建的新视图漏掉设置。分组标题仍由 Shell 内容区绘制。
+- 详情 0/0 的根因：原生目录浏览提前返回，未填充旧自绘列表的 `m_listingDirs / m_listingFiles`，而详情仍读该缓存。现在独立枚举当前目录；枚举失败显示无法读取，不冒充空目录。单项详情读取该项 Shell 属性，多项显示「已选择 N 项」，此电脑显示实际驱动器数。
+- 原生选择变化订阅 `DShellFolderViewEvents / DISPID_SELECTIONCHANGED`；清空选择时先检查 `SVGIO_SELECTION` 项数，规避部分 Shell 提供者对空选择返回失败而遗留旧详情。未选中时恢复当前目录详情和禁用操作按钮。
+- 树同步入口为 `NavigateToNow`、`ActivateTab`、`OnShellBrowserNavigation`；收藏、面包屑、快捷入口沿用这些导航链。按 PIDL 祖先展开，并补齐已知文件夹的虚拟 UserFiles PIDL 省略的盘符祖先；布局完成后 `RevealSyncedTreeNode` 滚动嵌套树视口。快捷目标只亮快捷行，其余目录只亮树，导航底色 #E8E8E8。
+- 标签先按文字理想宽分配（最大 240 逻辑像素），紧张时优先压缩长标签，全部到下限后横滚；28 逻辑像素关闭槽始终计入，选中不加宽。「+」保持末标签后。文字测量与绘制使用同一 DPI 字体；标题走 Shell 本地化显示名。
+- 新增主窗口回归测试，覆盖真实 Shell 选择通知、目录计数、列头模式、嵌套树可见性、快捷单处高亮、命令状态、标签宽度和本地化标题；核心和 Shell 控件测试同步补充。
+- 验证：Release x64 构建成功，全部 5 项 CTest 通过。开发机 150% 真实窗口验证 Program Files 详细信息 ↔ 大图标（大图标无表头）、74 个子文件夹、Battle.net 详情绑定、D: 树节点可见、还原窗口完整 Program Files 标签、下载浅灰单处高亮、Pictures 标签显示「图片」；此电脑显示 7 个驱动器，分组保留。保留星标收藏、芯片短名和收藏行高度。
+
+## 当前收藏栏实现（2026-09-30）
+
+- 左侧 `btn_favorite_toggle` 是原生 DuiLib 自绘五角星按钮：16 逻辑像素图形、32×32 热区，垂直居中；默认 #5C5C5C 细线空心，悬停 #1A1A1A + 4 逻辑像素圆角浅底，已收藏路径为 #C7A300 实心。
+- 单击复用 `PinFavorite` / `UnpinFavorite`，导航和切换标签复用 `UpdateFavoritesHighlight` 同步状态；「此电脑」保持空心且不接受收藏。
+- 星按钮右侧保留 8 逻辑像素间距，芯片可用宽度扣除左右内边距、星热区和间距；芯片保持自然宽度，溢出滚动。无芯片时显示灰色「拖入文件夹到此处」。
+- 星与芯片共用 `%APPDATA%\FastFile\favorites.json`，格式为有序路径字符串数组（UTF-8 JSON）；缺少 JSON 时导入旧 UTF-16 `favorites.txt`，保留旧文件。先写临时文件，再替换 JSON。
+- 新增 `tests/FavoritesTests.cpp`：JSON 中文 / UNC / 转义 / Unicode 往返、损坏输入拒绝，以及 100% / 150% / 200% 星按钮颜色、空心 / 实心、圆角及尺寸回归。
+- 验证：Release x64 构建、全部 4 项 CTest 通过；真实窗口验证收藏 / 取消、标签同步、重启持久化、首项添加及末项取消恢复空栏提示。独立配置验证目录位于 `build/favorites-runtime-profile`。
+
+## 开发日志索引（截至 2026-09-30）
 
 | 批次 | 提交 | 主题 |
 |---|---|---|
@@ -28,9 +243,11 @@
 | 第十一批 | `2cd0b0e` | 可选接管文件夹 / 目录 / 磁盘的默认打开动作；外部路径转发到现有窗口新标签；关闭或卸载恢复 |
 | 第十二批 | `b01e569` `707ee98` | 标签切换状态同步；“此电脑”磁盘卡片响应式分列；预览栏最小宽度与元数据列优化；滚动条统一宽度 + 预览导轨并入调宽手柄 |
 | 第十三批 | `065fde1` `ea6f6bd` `4d73a16` `30056a5` `d650e91` `32ade3d` `69637df` | 关闭确认框、快速访问原生右键菜单 + 拖动排序、双色命令图标、顶部功能区整体改版（标题栏并入标签行、地址栏在命令栏之上）、收藏栏位置与路径框缩放 |
-| 第十四批 | 待提交 | 标签栏改为自绘 `CTabStripUI`；DuiLib XML 骨架按规范重排（32/26/28/28）；窗口按钮改 Shell 字形；`Ctrl+Tab` 修复；拖出标签按源窗口尺寸开窗 |
-| 第十五批 | 待提交 | Fluent 密度（36/36/36/40）+ `inset` 消除栏间空隙；收藏栏 Explorer 化并搬走「配置文件」；面包屑首段带此电脑图标；导航名本地化；「含子目录」按需显示；此电脑详情页修正 |
-| 第十六批 | 待提交 | 标签按标题实测宽度 + 溢出横向滚动 + 选中滚入视野；选中卡片与收藏行真正连体；标签条铺满标题行；树随导航展开/选中/滚入视野；每目录视图模式在切标签时生效；收藏芯片文案清洗 |
+| 第十四批 | `29f1d8b`、`32ade3d`、`d650e91` 等 | 自绘 `CTabStripUI`、Explorer 式标题行、窗口按钮与标签交互修复 |
+| 第十五批 | `84cdb13`、`a4626cf` 等 | Fluent 顶栏与收藏栏、Mica、面包屑和此电脑详情 |
+| 第十六批 | `53a14c4`、`3f2628b`、`9e0f2e0` 等 | 标签溢出滚动、树同步、每目录视图记忆、收藏文案与布局修复 |
+| 第十七批 | `d28af3b`、`82015b0` | 文件区键盘导航与命令栏双色图标 |
+| 第十八批 | `cf3651d` | Fluent 悬停滚动条（细轨、悬浮加宽、邻近命中） |
 
 ## 目标
 
@@ -43,16 +260,16 @@
 | 项 | 路径 |
 |----|------|
 | 工程根 | `C:\Users\JINLONG\文档\Grok\FastFile`（可能 junction 到 Documents） |
-| 源码 | `src\`（14 个 `MainWnd*.cpp` + `MainWnd.h` + `MainWndInternal.h` + `main.cpp`） |
+| 源码 | `src\`（15 个 `MainWnd*.cpp`，另有 `TabStripUI.*`、`FluentScrollBarUI.*` 和共享头文件） |
 | 皮肤 | `skin\main.xml`（POST_BUILD 拷到 exe 旁） |
 | 可执行文件 | `build\Release\FastFile.exe` |
 | DuiLib | `third_party\duilib\` |
 | 版本管理 | Git，远程 `https://github.com/jinlong85/FastFile`（分支 `main`） |
 | 历史备份 | 已移出工程：`C:\Users\JINLONG\文档\Grok\_FastFile_attic_20260928\` |
 
-## 源码结构（2026-09-28 拆分）
+## 源码结构（截至 2026-09-30）
 
-原先约 8000 行的单一 `MainWnd.cpp` 已按职责拆成 14 个编译单元；每个 `.cpp` 只实现 `CMainWnd` 的成员，类声明仍集中在 `MainWnd.h`，行为未变。
+原先约 8000 行的单一 `MainWnd.cpp` 已按职责拆分；目前有 15 个 `MainWnd*.cpp` 编译单元，另有自绘标签栏和滚动条控件。`CMainWnd` 声明仍集中在 `MainWnd.h`。
 
 | 文件 | 职责 |
 |------|------|
@@ -66,10 +283,13 @@
 | `MainWnd.Favorites.cpp` | 收藏栏、快速访问固定、左栏分隔条 |
 | `MainWnd.FileOps.cpp` | 文件操作与后台复制引擎 |
 | `MainWnd.Menus.cpp` | 工具栏下拉菜单与 Shell 右键菜单 |
+| `MainWnd.Integration.cpp` | 系统文件夹打开关联、外部路径与单实例集成 |
 | `MainWnd.Views.cpp` | 视图模式、详细信息、图标/平铺、虚拟化、排序与列宽 |
 | `MainWnd.Icons.cpp` | Shell 图标/缩略图提取、图标缓存、缩略图线程 |
 | `MainWnd.Preview.cpp` | 预览窗格（图片/文本/视频元数据） |
 | `MainWnd.DragDrop.cpp` | OLE 拖放：DropTarget、DragSource、传输 |
+| `TabStripUI.cpp` | 自绘标签栏控件及标签命中、绘制和交互 |
+| `FluentScrollBarUI.cpp` | 悬停加宽的 Fluent 滚动条控件 |
 | `MainWndInternal.h` | 公共 include 前导 + 跨单元共享的 2 个 inline 辅助函数 |
 
 改代码时的两条规则：
@@ -83,7 +303,7 @@
 - 改 `main.xml` 后务必重建或确保 `build\Release\skin\` 与源 skin 同步，否则会「加载资源文件失败」或跑旧皮肤
 - 发布后建议：结束 `FastFile` 进程 → 清 `%TEMP%\FastFileIconCache` → 再启动 exe
 - 图标缓存版本：`_v8.png`（HICON → PNG 真透明）；改导出逻辑时升版本并清缓存
-- 安装程序：`powershell -ExecutionPolicy Bypass -File installer\build_installer.ps1 -Version 1.0.7`
+- 安装程序：`powershell -ExecutionPolicy Bypass -File installer\build_installer.ps1`（默认从根目录 `VERSION` 读取版本）
   （只用系统自带的 .NET `csc.exe`，不需要 Inno/NSIS/WiX；产物在 `dist\`，`dist/` 已在 .gitignore）
 - 应用图标：`res\FastFile.ico` + `res\FastFile.rc`（资源 id 1）。**换图标后要 touch 一下 .ico**，
   否则 MSBuild 认为 rc 不需要重编（`Copy-Item` 会保留源文件的旧时间戳）
@@ -437,7 +657,7 @@ powershell -ExecutionPolicy Bypass -File installer\build_installer.ps1
 `skin\` 作为资源内嵌；安装到 `%LOCALAPPDATA%\Programs\FastFile`（当前用户、免管理员），
 建立开始菜单快捷方式与「设置 → 应用」卸载项，并支持 `--quiet/--dir/--uninstall/--cleanup`。
 卸载由 `%TEMP%` 中的副本完成（程序自身在安装目录里，不能自己删自己）。
-文件版本号在 `installer\setup.cs` 与 `build_installer.ps1 -Version` 两处。
+版本号由仓库根目录 `VERSION` 提供，CMake 项目元数据和安装包名称均从该文件读取；仅在特殊打包场景才显式传入 `build_installer.ps1 -Version` 覆盖值。
 
 **踩过的坑**：IExpress 在新系统上命令行打包直接退出码 1（连最小 SED 也失败），
 所以最终改成 csc 方案；`install.cmd/install.ps1/uninstall.ps1` 是那版残留，留着参考。
@@ -474,7 +694,7 @@ if (m_viewMode != ViewMode::Details && a.isDir != b.isDir)
 实测：`WM_CLOSE` → 0.2 秒进程退出（之前 13.9 秒）。
 
 ### 安装程序版本号
-版本号不再写在 `setup.cs` 里，而是 `build_installer.ps1 -Version x.y.z` 生成
+版本号不写在 `setup.cs` 里；打包脚本默认从根目录 `VERSION` 读取，也支持显式覆盖，并生成
 `installer\version.cs`（`BuildInfo.Version`），所以安装包文件名、注册表
 `DisplayVersion`、安装完成提示三处永远一致。
 
@@ -810,7 +1030,7 @@ if (uMsg == WM_NCLBUTTONDOWN || uMsg == WM_NCLBUTTONUP) {
   拖入文件夹收藏走 `MainWnd.DragDrop.cpp` 的 `IsOverFavoritesBar`。
 - 「配置文件」不再是收藏：删掉了那条 pin（备份 `favorites.txt.bak-20260929`），
   改到命令栏「…」菜单第一项「打开配置文件目录」（`%APPDATA%\FastFile`）。
-- TODO：芯片的拖拽排序（快捷访问区已有，收藏栏还没接）。
+- 当前尚未实现：收藏芯片拖拽排序和 Delete 快捷移除（快速访问区已有独立排序交互）。
 
 ### 面包屑 / 搜索
 
@@ -838,11 +1058,10 @@ if (uMsg == WM_NCLBUTTONDOWN || uMsg == WM_NCLBUTTONUP) {
 字形全部正常。标签条区域由 `CTabStripUI::DoPaint` 画一层 7% 黑的淡色带
 （宽度只覆盖标签 + “+”），这样白色选中卡片在浅色背板上仍然分得清，和 Explorer 一致。
 
-### 未做 / 待办
+### 本批记录的待办（部分已由后续批次完成）
 
-- 收藏芯片的拖拽排序 / Delete 移除。
-- 滚动条仍是之前确认过的统一 12 设计像素（新规格提到的"6 物理细轨道"没有采纳，
-  因为那是用户上一轮明确要求统一宽度的）。
+- 收藏芯片拖拽排序 / Delete 移除仍未实现，见上文。
+- 滚动条后续已在第十八批改为静止 4、悬停 8 逻辑像素；不再是本节当时记录的固定 12 逻辑像素。
 
 ## 第十六批：标签条 / 树同步 / 收藏文案
 
@@ -899,18 +1118,16 @@ Plowshares」→「太平年」；纯中文 / 纯英文 / 中文+数字不动。
 芯片宽度由 `RefitFavoritesChips()` 在 `SyncLayoutDependents()`（200ms 定时器）里按行宽
 重新均分 —— 启动时 `favorites_bar` 还没有尺寸，早期版本会把所有芯片压到最小宽。
 
-## 当前顶部结构（自上而下）
+## 当前顶部结构（截至 1.0.9，自上而下）
 
-1. **标题行 = 标题栏**（`titlebar`，32px）：标签栏（自绘卡片）+“+” + 弹性空白 + 窗口按钮
-2. **收藏栏**（`favorites_bar`，26px，白底，与选中标签卡片连通）
-3. **地址栏**（`address_bar`，28px）：后退/前进/上级/刷新 + 路径（面包屑↔编辑）+ 搜索 + 含子目录
-4. **命令栏**（`toolbar`，28px，白底）：新建/剪切复制…/排序/查看/更多
+1. **标题行 = 标题栏**（`titlebar`，36 逻辑像素）：自绘标签栏、“+”和窗口按钮
+2. **收藏栏**（`favorites_bar`，36 逻辑像素）
+3. **地址栏**（`address_bar`，36 逻辑像素）：导航按钮、面包屑/路径编辑、搜索
+4. **命令栏**（`toolbar`，40 逻辑像素）
 
-## 第十七批（续）：视图键盘导航 + 命令栏图标
+## 第十七批：视图键盘导航 + 命令栏图标
 
-现状：`HEAD` 干净可编译，Release 产物 `build\Release\FastFile.exe`，程序正常启动。
-本批做完了第十七批待办的第 1、4 项；第 3 项（滚动条 hover 加宽）用户口径未定，继续跳过；
-第 2 项仍是"不要动"。
+本批加入文件区键盘导航与命令栏双色图标。此前尚未完成的滚动条悬停加宽，已由第十八批实现。
 
 已验收行为（不要回退）：标签最小宽 120 + 溢出横滚、单标签与收藏行连体且「+」紧贴最后
 可见标签（4 逻辑间距、不靠系统按钮）、树与路径同步、每目录视图模式、收藏芯片中文短名
@@ -946,7 +1163,7 @@ Plowshares」→「太平年」；纯中文 / 纯英文 / 中文+数字不动。
 改了图形一定要 bump `GetCommandIconBmp` 里的 PNG 文件名版本（现在是 `_v2`），否则
 `%LOCALAPPDATA%\FastFile` 里的旧图标缓存会被继续复用。
 
-## 第十八批：滚动条 hover 加宽（Fluent 悬浮滑块）
+## 第十八批：滚动条 hover 加宽（Fluent 悬浮滑块，1.0.9）
 
 用户已确认口径（4→8 逻辑 = 150% 下 6→12 物理、悬停带浅灰圆角轨道、鼠标靠近列表
 右边缘就展开、树与预览导轨同参数），本批做完。**不要动**：`CTabStripUI::RecalcRects()`
@@ -1092,7 +1309,7 @@ Plowshares」→「太平年」；纯中文 / 纯英文 / 中文+数字不动。
 12. **文件夹空白处的右键菜单不等同于资源管理器的**：`IShellFolder::CreateViewObject` 拿到的
     只有 Shell 自己的项（在终端中打开/授予访问权限/新建/属性…），资源管理器显示的
     查看/排序方式/刷新 来自"视图"层，必须自己补（见 `ShowShellBackgroundContextMenu`）。
-    另外 FastFile 用自己的剪贴板，Shell 看不到，所以"粘贴"也要自己加
+    旧版 FastFile 曾仅用内部剪贴板；当前已发布系统 CF_HDROP，与 Shell 粘贴互通。
 13. **DuiLib 控件默认最大尺寸是 9999**（`m_cxyMax`）：给列表占位行设高度时必须同时
     `SetMaxHeight()`，否则高度被静默钳到 9999，滚动范围随之错误。详情视图虚拟化就是
     踩了这个坑（`RebuildDetailsVirtual` / `UpdateDetailsWindow`）
@@ -1177,20 +1394,27 @@ dumpbin /DISASM /NOBYTES build\Release\FastFile.exe > disasm.txt
 
 ## 会话/配置文件（通常在 `%APPDATA%\FastFile\`）
 
-- `session.ini`、`folder_views.ini`、`favorites.txt`、`left_nav.ini` 等
+- `session.ini`、`folder_views.ini`、`favorites.json`、`left_nav.ini` 等（旧 `favorites.txt` 仅兼容导入）
 
-## 建议下一轮方向（用户曾提过）
+## 历史测试与当时待办（2026-09-30）
 
-- 继续对齐资源管理器 / 360 密度与图标风格（自有 Shell 图标）
-- 预览窗格继续打磨（视频首帧质量取决于 Shell 缩略图缓存；可考虑自绘取帧）
-- 设置面板（用户明确推迟：等程序成熟后再做"取代资源管理器"）
-- 安装程序已完成（`installer\`，当前版本 1.0.7）；后续可做自动更新 / 代码签名（现在 exe 无签名，
-  首次运行可能触发 SmartScreen）
-- 右键菜单的“屏蔽名单”目前是硬编码（PowerShell 动词 + “用 X 打开”），若用户想自定义，
-  可放到设置面板里
+以下保留当时记录，不是当前测试清单；最新七项测试、设置功能和未完成人工验收见文首「接手先读」。重新安排待办前先检查后续修复和当前源码。
+
+- **2026-09-30 当前开发状态（未发布）**：普通目录文件区已改由 `src/ShellBrowserHost.*` 承载 Windows `ExplorerBrowser`，FastFile 继续负责主窗口、标签、导航栏、左侧目录树、预览与命令栏。普通文件区由系统提供选择、原生上下文菜单和重命名交互；FastFile 命令栏 / F2 调用 `IFolderView2::DoRename()`。普通名称筛选使用 Shell 文件夹筛选；递归搜索保留自绘结果视图。`README.md` 已按此更新。该改造尚未发布，不应写入 1.0.9 的已发布变更。
+- **本次验证**：Release x64 主程序构建通过；CTest 3/3 通过，包括新加的 `FastFileShellBrowserTests`，它在隐藏测试窗口中创建真实 Shell 浏览器并验证导航、视图模式、排序和刷新。当前会话没有可供 Computer Use 选择的 Windows 应用窗口，因此 FastFile 主窗口内的鼠标二次单击重命名、F2、右键菜单和递归搜索切换尚未完成交互验收；交付前应在应用窗口做这组手工回归。构建输出另有 DuiLib 头文件代码页警告，未阻止构建。
+- 已建立 CTest：`FastFileCoreTests` 覆盖路径、文件名规则和文件大小格式；`FastFileShellBrowserTests` 验证 Shell 浏览器宿主；`FastFileVersionSource` 校验 CMake、根目录 `VERSION` 与安装脚本的版本来源一致。
+- 2026-09-30 回归记录：Release x64 构建和两项 CTest 通过；隔离窗口验证了复制、同盘移动、F2 重命名与 Ctrl+Z 撤销、新建文件夹与撤销 / 取消，以及 Ctrl+T / Ctrl+Tab / Ctrl+W 标签流程。F2 原先调用 Shell rename 动词会失败，现改用应用自有输入框 + `RenameItem`，并已手工验证成功与撤销。
+- 2026-09-30 右键重命名修复：部分 Shell 项目的 `IContextMenu` 没有提供 Rename 动词。单选文件 / 文件夹时，在 Shell 原生菜单后追加 FastFile 自己的「重命名」命令，复用 F2 的输入框与撤销逻辑。隔离窗口已确认菜单显示、右键入口重命名成功且 Ctrl+Z 可撤销；手工回归步骤：单选项目 → 右键确认菜单底部「重命名」→ 输入新名称 → 确认 → Ctrl+Z 确认恢复原名。
+- 当前自动回归仍未覆盖复制 / 移动任务取消、失败提示以及 Fluent 滚动条悬停状态；后续应补充这些场景。代码更新需按根目录 `AGENTS.md` 的要求，为变更补充测试并在交付前运行相关测试和验证。
+- 1.0.9 已覆盖主要浏览、文件操作、Shell 集成、预览和外观功能；稳定性迭代已开始。当前未发布改造先完成主窗口交互验收，再扩充文件操作取消 / 失败回归及滚动条视觉验收。
+- 当前仍可规划的产品功能：压缩包浏览、网络位置、批量重命名、内容搜索（限制见 README）。
+- 尚未完成的交互待办：收藏栏芯片拖拽排序 / Delete 移除；动画滚动条过渡为可选项。
+- 当前验证缺口：横向滚动条沿用同一控件实现，但尚无专门截图验收记录；应纳入下一轮回归。
+- 发布能力后续可考虑设置面板、自动更新和代码签名。是否做这些功能取决于产品发布目标；当前安装器源码已到 1.0.9。
 
 ## 验收口径（这批之后形成习惯）
 
+- 代码或功能更新必须新增 / 更新相应测试，并运行所有受影响测试；交付前通过 Release x64 构建及适用的运行验证。若验证失败或无法执行，需说明原因和未验证范围，不能报告为全部完成（详见根目录 `AGENTS.md`）。
 - 每个界面改动都用 `PrintWindow` 截图 + 1:1 裁剪对比给用户看，而不是只说“改好了”
 - 涉及原生 Shell 行为的（右键菜单等），先把 Shell 给的数据转储出来对比，再决定怎么改
 - 崩溃一律先看 `%LOCALAPPDATA%\FastFile\last_crash.txt`（现在是异常码 + 模块内 RVA + 调用栈），
@@ -1198,10 +1422,10 @@ dumpbin /DISASM /NOBYTES build\Release\FastFile.exe > disasm.txt
 
 ## 给新 AI 的工作方式
 
-1. 先读 `UiTokens.h`、`skin/main.xml`，再按功能定位到对应编译单元（见「源码结构」）后修改
-2. 改动走 Git：小步提交（`git commit` + `git push`），不要再往工程根堆 `bak_*`
-3. 改完：校验 XML 良构 → Release 构建 → 杀进程 → 清图标缓存 → 启动验收
-4. 用户界面中文；回复用户可用中文
+1. 按任务需要读取 `UiTokens.h`、`skin/main.xml` 和对应编译单元；详细历史经验见本文件。
+2. 改动走 Git：小步提交（`git commit` + `git push`），不要再往工程根堆 `bak_*`。
+3. 每次代码 / 功能更新都补充或更新测试；交付前运行受影响测试、校验 XML、做 Release x64 构建，并对界面 / Shell 行为做适用的运行验收。失败时修复并重验；无法执行的项如实报告。
+4. 用户界面中文；回复用户可用中文。
 
 ## 历史备份（已移出工程）
 

@@ -3,6 +3,8 @@
 // Behaviour is unchanged; declarations live in MainWnd.h.
 
 #include "MainWndInternal.h"
+#include "FavoriteStarUI.h"
+#include "FavoritesJson.h"
 
 namespace {
 
@@ -69,6 +71,12 @@ std::wstring CleanFavoriteLabel(const std::wstring& raw)
 
 void CMainWnd::UpdateFavoritesHighlight()
 {
+    if (auto* star = static_cast<CFavoriteStarUI*>(m_PaintManager.FindControl(_T("btn_favorite_toggle")))) {
+        const bool pinned = !IsThisPcPath(m_currentPath) && IsFavoritePinned(m_currentPath);
+        star->SetPinned(pinned);
+        star->SetToolTip(IsThisPcPath(m_currentPath) ? L"此电脑不能收藏" :
+            pinned ? L"取消收藏当前文件夹" : L"收藏当前文件夹");
+    }
     auto stylePin = [&](CContainerUI* host) {
         if (!host) return;
         const int n = host->GetCount();
@@ -157,7 +165,7 @@ void CMainWnd::UpdateLeftQuickAccessSpacing()
     if (!m_pLeftQuick) return;
     const int rowCount = (std::max)(1, static_cast<int>(m_quickRows.size()));
 
-    const int rowHeight = DpiScale(UiTokens::NavRowH);
+    const int rowHeight = DpiScale(m_settings.NavigationRowHeight());
     const int height = m_pLeftQuick->GetFixedHeight();
     if (height <= 0 || rowHeight <= 0) return;
     const int slack = (std::max)(0, height - rowCount * rowHeight);
@@ -181,14 +189,14 @@ void CMainWnd::ApplyQuickAccessRow(CControlUI* row, const std::wstring& iconBmp)
     if (!row) return;
     const int pad = DpiScale(UiTokens::NavIconPad);
     const int iconPx = DpiScale(UiTokens::NavIconPx);
-    row->SetAttribute(_T("font"), _T("4"));   // Microsoft YaHei UI 12, matches the XML rows
+    row->SetAttribute(_T("font"), _T("4"));   // Segoe UI 12 with system CJK fallback, shared with tree
     CDuiString rowPad;
     rowPad.Format(_T("%d,0,%d,0"), pad, pad);
     row->SetAttribute(_T("padding"), rowPad.GetData());
 
     if (!iconBmp.empty()) {
         int bh = row->GetFixedHeight();
-        if (bh <= 0) bh = DpiScale(UiTokens::NavRowH);
+        if (bh <= 0) bh = DpiScale(m_settings.NavigationRowHeight());
         int y = (bh - iconPx) / 2;
         if (y < 0) y = 0;
         ApplyControlForeIcon(row, iconBmp, iconPx, pad, y, false);
@@ -419,7 +427,7 @@ std::wstring CMainWnd::GetFavoritesFilePath()
         dir = L".";
     dir += L"\\FastFile";
     ::CreateDirectoryW(dir.c_str(), nullptr);
-    return dir + L"\\favorites.txt";
+    return dir + L"\\favorites.json";
 }
 
 std::wstring CMainWnd::GetQuickAccessFilePath()
@@ -556,29 +564,43 @@ bool CMainWnd::UnpinQuickAccess(const std::wstring& path)
 void CMainWnd::LoadFavorites()
 {
     m_favorites.clear();
-    std::wstring file = GetFavoritesFilePath();
+    const std::wstring file = GetFavoritesFilePath();
     FILE* fp = nullptr;
-    if (_wfopen_s(&fp, file.c_str(), L"rb") != 0 || !fp)
-        return;
+    bool legacy = false;
+    if (_wfopen_s(&fp, file.c_str(), L"rb") != 0 || !fp) {
+        const std::wstring oldFile = file.substr(0, file.size() - 4) + L"txt";
+        if (_wfopen_s(&fp, oldFile.c_str(), L"rb") != 0 || !fp) return;
+        legacy = true;
+    }
     fseek(fp, 0, SEEK_END);
-    long sz = ftell(fp);
+    const long size = ftell(fp);
     fseek(fp, 0, SEEK_SET);
-    if (sz < 2) { fclose(fp); return; }
-    std::wstring content;
-    content.resize(sz / sizeof(wchar_t));
-    fread(&content[0], 1, sz, fp);
+    if (size < 0) { fclose(fp); return; }
+    std::string bytes(static_cast<size_t>(size), '\0');
+    const size_t read = fread(bytes.data(), 1, bytes.size(), fp);
     fclose(fp);
-    if (!content.empty() && content[0] == 0xFEFF)
-        content.erase(content.begin());
-
-    size_t pos = 0;
-    while (pos < content.size()) {
-        size_t eol = content.find(L'\n', pos);
-        if (eol == std::wstring::npos) eol = content.size();
-        std::wstring line = content.substr(pos, eol - pos);
-        if (!line.empty() && line.back() == L'\r') line.pop_back();
-        pos = eol + 1;
-        if (line.empty() || line[0] == L'#' || line[0] == L';') continue;
+    if (read != bytes.size()) return;
+    std::vector<std::wstring> paths;
+    if (legacy) {
+        if (bytes.size() % sizeof(wchar_t)) return;
+        std::wstring content(bytes.size() / sizeof(wchar_t), L'\0');
+        memcpy(content.data(), bytes.data(), bytes.size());
+        if (!content.empty() && content.front() == 0xFEFF) content.erase(content.begin());
+        std::wistringstream lines(content);
+        std::wstring line;
+        while (std::getline(lines, line)) {
+            if (!line.empty() && line.back() == L'\r') line.pop_back();
+            if (!line.empty() && line.front() != L'#' && line.front() != L';') paths.push_back(line);
+        }
+    } else {
+        if (bytes.compare(0, 3, "\xef\xbb\xbf") == 0) bytes.erase(0, 3);
+        const int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), static_cast<int>(bytes.size()), nullptr, 0);
+        if (!count) return;
+        std::wstring content(count, L'\0');
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), static_cast<int>(bytes.size()), content.data(), count);
+        if (!FavoritesJson::Decode(content, paths)) return;
+    }
+    for (const auto& line : paths) {
         std::wstring path = NormalizePath(line);
         if (path.empty()) continue;
         DWORD attrs = ::GetFileAttributesW(path.c_str());
@@ -593,22 +615,22 @@ void CMainWnd::LoadFavorites()
         if (it.displayName.empty()) it.displayName = path;
         m_favorites.push_back(std::move(it));
     }
+    if (legacy) SaveFavorites();
 }
 
 void CMainWnd::SaveFavorites() const
 {
-    std::wstring file = GetFavoritesFilePath();
+    const std::wstring file = GetFavoritesFilePath();
+    const std::wstring temp = file + L".tmp";
+    std::vector<std::wstring> paths;
+    for (const auto& item : m_favorites) paths.push_back(item.path);
+    const std::string content = FavoritesJson::Encode(paths);
     FILE* fp = nullptr;
-    if (_wfopen_s(&fp, file.c_str(), L"wb") != 0 || !fp)
-        return;
-    wchar_t bom = 0xFEFF;
-    fwrite(&bom, sizeof(bom), 1, fp);
-    for (const auto& it : m_favorites) {
-        fwrite(it.path.c_str(), sizeof(wchar_t), it.path.size(), fp);
-        wchar_t nl = L'\n';
-        fwrite(&nl, sizeof(nl), 1, fp);
-    }
-    fclose(fp);
+    if (_wfopen_s(&fp, temp.c_str(), L"wb") != 0 || !fp) return;
+    const bool written = fwrite(content.data(), 1, content.size(), fp) == content.size();
+    const bool closed = fclose(fp) == 0;
+    if (written && closed)
+        ::MoveFileExW(temp.c_str(), file.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
 }
 
 bool CMainWnd::IsFavoritePinned(const std::wstring& path) const
@@ -686,10 +708,10 @@ void CMainWnd::RebuildFavoritesBar()
     m_pFavoritesStrip->SetVisible(!empty);
     int stripW = 0;
 
-    // Explorer chip metrics (96-DPI design -> physical): 28 tall, 4 radius, 8 padding,
+    // Compact chip metrics (96-DPI design -> physical): 25 tall, 4 radius, 8 padding,
     // 8 icon->label gap, 8 between chips, <=168 wide, DT_END_ELLIPSIS beyond that.
     const int iconPx = DpiScale(UiTokens::FavIconPx);
-    const int btnH = DpiScale(UiTokens::FavChipH);
+    const int btnH = DpiScale(m_settings.favoritesHeight-4);
     const int padX = DpiScale(UiTokens::FavChipPadX);
     const int iconGap = DpiScale(UiTokens::FavChipIconGap);
     const int chipGap = DpiScale(UiTokens::FavChipGap);
@@ -762,21 +784,21 @@ void CMainWnd::RebuildFavoritesBar()
     UpdateFavoritesHighlight();
 }
 
-// Squeeze the chips into the row width (every chip gets an equal share, never below 72 design
-// px). Runs whenever the favourites row's width changes; a no-op until the row has a size.
+// Fit the chip viewport to the space to the right of the star and its gap. Chips retain
+// their natural widths and scroll when needed; the star never participates in sizing.
 void CMainWnd::RefitFavoritesChips()
 {
     if (!m_pFavoritesStrip || !m_pFavoritesBar) return;
     if (m_favChipNatural.empty()) return;
     const RECT bar = m_pFavoritesBar->GetPos();
     const int barW = static_cast<int>(bar.right - bar.left);
-    if (barW <= DpiScale(UiTokens::FavLabelW) + DpiScale(24)) return;   // layout not ready
+    if (barW <= DpiScale(UiTokens::FavStarHitSize + UiTokens::FavStarGap + 16)) return;   // layout not ready
 
     // Content width, never an equal split: a chip is as wide as its own label needs
     // (72..168 design px). When the row runs out of space the strip scrolls instead of
     // chopping every name down to two glyphs.
-    const int availW = (std::max)(DpiScale(72),
-        barW - DpiScale(8) * 2 - DpiScale(UiTokens::FavLabelW));
+    const int availW = (std::max)(0,
+        barW - DpiScale(8) * 2 - DpiScale(UiTokens::FavStarHitSize + UiTokens::FavStarGap));
     int total = 0;
     for (int w : m_favChipNatural) total += w;
     total += DpiScale(UiTokens::FavChipGap) * (static_cast<int>(m_favChipNatural.size()) - 1);
@@ -793,7 +815,7 @@ void CMainWnd::RefitFavoritesChips()
         CDuiString inset;
         inset.Format(_T("%d,0,0,0"), -m_favScrollX);
         m_pFavoritesStrip->SetAttribute(_T("inset"), inset);
-        m_pFavoritesStrip->SetFixedWidth((std::max)(DpiScale(1), total));
+        m_pFavoritesStrip->SetFixedWidth((std::max)(DpiScale(1), (std::min)(total, availW)));
         m_pFavoritesStrip->NeedUpdate();
         if (m_pFavoritesBar) m_pFavoritesBar->NeedUpdate();
     }
@@ -845,12 +867,15 @@ void CMainWnd::EnsureDefaultQuickRows()
     if (!docs.empty()) addIfMissing(false, docs, L"文档");
     if (!desk.empty()) addIfMissing(false, desk, L"桌面");
     if (!downs.empty()) addIfMissing(false, downs, L"下载");
+    const std::wstring pictures = GetKnownFolderPath(CSIDL_MYPICTURES);
+    if (!pictures.empty()) addIfMissing(false, pictures, L"图片");
 }
 
 void CMainWnd::BuildDefaultQuickRows()
 {
     m_quickRows.clear();
     EnsureDefaultQuickRows();
+    RebuildLeftQuickRows();
 }
 
 // Runtime rows for the 快速访问 list. The four built-in folders and the user's pins are one
@@ -860,7 +885,7 @@ void CMainWnd::RebuildLeftQuickRows()
     if (!m_pLeftQuickRows) return;
     m_pLeftQuickRows->RemoveAll();
     const int iconPx = DpiScale(UiTokens::NavIconPx);
-    const int rowH = DpiScale(UiTokens::NavRowH);
+    const int rowH = DpiScale(m_settings.NavigationRowHeight());
     for (size_t i = 0; i < m_quickRows.size(); ++i) {
         const QuickRow& row = m_quickRows[i];
         auto* btn = new CButtonUI;
@@ -905,7 +930,7 @@ void CMainWnd::RebuildLeftQuickRows()
     // UpdateLeftQuickAccessSpacing puts half the slack above and half below. The height the
     // 快速访问 block actually occupies is therefore 2 * fixed - content, so the minimum has to
     // leave just a small inset around the rows instead of one extra row per pin.
-    const int contentH = static_cast<int>(m_quickRows.size()) * UiTokens::NavRowH;
+    const int contentH = static_cast<int>(m_quickRows.size()) * m_settings.NavigationRowHeight();
     const int minimum = (std::max)(UiTokens::LeftQuickMinH, contentH + 2 * UiTokens::SpaceXs);
     if (m_pLeftQuick)
         m_pLeftQuick->SetMinHeight(DpiScale(minimum));
@@ -933,6 +958,7 @@ void CMainWnd::UpdateQuickRowHighlight()
 {
     if (!m_pLeftQuickRows) return;
     const int n = m_pLeftQuickRows->GetCount();
+    bool quickOwnsSelection = false;
     for (int i = 0; i < n && i < static_cast<int>(m_quickRows.size()); ++i) {
         CControlUI* c = m_pLeftQuickRows->GetItemAt(i);
         if (!c) continue;
@@ -940,12 +966,19 @@ void CMainWnd::UpdateQuickRowHighlight()
         const bool active = row.isThisPc
             ? IsThisPcPath(m_currentPath)
             : PathEquals(m_currentPath, row.path);
+        quickOwnsSelection = quickOwnsSelection || active;
         c->SetAttribute(_T("bkcolor"),
             active ? UiTokens::ColorNavSelected : UiTokens::ColorSurface);
         c->SetAttribute(_T("textcolor"), UiTokens::ColorTextPrimary);
         c->SetAttribute(_T("bordercolor"), UiTokens::ColorTransparent);
         c->SetAttribute(_T("bordersize"), _T("0"));
         c->Invalidate();
+    }
+    if (quickOwnsSelection && m_pDirTree) {
+        for (int i = 0; i < m_pDirTree->GetCount(); ++i) {
+            if (auto* row = static_cast<CTreeNodeUI*>(m_pDirTree->GetItemAt(i)->GetInterface(DUI_CTR_TREENODE)))
+                row->Select(false, false);
+        }
     }
 }
 
@@ -1027,10 +1060,9 @@ void CMainWnd::OnPinnedFavoriteClick(CControlUI* btn)
     if (!btn) return;
     CDuiString ud = btn->GetUserData();
     if (ud.IsEmpty()) return;
-    // Ctrl+click opens a second tab on the same folder (Explorer does this in the favourites
-    // strip); a plain click reuses the tab that already shows it.
+    // Both Ctrl+click and plain click reuse a tab that already shows the folder.
     if ((::GetKeyState(VK_CONTROL) & 0x8000) != 0) {
-        AddTab(ud.GetData(), true, true);
+        AddTab(ud.GetData(), true);
         return;
     }
     OpenQuickAccessTab(ud.GetData());
@@ -1067,7 +1099,7 @@ void CMainWnd::ShowFavoriteContextMenu(CControlUI* btn, POINT ptScreen)
     if (cmd == kCmdFavOpen) {
         AddTab(path, true);
     } else if (cmd == kCmdFavOpenNewTab) {
-        AddTab(path, true, /*allowDuplicate*/ true);
+        AddTab(path, true);
     } else if (cmd == kCmdFavOpenNewWindow) {
         POINT pt = ptScreen;
         OpenPathInNewWindow(path, pt);

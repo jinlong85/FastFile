@@ -7,11 +7,17 @@
 #   powershell -ExecutionPolicy Bypass -File installer\build_installer.ps1
 param(
     [string]$Configuration = 'Release',
-    [string]$Version = '1.0.0'
+    [string]$Version = ''
 )
 $ErrorActionPreference = 'Stop'
 
 $root  = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $versionFile = Join-Path $root 'VERSION'
+    if (-not (Test-Path -LiteralPath $versionFile)) { throw "找不到版本文件 $versionFile" }
+    $Version = (Get-Content -LiteralPath $versionFile -Raw).Trim()
+}
+if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw "无效版本号：$Version（格式应为 x.y.z）" }
 $build = Join-Path $root "build\$Configuration"
 $dist  = Join-Path $root 'dist'
 $stage = Join-Path $dist '_stage'

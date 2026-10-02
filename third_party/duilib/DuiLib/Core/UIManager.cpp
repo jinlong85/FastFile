@@ -1910,10 +1910,19 @@ void CPaintManagerUI::SetCapture()
 
 void CPaintManagerUI::ReleaseCapture()
 {
-    ::ReleaseCapture();
     m_bMouseCapture = false;
+    ::ReleaseCapture();
 }
 
+void CPaintManagerUI::CancelMouseCapture(CControlUI* control)
+{
+    if (m_pEventClick != control || !m_bMouseCapture) return;
+    // Clear the logical owner before the reentrant WM_CAPTURECHANGED notification.
+    // Do not release capture owned by another native window.
+    m_pEventClick = NULL;
+    m_bMouseCapture = false;
+    if (::GetCapture() == m_hWndPaint) ::ReleaseCapture();
+}
 bool CPaintManagerUI::IsCaptured()
 {
     return m_bMouseCapture;

@@ -347,6 +347,7 @@ public:
 
     void SetCapture();
     void ReleaseCapture();
+    void CancelMouseCapture(CControlUI* control);
     bool IsCaptured();
 
 	bool IsPainting();

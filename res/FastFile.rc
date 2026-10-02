@@ -1,4 +1,5 @@
 // Application resources for FastFile.
+// User-selected source: Komfort-Zone-Unibody-Hds-Bootcamp.ico (embedded at all sizes).
 // The icon below becomes FastFile.exe's shell icon (Explorer / taskbar / Alt-Tab);
 // MainWnd.cpp also loads resource 1 at startup and pushes it to the window with
 // WM_SETICON, because DuiLib registers its window class with wc.hIcon = NULL.
