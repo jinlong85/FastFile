@@ -183,7 +183,7 @@ FastFile/
 
 ## 配置与数据
 
-运行时数据在 `%APPDATA%\FastFile\`：`session.ini`（标签/视图/排序等会话状态）、`folder_views.ini`（每文件夹视图）、`favorites.json`（按顺序保存路径，首次兼容导入旧 `favorites.txt`）、`left_nav.ini`（左栏分割位置）。图标缓存位于 `%TEMP%\FastFileIconCache`，异常时可删除后重启。
+运行时数据在 `%APPDATA%\FastFile\`：`session.ini`（标签/视图/排序等会话状态）、`folder_views.ini`（每文件夹视图）、`favorites.json`（按顺序保存路径，首次兼容导入旧 `favorites.txt`）、`left_nav.ini`（左栏分割位置）。图标缓存位于 `%TEMP%\FastFileIconCache\v9`，跨启动保留（文件名含源文件大小与修改时间；启动后在后台清理旧版本目录、上次会话的临时预览、30 天以上及超过 256 MB 的旧条目），异常时可删除后重启。环境变量 `FASTFILE_ICON_CACHE_DIR` 可改放缓存根目录（回归测试用它隔离缓存）。
 
 ## 已知限制
 

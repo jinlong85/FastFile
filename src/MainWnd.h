@@ -316,6 +316,7 @@ private:
     void SetViewMode(ViewMode mode);
     void ApplyShellViewMode();
     void UpdateViewModeButtons();
+    bool IsShellBrowsingCurrentPath() const;
     bool IsTileViewMode() const;
     void ApplyTileLayoutMetrics();
     void GetViewMetrics(int& tileW, int& tileH, int& iconPx, int& childPad, int& maxLabel) const;
@@ -351,6 +352,21 @@ private:
     static bool EnsureGdiplus();
     static bool GetPngEncoderClsid(CLSID* pClsid);
     static void WipeDirectoryFiles(const std::wstring& dirNoSlash);
+    // Persistent PNG icon cache (see MainWnd.Icons.cpp): versioned directory, stamped
+    // names, background age / size trimming instead of a wipe on every launch.
+    struct IconCacheTrimResult {
+        int removedLegacy = 0, removedVersionDirs = 0, removedSession = 0, removedAged = 0, removedOverCap = 0;
+        ULONGLONG keptBytes = 0;
+    };
+    static const wchar_t* const kIconCacheVersion;
+    static constexpr int kIconCacheMaxAgeDays = 30;
+    static constexpr ULONGLONG kIconCacheMaxBytes = 256ull * 1024 * 1024;
+    static std::wstring ResolveIconCacheRoot();
+    static IconCacheTrimResult MaintainIconCache(const std::wstring& root, const std::wstring& version,
+        ULONGLONG sessionStart, int maxAgeDays, ULONGLONG maxBytes);
+    void InitIconCache();
+    std::wstring IconCacheLeaf(const std::wstring& key, const std::wstring& source, const wchar_t* tail) const;
+    std::wstring SessionCacheFile(const wchar_t* leaf) const;
     // Command-bar icons: two-tone line art (grey outline + light blue accent) drawn with
     // GDI+ so the toolbar matches the Explorer command bar without shipping icon assets.
     // The icon ids live in MainWnd.Icons.cpp.
@@ -834,7 +850,10 @@ private:
 
     std::map<std::wstring, std::wstring> m_iconCache;
     std::mutex m_iconCacheMutex;
-    std::wstring m_iconCacheDir;
+    std::wstring m_iconCacheDir;      // <root>\<version>\ (trailing slash)
+    std::wstring m_iconCacheRoot;
+    std::wstring m_iconSessionTag;
+    ULONGLONG m_iconCacheSessionStart = 0;
 
     // Listing cache
     std::vector<DirEntry> m_listingDirs;

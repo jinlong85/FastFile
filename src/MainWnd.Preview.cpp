@@ -804,7 +804,7 @@ bool CMainWnd::LoadPreviewImage(const std::wstring& path)
     ++m_previewSerial;
     wchar_t leaf[64] = {};
     swprintf_s(leaf, L"preview_%u.png", m_previewSerial);
-    m_previewBmp = m_iconCacheDir + leaf;
+    m_previewBmp = SessionCacheFile(leaf);
     if (!SaveImageThumbnailPng(path, m_previewBmp, boxW, boxH)) {
         m_previewBmp.clear();
         return false;
@@ -839,7 +839,7 @@ bool CMainWnd::LoadPreviewStockIcon(int siid, int iconPx)
     ++m_previewSerial;
     wchar_t leaf[64] = {};
     swprintf_s(leaf, L"preview_stock_%u.png", m_previewSerial);
-    m_previewBmp = m_iconCacheDir + leaf;
+    m_previewBmp = SessionCacheFile(leaf);
     const std::wstring stock = GetStockIconBmp(static_cast<SHSTOCKICONID>(siid), ip);
     if (stock.empty() || !::CopyFileW(stock.c_str(), m_previewBmp.c_str(), FALSE)) {
         m_previewBmp.clear();
@@ -886,7 +886,7 @@ bool CMainWnd::LoadPreviewShellIconAsync(const std::wstring& path, bool isDir, i
     job->px = PreviewIconRequestPx(iconPx);
     wchar_t leaf[64] = {};
     swprintf_s(leaf, L"preview_icon_%u.png", job->serial);
-    job->png = m_iconCacheDir + leaf;
+    job->png = SessionCacheFile(leaf);
     PreviewIconJob* raw = job.release();
     const HWND owner = m_hWnd;
     try {
@@ -949,7 +949,7 @@ bool CMainWnd::LoadPreviewShellIcon(const std::wstring& path, bool isDir, int ic
     ++m_previewSerial;
     wchar_t leaf[64] = {};
     swprintf_s(leaf, L"preview_icon_%u.png", m_previewSerial);
-    m_previewBmp = m_iconCacheDir + leaf;
+    m_previewBmp = SessionCacheFile(leaf);
 
     bool ok = ExtractShellIconSized(path, isDir, ip, m_previewBmp);
     if (!ok && isDir)
@@ -1001,7 +1001,7 @@ bool CMainWnd::LoadPreviewShellThumbnail(const std::wstring& path, int cx, int c
     ++m_previewSerial;
     wchar_t leaf[64] = {};
     swprintf_s(leaf, L"preview_shell_%u.png", m_previewSerial);
-    m_previewBmp = m_iconCacheDir + leaf;
+    m_previewBmp = SessionCacheFile(leaf);
     if (!ExtractShellItemImage(path, reqW, reqH, m_previewBmp)) {
         m_previewBmp.clear();
         return false;

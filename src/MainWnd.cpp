@@ -128,14 +128,8 @@ void CMainWnd::InitWindow()
         StylePreviewRail();
     }
 
-    wchar_t tmp[MAX_PATH] = {};
-    ::GetTempPathW(MAX_PATH, tmp);
-    m_iconCacheDir = tmp;
-    m_iconCacheDir += L"FastFileIconCache";
-    // v6: PNG + true alpha; wipe prior BMP/v5 cache on every relaunch.
-    WipeDirectoryFiles(m_iconCacheDir);
-    m_iconCacheDir.push_back(L'\\');
-    ::CreateDirectoryW(m_iconCacheDir.c_str(), nullptr);
+    // Persistent across launches (versioned dir + stamped names); never wiped here.
+    InitIconCache();
 
     ApplyDpiScaledChrome();
     LoadLeftNavSplitter();

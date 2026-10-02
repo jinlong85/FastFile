@@ -94,6 +94,158 @@ void CMainWnd::WipeDirectoryFiles(const std::wstring& dirNoSlash)
     ::FindClose(h);
 }
 
+// ---- Persistent icon cache ------------------------------------------------------------
+// The PNG cache survives relaunches. Invalidation is by name, not by wiping:
+//  * kIconCacheVersion names the directory; a format change bumps it and the
+//    background maintenance removes the old directories / legacy flat files.
+//  * file / folder entries hash the source's size and last-write time into the name,
+//    so an edited file never reuses a previous launch's image.
+//  * items without a stable stamp (drive roots, virtual items) and preview scratch
+//    images are session files ("s_<tag>_"), removed by the next launch.
+// FASTFILE_ICON_CACHE_DIR redirects the root (regression tests use their own folder
+// so a test run never touches the user's cache).
+const wchar_t* const CMainWnd::kIconCacheVersion = L"v9";
+
+std::wstring CMainWnd::ResolveIconCacheRoot()
+{
+    std::wstring root;
+    wchar_t env[MAX_PATH * 2] = {};
+    const DWORD n = ::GetEnvironmentVariableW(L"FASTFILE_ICON_CACHE_DIR", env, _countof(env));
+    if (n > 0 && n < _countof(env)) {
+        root = env;
+    } else {
+        wchar_t tmp[MAX_PATH] = {};
+        ::GetTempPathW(MAX_PATH, tmp);
+        root = tmp;
+        if (!root.empty() && root.back() != L'\\') root.push_back(L'\\');
+        root += L"FastFileIconCache";
+    }
+    while (root.size() > 3 && (root.back() == L'\\' || root.back() == L'/')) root.pop_back();
+    return root;
+}
+
+void CMainWnd::InitIconCache()
+{
+    m_iconCacheRoot = ResolveIconCacheRoot();
+    FILETIME now = {};
+    ::GetSystemTimeAsFileTime(&now);
+    m_iconCacheSessionStart = (static_cast<ULONGLONG>(now.dwHighDateTime) << 32) | now.dwLowDateTime;
+    wchar_t tag[32] = {};
+    swprintf_s(tag, L"%08lX%08lX", ::GetCurrentProcessId(), static_cast<unsigned long>(m_iconCacheSessionStart >> 20));
+    m_iconSessionTag = tag;
+    const std::wstring dir = m_iconCacheRoot + L"\\" + kIconCacheVersion;
+    ::SHCreateDirectoryExW(nullptr, dir.c_str(), nullptr);
+    m_iconCacheDir = dir + L"\\";
+    // Trim off the UI thread; it only touches files of other versions, other sessions,
+    // or entries older than the age cap, never this session's fresh files.
+    const std::wstring root = m_iconCacheRoot;
+    const ULONGLONG start = m_iconCacheSessionStart;
+    std::thread([root, start]() {
+        ::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+        MaintainIconCache(root, kIconCacheVersion, start, kIconCacheMaxAgeDays, kIconCacheMaxBytes);
+    }).detach();
+}
+
+CMainWnd::IconCacheTrimResult CMainWnd::MaintainIconCache(const std::wstring& root,
+    const std::wstring& version, ULONGLONG sessionStart, int maxAgeDays, ULONGLONG maxBytes)
+{
+    IconCacheTrimResult result;
+    if (root.empty()) return result;
+    auto isCacheImage = [](const wchar_t* name) {
+        const wchar_t* ext = ::PathFindExtensionW(name);
+        return _wcsicmp(ext, L".png") == 0 || _wcsicmp(ext, L".bmp") == 0;
+    };
+    auto stamp = [](const FILETIME& t) { return (static_cast<ULONGLONG>(t.dwHighDateTime) << 32) | t.dwLowDateTime; };
+    WIN32_FIND_DATAW fd = {};
+    // Legacy flat layout (<= v8, written straight into the root) and other versions.
+    HANDLE h = ::FindFirstFileW((root + L"\\*").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            const std::wstring name = fd.cFileName;
+            if (name == L"." || name == L"..") continue;
+            const std::wstring full = root + L"\\" + name;
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                const bool versionDir = name.size() > 1 && (name[0] == L'v' || name[0] == L'V')
+                    && std::all_of(name.begin() + 1, name.end(), [](wchar_t c) { return c >= L'0' && c <= L'9'; });
+                if (versionDir && _wcsicmp(name.c_str(), version.c_str()) != 0) {
+                    WipeDirectoryFiles(full);
+                    if (::RemoveDirectoryW(full.c_str())) ++result.removedVersionDirs;
+                }
+            } else if (isCacheImage(fd.cFileName) && ::DeleteFileW(full.c_str())) {
+                ++result.removedLegacy;
+            }
+        } while (::FindNextFileW(h, &fd));
+        ::FindClose(h);
+    }
+    // Current version: session leftovers, age cap, then size cap (oldest first).
+    const std::wstring dir = root + L"\\" + version;
+    struct Entry { std::wstring path; ULONGLONG time; ULONGLONG bytes; };
+    std::vector<Entry> entries;
+    const ULONGLONG ageLimit = static_cast<ULONGLONG>(maxAgeDays) * 24ull * 3600ull * 10000000ull;
+    h = ::FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            const std::wstring full = dir + L"\\" + fd.cFileName;
+            const ULONGLONG written = stamp(fd.ftLastWriteTime);
+            const bool session = wcsncmp(fd.cFileName, L"s_", 2) == 0;
+            if (session && written < sessionStart) {
+                if (::DeleteFileW(full.c_str())) ++result.removedSession;
+                continue;
+            }
+            if (!session && maxAgeDays > 0 && sessionStart > written && sessionStart - written > ageLimit) {
+                if (::DeleteFileW(full.c_str())) ++result.removedAged;
+                continue;
+            }
+            const ULONGLONG bytes = (static_cast<ULONGLONG>(fd.nFileSizeHigh) << 32) | fd.nFileSizeLow;
+            entries.push_back({full, written, bytes});
+            result.keptBytes += bytes;
+        } while (::FindNextFileW(h, &fd));
+        ::FindClose(h);
+    }
+    if (maxBytes > 0 && result.keptBytes > maxBytes) {
+        std::sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) { return a.time < b.time; });
+        const ULONGLONG target = maxBytes / 4 * 3;
+        for (const Entry& e : entries) {
+            if (result.keptBytes <= target) break;
+            if (e.time >= sessionStart) continue; // written by this launch
+            if (::DeleteFileW(e.path.c_str())) { result.keptBytes -= e.bytes; ++result.removedOverCap; }
+        }
+    }
+    return result;
+}
+
+std::wstring CMainWnd::IconCacheLeaf(const std::wstring& key, const std::wstring& source, const wchar_t* tail) const
+{
+    std::wstring stamped = key;
+    bool stable = false;
+    // Drive roots can be a different medium next launch; virtual items have no stamp.
+    if (source.size() > 3 && source.compare(0, 2, L"::") != 0) {
+        WIN32_FILE_ATTRIBUTE_DATA data = {};
+        if (::GetFileAttributesExW(source.c_str(), GetFileExInfoStandard, &data)) {
+            wchar_t buf[64] = {};
+            swprintf_s(buf, L"|%08lX%08lX|%08lX%08lX", data.nFileSizeHigh, data.nFileSizeLow,
+                data.ftLastWriteTime.dwHighDateTime, data.ftLastWriteTime.dwLowDateTime);
+            stamped += buf;
+            stable = true;
+        }
+    } else if (source.empty()) {
+        stable = true; // stock / glyph / command art: the key fully describes the image
+    }
+    const unsigned long long h = static_cast<unsigned long long>(std::hash<std::wstring>{}(stamped));
+    wchar_t name[128] = {};
+    if (stable)
+        swprintf_s(name, L"%016llX_%s", h, tail);
+    else
+        swprintf_s(name, L"s_%s_%016llX_%s", m_iconSessionTag.c_str(), h, tail);
+    return name;
+}
+
+std::wstring CMainWnd::SessionCacheFile(const wchar_t* leaf) const
+{
+    return m_iconCacheDir + L"s_" + m_iconSessionTag + L"_" + leaf;
+}
+
 // Render an HICON 1:1 into a top-down 32bpp BGRA buffer.
 // DrawIconEx *scaling* is unfiltered (the driver does a plain StretchBlt), which is
 // where the jagged list / tile / preview icons came from. So we always rasterise at
@@ -360,10 +512,9 @@ std::wstring CMainWnd::PeekCachedIconBmp(const std::wstring& path, bool isDir, i
             return it->second;
     }
 
-    size_t h = std::hash<std::wstring>{}(key);
-    wchar_t name[80] = {};
-    swprintf_s(name, L"%08X_%s_%d_v8.png", static_cast<unsigned>(h & 0xFFFFFFFF), isDir ? L"d" : L"f", cx);
-    std::wstring bmpPath = m_iconCacheDir + name;
+    wchar_t tail[32] = {};
+    swprintf_s(tail, L"%s_%d.png", isDir ? L"d" : L"f", cx);
+    std::wstring bmpPath = m_iconCacheDir + IconCacheLeaf(key, path, tail);
     if (::PathFileExistsW(bmpPath.c_str())) {
         std::lock_guard<std::mutex> lock(m_iconCacheMutex);
         m_iconCache[key] = bmpPath;
@@ -388,10 +539,9 @@ std::wstring CMainWnd::GetShellIconBmp(const std::wstring& path, bool isDir, int
             return it->second;
     }
 
-    size_t h = std::hash<std::wstring>{}(key);
-    wchar_t name[80] = {};
-    swprintf_s(name, L"%08X_%s_%d_v8.png", static_cast<unsigned>(h & 0xFFFFFFFF), isDir ? L"d" : L"f", cx);
-    std::wstring bmpPath = m_iconCacheDir + name;
+    wchar_t tail[32] = {};
+    swprintf_s(tail, L"%s_%d.png", isDir ? L"d" : L"f", cx);
+    std::wstring bmpPath = m_iconCacheDir + IconCacheLeaf(key, path, tail);
 
     if (::PathFileExistsW(bmpPath.c_str())) {
         std::lock_guard<std::mutex> lock(m_iconCacheMutex);
@@ -442,10 +592,9 @@ std::wstring CMainWnd::GetShellFileIconBmp(const std::wstring& path, bool isDir,
             return it->second;
     }
 
-    size_t h = std::hash<std::wstring>{}(key);
-    wchar_t name[80] = {};
-    swprintf_s(name, L"%08X_%s_%d_ico_v8.png", static_cast<unsigned>(h & 0xFFFFFFFF), isDir ? L"d" : L"f", cx);
-    std::wstring bmpPath = m_iconCacheDir + name;
+    wchar_t tail[32] = {};
+    swprintf_s(tail, L"%s_%d_ico.png", isDir ? L"d" : L"f", cx);
+    std::wstring bmpPath = m_iconCacheDir + IconCacheLeaf(key, path, tail);
 
     if (::PathFileExistsW(bmpPath.c_str())) {
         std::lock_guard<std::mutex> lock(m_iconCacheMutex);
@@ -850,10 +999,13 @@ std::wstring CMainWnd::GetModuleIconBmp(const wchar_t* moduleFile, int index, in
             return it->second;
     }
 
-    size_t h = std::hash<std::wstring>{}(key);
-    wchar_t name[96] = {};
-    swprintf_s(name, L"mod_%08X_%d_%d_v8.png", static_cast<unsigned>(h & 0xFFFFFFFFu), index, cx);
-    std::wstring bmpPath = m_iconCacheDir + name;
+    // Stamp with the module file when it is a real path (an updated exe changes its icon).
+    wchar_t modulePath[MAX_PATH] = {};
+    std::wstring source;
+    if (::SearchPathW(nullptr, moduleFile, nullptr, MAX_PATH, modulePath, nullptr)) source = modulePath;
+    wchar_t tail[48] = {};
+    swprintf_s(tail, L"mod_%d_%d.png", index, cx);
+    std::wstring bmpPath = m_iconCacheDir + IconCacheLeaf(key, source, tail);
     if (::PathFileExistsW(bmpPath.c_str())) {
         std::lock_guard<std::mutex> lock(m_iconCacheMutex);
         m_iconCache[key] = bmpPath;

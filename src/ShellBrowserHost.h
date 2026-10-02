@@ -68,11 +68,32 @@ private:
     void ClearItemImages();
     static HBITMAP NormalizeImageAlpha(HBITMAP bitmap);
     void RestoreListSpacing();
+    bool InstallListSpacer(HWND list);
     LRESULT DrawListIcon(NMLVCUSTOMDRAW* draw);
     HBITMAP ItemImage(IShellItem* item, const std::wstring& path);
     void PaintScrollBar(HWND window);
     static LRESULT CALLBACK ViewSubclass(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
     static LRESULT CALLBACK ListSubclass(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
+    // Cheap view-switch counters read by the regression tests (never reset).
+    struct ViewCounters {
+        int refreshes = 0;       // IShellView::Refresh (re-enumeration)
+        int filterSets = 0;      // IFolderFilterSite::SetFilter
+        int modeApplies = 0;     // ApplyViewMode
+        int modeSets = 0;        // SetViewModeAndIconSize
+        int iconSpacingSets = 0; // LVM_SETICONSPACING
+        int spacerSwaps = 0;     // 26-px list / details spacer installed or removed
+        int columnSets = 0;      // IColumnManager::SetColumns
+        int sortSets = 0;        // SetSortColumns
+        int groupSets = 0;       // SetGroupBy
+        int redrawBatches = 0;   // WM_SETREDRAW off/on around a real change
+        int listPaints = 0;      // WM_PAINT reaching the native list
+        int fullPaints = 0;      // ... whose update region covers (nearly) the whole list
+    };
+    ViewCounters m_counters;
+    HWND m_redrawBatch = nullptr;    // list with redraw suspended during ApplyViewMode
+    HWND m_spacingList = nullptr;    // icon spacing last applied: list, slot, result
+    int m_spacingSlot = 0;
+    DWORD m_appliedSpacing = 0;
     HWND m_listWindow = nullptr;
     HWND m_viewWindow = nullptr;
     int m_iconSlot = 0;

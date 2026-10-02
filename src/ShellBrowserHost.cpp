@@ -368,6 +368,7 @@ bool ShellBrowserHost::Navigate(const std::wstring& path)
 
 void ShellBrowserHost::Refresh()
 {
+    ++m_counters.refreshes;
     ClearItemImages();
     if (!m_browser)
         return;
@@ -623,6 +624,7 @@ bool ShellBrowserHost::SetFilter(const std::wstring& text)
     auto* next = new (std::nothrow) NameFolderFilter(text, m_showHidden);
     if (!next)
         return false;
+    ++m_counters.filterSets;
     const HRESULT hr = m_filterSite->SetFilter(next);
     if (FAILED(hr)) {
         next->Release();
@@ -694,6 +696,7 @@ bool ShellBrowserHost::SetViewMode(FOLDERVIEWMODE mode, int iconSize)
 
 bool ShellBrowserHost::ApplyViewMode(IFolderView2* view)
 {
+    ++m_counters.modeApplies;
     const auto mode=m_requestedMode;
     const int iconSize=m_requestedIconSize;
     FOLDERVIEWMODE currentMode=FVM_AUTO;int currentSize=0;
@@ -701,12 +704,31 @@ bool ShellBrowserHost::ApplyViewMode(IFolderView2* view)
     UINT dpi=GetDpiForWindow(m_parent);if(!dpi)dpi=96;
     const bool dpiChanged=dpi!=m_dpi;
     const bool changed=currentMode!=mode || (iconSize>0 && currentSize!=iconSize);
-    if(changed || dpiChanged)RestoreListSpacing();
+    // A real change (mode, size, DPI) is batched: the list does not paint the
+    // half-switched layout (old rows under new items) and repaints once at the end.
+    HWND batch=nullptr;
+    if ((changed || dpiChanged) && m_listWindow && IsWindow(m_listWindow) && IsWindowVisible(m_listWindow)) {
+        IShellView* shell=nullptr;HWND root=nullptr;
+        if (SUCCEEDED(view->QueryInterface(IID_PPV_ARGS(&shell)))) {shell->GetWindow(&root);shell->Release();}
+        if (root && (root==m_listWindow || IsChild(root,m_listWindow))) {
+            batch=m_listWindow;
+            SendMessageW(batch,WM_SETREDRAW,FALSE,0);
+            m_redrawBatch=batch;
+            ++m_counters.redrawBatches;
+        }
+    }
+    // List and Details share the 26-px spacer: keep it across List <-> Details and
+    // only give the Shell its own small image list back for the other modes.
+    const bool spacerMode=mode==FVM_LIST || mode==FVM_DETAILS;
+    if(dpiChanged || (changed && !spacerMode))RestoreListSpacing();
     // Shell folder templates may retain their header in icon/tile modes. Let the
     // native view remove its own header and reclaim its top inset on each switch.
     const DWORD headerMask = FWF_NOCOLUMNHEADER | FWF_NOHEADERINALLVIEWS;
-    const HRESULT flags = view->SetCurrentFolderFlags(headerMask,
-        mode == FVM_DETAILS ? 0 : headerMask);
+    const DWORD wantFlags = mode == FVM_DETAILS ? 0 : headerMask;
+    DWORD currentFlags = 0;
+    HRESULT flags = S_OK;
+    if (changed || FAILED(view->GetCurrentFolderFlags(&currentFlags)) || (currentFlags & headerMask) != wantFlags)
+        flags = view->SetCurrentFolderFlags(headerMask, wantFlags);
     if ((changed || dpiChanged) && m_customTileHeight && m_listWindow) {
         auto info=m_originalTileInfo;
         info.dwFlags&=LVTVIF_FIXEDSIZE;
@@ -715,6 +737,11 @@ bool ShellBrowserHost::ApplyViewMode(IFolderView2* view)
         ListView_SetTileViewInfo(m_listWindow,&info);
         m_customTileHeight=false;
     }
+    // Entering List / Details from another mode: give the list its 26-px spacer
+    // before the switch, so the new layout is computed once with the final row height
+    // (installing it afterwards re-measured every item a second time).
+    if (changed && spacerMode && !dpiChanged && batch && !m_listSpacer) InstallListSpacer(batch);
+    if (changed) ++m_counters.modeSets;
     const HRESULT hr = changed ? view->SetViewModeAndIconSize(mode, iconSize) : S_OK;
     m_dpi = GetDpiForWindow(m_parent);
     if (!m_dpi) m_dpi = 96;
@@ -722,15 +749,34 @@ bool ShellBrowserHost::ApplyViewMode(IFolderView2* view)
     m_iconSlot = mode == FVM_ICON && (iconSize == MulDiv(128, m_dpi, 96)
         || iconSize == MulDiv(160, m_dpi, 96)) ? iconSize : 0;
     if (m_iconSlot != previousSlot) ClearItemImages();
+    if (dpiChanged) m_spacingList = nullptr;
     StyleNativeView(view);
     if (mode == FVM_DETAILS && _wcsicmp(m_lastNavigation.c_str(), kThisPcPath) != 0) {
         IColumnManager* columns = nullptr;
         if (SUCCEEDED(view->QueryInterface(IID_PPV_ARGS(&columns)))) {
             PROPERTYKEY keys[] = { PKEY_ItemNameDisplay, PKEY_DateModified,
                 PKEY_ItemTypeText, PKEY_Size };
-            columns->SetColumns(keys, _countof(keys));
+            PROPERTYKEY current[_countof(keys)] = {};
+            UINT count = 0;
+            const bool same = SUCCEEDED(columns->GetColumnCount(CM_ENUM_VISIBLE, &count))
+                && count == _countof(keys)
+                && SUCCEEDED(columns->GetColumns(CM_ENUM_VISIBLE, current, count))
+                && std::equal(keys, keys + _countof(keys), current, [](const PROPERTYKEY& a, const PROPERTYKEY& b) {
+                    return a.pid == b.pid && IsEqualGUID(a.fmtid, b.fmtid); });
+            if (!same) {
+                ++m_counters.columnSets;
+                columns->SetColumns(keys, _countof(keys));
+            }
             columns->Release();
         }
+    }
+    if (batch) {
+        m_redrawBatch=nullptr;
+        if (IsWindow(batch)) {
+            SendMessageW(batch,WM_SETREDRAW,TRUE,0);
+            RedrawWindow(batch,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_FRAME);
+        }
+        if (m_listWindow && m_listWindow!=batch) InvalidateRect(m_listWindow,nullptr,TRUE);
     }
     return SUCCEEDED(hr) && SUCCEEDED(flags);
 }
@@ -772,26 +818,25 @@ void ShellBrowserHost::StyleNativeView(IFolderView2* view)
     if (list && m_iconSlot) {
         // The Vista Shell list scales LVM_SETICONSPACING internally. Its input
         // is a 96-DPI value; thumbnail requests and painting remain physical.
+        // Re-applying an unchanged spacing still re-arranges every item, so skip it
+        // while the list reports the spacing we last set (the Shell resets it on its
+        // own mode switches, which this comparison detects).
         const int slot = MulDiv(m_iconSlot, 96, m_dpi);
-        ListView_SetIconSpacing(list, slot + 16, slot + 36);
-        ListView_SetExtendedListViewStyleEx(list, LVS_EX_DOUBLEBUFFER, LVS_EX_DOUBLEBUFFER);
-        InvalidateRect(list, nullptr, FALSE);
+        const DWORD current = static_cast<DWORD>(ListView_GetItemSpacing(list, FALSE));
+        if (list != m_spacingList || slot != m_spacingSlot || current != m_appliedSpacing) {
+            ++m_counters.iconSpacingSets;
+            ListView_SetIconSpacing(list, slot + 16, slot + 36);
+            m_spacingList = list; m_spacingSlot = slot;
+            m_appliedSpacing = static_cast<DWORD>(ListView_GetItemSpacing(list, FALSE));
+            if (!(ListView_GetExtendedListViewStyle(list) & LVS_EX_DOUBLEBUFFER))
+                ListView_SetExtendedListViewStyleEx(list, LVS_EX_DOUBLEBUFFER, LVS_EX_DOUBLEBUFFER);
+            if (m_redrawBatch != list) InvalidateRect(list, nullptr, FALSE);
+        }
     }
     UINT mode=0;
     m_dpi=GetDpiForWindow(m_parent);if(!m_dpi)m_dpi=96;
-    if (list && SUCCEEDED(view->GetCurrentViewMode(&mode)) && (mode==FVM_LIST || mode==FVM_DETAILS) && !m_listSpacer) {
-        HIMAGELIST images=ListView_GetImageList(list,LVSIL_SMALL);
-        int w=0,h=0;
-        if(images && ImageList_GetIconSize(images,&w,&h)) {
-            m_listSpacer=ImageList_Create(MulDiv(w,96,m_dpi),26,ILC_COLOR32,1,1);
-            if(m_listSpacer) {
-                ImageList_SetImageCount(m_listSpacer,1);
-                m_shellSmallImages=images;
-                SetWindowLongPtrW(list,GWL_STYLE,GetWindowLongPtrW(list,GWL_STYLE)|LVS_SHAREIMAGELISTS);
-                ListView_SetImageList(list,m_listSpacer,LVSIL_SMALL);
-            }
-        }
-    }
+    if (list && SUCCEEDED(view->GetCurrentViewMode(&mode)) && (mode==FVM_LIST || mode==FVM_DETAILS))
+        InstallListSpacer(list);
     if (list && SUCCEEDED(view->GetCurrentViewMode(&mode)) && mode==FVM_TILE
         && _wcsicmp(m_lastNavigation.c_str(),kThisPcPath)==0 && !m_customTileHeight) {
         m_originalTileInfo={};m_originalTileInfo.cbSize=sizeof(LVTILEVIEWINFO);
@@ -812,9 +857,26 @@ void ShellBrowserHost::StyleNativeView(IFolderView2* view)
     }
 }
 
+bool ShellBrowserHost::InstallListSpacer(HWND list)
+{
+    if (m_listSpacer) return true;
+    HIMAGELIST images=ListView_GetImageList(list,LVSIL_SMALL);
+    int w=0,h=0;
+    if(!images || !ImageList_GetIconSize(images,&w,&h)) return false;
+    m_listSpacer=ImageList_Create(MulDiv(w,96,m_dpi),26,ILC_COLOR32,1,1);
+    if(!m_listSpacer) return false;
+    ++m_counters.spacerSwaps;
+    ImageList_SetImageCount(m_listSpacer,1);
+    m_shellSmallImages=images;
+    SetWindowLongPtrW(list,GWL_STYLE,GetWindowLongPtrW(list,GWL_STYLE)|LVS_SHAREIMAGELISTS);
+    ListView_SetImageList(list,m_listSpacer,LVSIL_SMALL);
+    return true;
+}
+
 void ShellBrowserHost::RestoreListSpacing()
 {
     if(!m_listSpacer)return;
+    ++m_counters.spacerSwaps;
     const HIMAGELIST spacer=m_listSpacer;m_listSpacer=nullptr;
     if(m_listWindow && IsWindow(m_listWindow))
         ListView_SetImageList(m_listWindow,m_shellSmallImages,LVSIL_SMALL);
@@ -1137,6 +1199,12 @@ LRESULT CALLBACK ShellBrowserHost::ListSubclass(HWND window, UINT msg, WPARAM wp
     auto* host=reinterpret_cast<ShellBrowserHost*>(data);
     if(msg==WM_CONTEXTMENU && host->ForwardContextMenu(wp,lp))return 0;
     if(msg==WM_PAINT) {
+        ++host->m_counters.listPaints;
+        RECT update{},client{};
+        if(GetUpdateRect(window,&update,FALSE) && GetClientRect(window,&client)
+            && LONGLONG(update.right-update.left)*(update.bottom-update.top)*10
+               >= LONGLONG(client.right-client.left)*(client.bottom-client.top)*9)
+            ++host->m_counters.fullPaints;
         int w=0,h=0;
         const HIMAGELIST images=ListView_GetImageList(window,LVSIL_SMALL);
         // Shell can replace its image list internally after sorting/enumeration,
@@ -1186,6 +1254,17 @@ bool ShellBrowserHost::SetSort(int column, bool ascending)
     IFolderView2* view = nullptr;
     if (FAILED(m_browser->GetCurrentView(IID_PPV_ARGS(&view))) || !view)
         return false;
+    // SetSortColumns re-sorts and repaints even when nothing changes.
+    int count = 0;
+    SORTCOLUMN current = {};
+    if (SUCCEEDED(view->GetSortColumnCount(&count)) && count == 1
+        && SUCCEEDED(view->GetSortColumns(&current, 1))
+        && current.direction == sort.direction && current.propkey.pid == key.pid
+        && IsEqualGUID(current.propkey.fmtid, key.fmtid)) {
+        view->Release();
+        return true;
+    }
+    ++m_counters.sortSets;
     const HRESULT hr = view->SetSortColumns(&sort, 1);
     view->Release();
     return SUCCEEDED(hr);
@@ -1198,8 +1277,17 @@ bool ShellBrowserHost::ApplyGrouping(IFolderView2* view,bool restore) {
         m_groupingView=root;m_groupingPath=m_lastNavigation;
         m_hasWindowsGrouping=SUCCEEDED(view->GetGroupBy(&m_windowsGrouping,&m_windowsGroupingAscending));
     }
-    if(m_groupingMode<0) return !restore || !m_hasWindowsGrouping || SUCCEEDED(view->SetGroupBy(m_windowsGrouping,m_windowsGroupingAscending));
+    if(m_groupingMode<0) {
+        if(!restore || !m_hasWindowsGrouping)return true;
+        ++m_counters.groupSets;
+        return SUCCEEDED(view->SetGroupBy(m_windowsGrouping,m_windowsGroupingAscending));
+    }
     const PROPERTYKEY key=m_groupingMode==1 ? PKEY_DateModified : m_groupingMode==2 ? PKEY_ItemTypeText : PKEY_Null;
+    // SetGroupBy regroups (and repaints) even when unchanged; skip equal requests.
+    PROPERTYKEY current{};BOOL ascending=FALSE;
+    if(SUCCEEDED(view->GetGroupBy(&current,&ascending)) && ascending
+        && current.pid==key.pid && IsEqualGUID(current.fmtid,key.fmtid))return true;
+    ++m_counters.groupSets;
     return SUCCEEDED(view->SetGroupBy(key,TRUE));
 }
 bool ShellBrowserHost::SetGrouping(int mode) {

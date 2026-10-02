@@ -664,6 +664,12 @@ void CMainWnd::SetViewMode(ViewMode mode)
     UpdateViewModeButtons();
     ApplyShellViewMode();
 
+    // Shell browsing: the native view switches in place. Its items, filter, selection
+    // and preview are unchanged, so no filter reset, Refresh (re-enumeration, which also
+    // dropped the thumbnails just drawn), second mode apply or preview rebuild.
+    if (IsShellBrowsingCurrentPath())
+        return;
+
     // 步骤2：切视图复用已枚举的 listing，避免重新扫盘
     if (m_hasListingCache
         && PathEquals(m_listingPath, m_currentPath)
@@ -673,6 +679,13 @@ void CMainWnd::SetViewMode(ViewMode mode)
         return;
     }
     RefreshListing();
+}
+
+bool CMainWnd::IsShellBrowsingCurrentPath() const
+{
+    return m_shellBrowser && m_shellBrowser->IsCreated() && m_shellBrowser->IsVisible()
+        && m_searchFilter.empty() && !m_currentPath.empty()
+        && m_shellBrowser->IsAtPath(m_currentPath);
 }
 
 void CMainWnd::ApplyShellViewMode()

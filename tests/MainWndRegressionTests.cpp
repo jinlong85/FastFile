@@ -54,6 +54,25 @@ HWND deleteTestOwner = nullptr;
 int deleteTestReply = IDNO;
 int deleteDialogCount = 0;
 bool createFixtureFolder = false;
+// Counts files and the newest write time in the user's real icon cache tree
+// (%TEMP%\FastFileIconCache), read-only, to prove a test run never touches it.
+void UserIconCacheSnapshot(size_t& files, ULONGLONG& newest) {
+    files = 0; newest = 0;
+    wchar_t temp[MAX_PATH]{}; GetTempPathW(MAX_PATH, temp);
+    std::vector<std::wstring> pending{ std::wstring(temp) + L"FastFileIconCache" };
+    while (!pending.empty()) {
+        const std::wstring dir = pending.back(); pending.pop_back();
+        WIN32_FIND_DATAW fd{}; HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) { pending.push_back(dir + L"\\" + fd.cFileName); continue; }
+            ++files;
+            newest = (std::max)(newest, (ULONGLONG(fd.ftLastWriteTime.dwHighDateTime) << 32) | fd.ftLastWriteTime.dwLowDateTime);
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+}
 bool AppIconMatchesSource() {
     wchar_t module[MAX_PATH]{}; GetModuleFileNameW(nullptr,module,_countof(module));
     PathRemoveFileSpecW(module);
@@ -113,6 +132,8 @@ struct ShellBrowserHostTestAccess {
         if (host.m_listWindow) ListView_CancelEditLabel(host.m_listWindow);
     }
     static HWND ListWindow(ShellBrowserHost& host) { return host.m_listWindow; }
+    static ShellBrowserHost::ViewCounters Counters(ShellBrowserHost& host) { return host.m_counters; }
+    static bool HasListSpacer(ShellBrowserHost& host) { return host.m_listSpacer != nullptr; }
     static void Probe(ShellBrowserHost& host, int item) { host.m_probeItem = item; host.m_probeTick = 0; }
     static LONGLONG ProbeTick(ShellBrowserHost& host) { return host.m_probeTick; }
     static bool MediaAspectRatio(ShellBrowserHost& host,const std::wstring& path,int sourceW,int sourceH) {
@@ -1747,6 +1768,193 @@ struct MainWndRegressionAccess {
             "SHFileOperation fallback copies and reports the created item");
         return failures;
     }
+    // View switches in Shell browsing change the native view in place: one mode apply,
+    // no filter reset / Refresh re-enumeration, no redundant spacing / image-list swaps,
+    // a single batched repaint, and the remembered folder view is still saved.
+    static int CheckViewSwitch(CMainWnd& window, const std::wstring& parent) {
+        int failures = 0;
+        auto check = [&](bool ok, const std::string& name) { if (!ok) { ++failures; std::cerr << "FAIL " << name << '\n'; } };
+        auto pump = [&](DWORD ms) {
+            const DWORD until = GetTickCount() + ms;
+            do {
+                MSG message;
+                while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                    if (message.message != WM_QUIT && !CPaintManagerUI::TranslateMessage(&message)) {
+                        ::TranslateMessage(&message); DispatchMessageW(&message);
+                    }
+                }
+                Sleep(5);
+            } while (GetTickCount() < until);
+        };
+        const std::wstring folder = parent + L"\\ViewSwitch";
+        CreateDirectoryW(folder.c_str(), nullptr);
+        for (int i = 0; i < 6; ++i) CreateDirectoryW((folder + L"\\dir" + std::to_wstring(i)).c_str(), nullptr);
+        for (int i = 0; i < 60; ++i) {
+            HANDLE file = CreateFileW((folder + L"\\file" + std::to_wstring(i) + L".txt").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+            if (file != INVALID_HANDLE_VALUE) { DWORD written = 0; WriteFile(file, "x", 1, &written, nullptr); CloseHandle(file); }
+        }
+        const bool remember = window.m_settings.rememberViews;
+        window.m_settings.rememberViews = true;
+        // Paint counts need a visible window (on the isolated test desktop).
+        const bool wasShown = IsWindowVisible(window.m_hWnd) != FALSE;
+        if (!wasShown) ShowWindow(window.m_hWnd, SW_SHOWNOACTIVATE);
+        window.m_PaintManager.GetRoot()->SetPos({0, 0, 1180, 740}, false);
+        window.SyncLayoutDependents();
+        window.NavigateToNow(folder, false); pump(700);
+        window.SetViewMode(CMainWnd::ViewMode::Details); pump(500);
+        ShellBrowserHost& host = *window.m_shellBrowser;
+        LARGE_INTEGER frequency{}; QueryPerformanceFrequency(&frequency);
+        using Mode = CMainWnd::ViewMode;
+        const Mode sequence[] = { Mode::LargeIcons, Mode::Details, Mode::ExtraLargeIcons, Mode::List,
+            Mode::Details, Mode::Tiles, Mode::SmallIcons, Mode::MediumIcons, Mode::Details };
+        const char* names[] = { "large", "details", "xlarge", "list", "details", "tiles", "small", "medium", "details" };
+        // Warm the system icon / thumbnail caches for every size first: cold Shell icon
+        // extraction invalidates items one by one as icons arrive, which is not switch cost.
+        for (Mode mode : sequence) { window.SetViewMode(mode); pump(350); }
+        int totalPaints = 0, maxPaints = 0;
+        double totalMs = 0;
+        for (size_t i = 0; i < _countof(sequence); ++i) {
+            const auto before = ShellBrowserHostTestAccess::Counters(host);
+            LARGE_INTEGER t0{}, t1{}; QueryPerformanceCounter(&t0);
+            window.SetViewMode(sequence[i]);
+            QueryPerformanceCounter(&t1);
+            const double ms = double(t1.QuadPart - t0.QuadPart) * 1000.0 / double(frequency.QuadPart);
+            pump(400);
+            const auto after = ShellBrowserHostTestAccess::Counters(host);
+            const int paints = after.listPaints - before.listPaints;
+            const int fullPaints = after.fullPaints - before.fullPaints;
+            totalPaints += fullPaints; maxPaints = (std::max)(maxPaints, fullPaints); totalMs += ms;
+            const std::string tag = std::string(" (to ") + names[i] + ")";
+            std::cout << "view switch to " << names[i] << ": sync " << ms << " ms, list paints " << paints
+                << " (full-list " << fullPaints << ")"
+                << ", applies " << after.modeApplies - before.modeApplies << ", refreshes " << after.refreshes - before.refreshes
+                << ", filters " << after.filterSets - before.filterSets << ", spacer swaps " << after.spacerSwaps - before.spacerSwaps
+                << ", spacing sets " << after.iconSpacingSets - before.iconSpacingSets << '\n';
+            check(after.refreshes == before.refreshes, "view switch must not Refresh / re-enumerate the Shell view" + tag);
+            check(after.filterSets == before.filterSets, "view switch must not reset the Shell filter" + tag);
+            check(after.modeApplies - before.modeApplies == 1, "view switch applies the native mode exactly once" + tag);
+            check(after.modeSets - before.modeSets == 1, "view switch calls SetViewModeAndIconSize exactly once" + tag);
+            check(after.redrawBatches - before.redrawBatches <= 1, "a real view change is one redraw batch" + tag);
+            check(fullPaints >= 1, "list repaints fully after a view switch (redraw re-enabled)" + tag);
+            check(fullPaints <= 2, "view switch repaints the whole list at most twice" + tag);
+            check(window.LoadFolderViewForPath(folder) == sequence[i], "view switch still saves the per-folder view" + tag);
+            IFolderView2* view = ShellBrowserHostTestAccess::View(host);
+            FOLDERVIEWMODE native = FVM_AUTO; int size = 0; DWORD flags = 0;
+            if (view) { view->GetViewModeAndIconSize(&native, &size); view->GetCurrentFolderFlags(&flags); view->Release(); }
+            const bool details = sequence[i] == Mode::Details;
+            check(bool(flags & FWF_NOHEADERINALLVIEWS) == !details, "view switch keeps native header in Details only" + tag);
+            const bool spacer = sequence[i] == Mode::Details || sequence[i] == Mode::List;
+            check(ShellBrowserHostTestAccess::HasListSpacer(host) == spacer, "26-px list / details spacer only in List and Details" + tag);
+            if (HWND list = ShellBrowserHostTestAccess::ListWindow(host); list && spacer) {
+                int w = 0, h = 0; ImageList_GetIconSize(ListView_GetImageList(list, LVSIL_SMALL), &w, &h);
+                check(h >= window.DpiScale(26), "List / Details keep 26 logical px rows after an in-place switch" + tag);
+            }
+        }
+        std::cout << "view switch totals: " << _countof(sequence) << " switches, sync " << totalMs << " ms, full-list paints "
+            << totalPaints << " (max " << maxPaints << ")\n";
+        check(totalPaints <= int(_countof(sequence)) * 2, "view switches repaint the whole list at most twice on average");
+        // List <-> Details share the spacer: no image-list swap either way.
+        window.SetViewMode(Mode::List); pump(300);
+        auto before = ShellBrowserHostTestAccess::Counters(host);
+        window.SetViewMode(Mode::Details); pump(300);
+        window.SetViewMode(Mode::List); pump(300);
+        auto after = ShellBrowserHostTestAccess::Counters(host);
+        check(after.spacerSwaps == before.spacerSwaps, "List <-> Details keeps the 26-px spacer (no image-list swap)");
+        // Re-applying an unchanged mode touches nothing.
+        for (Mode mode : { Mode::LargeIcons, Mode::Details }) {
+            window.SetViewMode(mode); pump(300);
+            before = ShellBrowserHostTestAccess::Counters(host);
+            window.SetViewMode(mode); pump(300);
+            after = ShellBrowserHostTestAccess::Counters(host);
+            check(after.modeSets == before.modeSets && after.iconSpacingSets == before.iconSpacingSets
+                && after.spacerSwaps == before.spacerSwaps && after.columnSets == before.columnSets
+                && after.sortSets == before.sortSets && after.groupSets == before.groupSets
+                && after.redrawBatches == before.redrawBatches && after.refreshes == before.refreshes,
+                mode == Mode::Details ? "unchanged Details re-apply skips columns / spacer / sort / group"
+                                      : "unchanged large-icon re-apply skips icon spacing / sort / group");
+        }
+        // Large <-> extra large changes the slot, so the spacing is applied exactly once.
+        before = ShellBrowserHostTestAccess::Counters(host);
+        window.SetViewMode(Mode::ExtraLargeIcons); pump(300);
+        after = ShellBrowserHostTestAccess::Counters(host);
+        check(after.iconSpacingSets - before.iconSpacingSets == 1, "changed icon slot applies icon spacing exactly once");
+        // A selection survives the switch (no re-enumeration).
+        if (IFolderView2* view = ShellBrowserHostTestAccess::View(host)) {
+            view->SelectItem(3, SVSI_SELECT | SVSI_DESELECTOTHERS | SVSI_FOCUSED); view->Release();
+        }
+        pump(200);
+        window.SetViewMode(Mode::Details); pump(300);
+        if (IFolderView2* view = ShellBrowserHostTestAccess::View(host)) {
+            int selected = -1; view->GetSelectedItem(-1, &selected); view->Release();
+            check(selected == 3, "selection is kept across a view switch");
+        }
+        window.m_settings.rememberViews = remember;
+        if (!wasShown) { ShowWindow(window.m_hWnd, SW_HIDE); pump(100); }
+        return failures;
+    }
+
+    static const wchar_t* IconCacheVersion() { return CMainWnd::kIconCacheVersion; }
+    // The PNG icon cache persists (no wipe at startup), lives in an isolated folder for
+    // tests, and is invalidated by version directory / stamped names / trimming instead.
+    static int CheckIconCache(CMainWnd& window, const std::wstring& root, const std::wstring& marker,
+        size_t userFilesBefore, ULONGLONG userNewestBefore) {
+        int failures = 0;
+        auto check = [&](bool ok, const char* name) { if (!ok) { ++failures; std::cerr << "FAIL " << name << '\n'; } };
+        const std::wstring isolated = root + L"\\IconCache\\";
+        check(_wcsnicmp(window.m_iconCacheDir.c_str(), isolated.c_str(), isolated.size()) == 0,
+            "tests use the isolated icon cache dir (FASTFILE_ICON_CACHE_DIR)");
+        check(PathFileExistsW((window.m_iconCacheDir + marker).c_str()) != FALSE,
+            "icon cache entries survive main window creation (no wipe on startup)");
+        size_t userFiles = 0; ULONGLONG userNewest = 0;
+        UserIconCacheSnapshot(userFiles, userNewest);
+        check(userFiles == userFilesBefore && userNewest == userNewestBefore,
+            "the user's real %TEMP%\\FastFileIconCache is untouched by the test run");
+        // Stamped names: same file -> same name; edited file -> new name; roots are session files.
+        const std::wstring sample = root + L"\\stamp.txt";
+        HANDLE file = CreateFileW(sample.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+        DWORD written = 0; WriteFile(file, "a", 1, &written, nullptr);
+        FILETIME old{}; SYSTEMTIME st{}; GetSystemTime(&st); st.wYear -= 1; SystemTimeToFileTime(&st, &old);
+        SetFileTime(file, nullptr, nullptr, &old); CloseHandle(file);
+        const std::wstring first = window.IconCacheLeaf(sample + L"@32", sample, L"f_32.png");
+        check(first == window.IconCacheLeaf(sample + L"@32", sample, L"f_32.png"), "icon cache name is stable for an unchanged file");
+        file = CreateFileW(sample.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+        SetFilePointer(file, 0, nullptr, FILE_END); WriteFile(file, "b", 1, &written, nullptr); CloseHandle(file);
+        check(first != window.IconCacheLeaf(sample + L"@32", sample, L"f_32.png"), "an edited file gets a new icon cache name");
+        check(window.IconCacheLeaf(L"C:\\@32", L"C:\\", L"d_32.png").rfind(L"s_", 0) == 0, "drive roots are session-only cache entries");
+        // Maintenance: legacy flat files, other versions, stale session files and aged entries go;
+        // fresh entries stay; the size cap removes the oldest first.
+        const std::wstring trim = root + L"\\TrimCache";
+        CreateDirectoryW(trim.c_str(), nullptr);
+        CreateDirectoryW((trim + L"\\v9").c_str(), nullptr);
+        CreateDirectoryW((trim + L"\\v8").c_str(), nullptr);
+        FILETIME nowFt{}; GetSystemTimeAsFileTime(&nowFt);
+        const ULONGLONG now = (ULONGLONG(nowFt.dwHighDateTime) << 32) | nowFt.dwLowDateTime;
+        const ULONGLONG day = 24ull * 3600ull * 10000000ull;
+        auto make = [&](const std::wstring& path, ULONGLONG time, DWORD bytes) {
+            HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+            std::string data(bytes, 'x'); DWORD w = 0; WriteFile(h, data.data(), bytes, &w, nullptr);
+            FILETIME ft{ DWORD(time), DWORD(time >> 32) }; SetFileTime(h, nullptr, nullptr, &ft); CloseHandle(h);
+        };
+        make(trim + L"\\00000000_f_32_v8.png", now - day, 10);
+        make(trim + L"\\v8\\old.png", now - day, 10);
+        make(trim + L"\\v9\\fresh.png", now - day, 10);
+        make(trim + L"\\v9\\aged.png", now - 40 * day, 10);
+        make(trim + L"\\v9\\s_prev_preview_1.png", now - day / 24, 10);
+        make(trim + L"\\v9\\s_live_preview_2.png", now + day / 24, 10);
+        auto result = CMainWnd::MaintainIconCache(trim, L"v9", now, 30, 0);
+        auto exists = [&](const wchar_t* leaf) { return PathFileExistsW((trim + leaf).c_str()) != FALSE; };
+        check(!exists(L"\\00000000_f_32_v8.png") && result.removedLegacy == 1, "maintenance removes legacy flat cache files");
+        check(!exists(L"\\v8") && result.removedVersionDirs == 1, "maintenance removes other cache versions");
+        check(exists(L"\\v9\\fresh.png"), "maintenance keeps fresh entries");
+        check(!exists(L"\\v9\\aged.png") && result.removedAged == 1, "maintenance removes entries past the age cap");
+        check(!exists(L"\\v9\\s_prev_preview_1.png") && exists(L"\\v9\\s_live_preview_2.png"),
+            "maintenance removes previous sessions' scratch files only");
+        for (int i = 0; i < 4; ++i) make(trim + L"\\v9\\cap" + std::to_wstring(i) + L".png", now - (10 - i) * day, 1000);
+        result = CMainWnd::MaintainIconCache(trim, L"v9", now, 30, 2500);
+        check(!exists(L"\\v9\\cap0.png") && exists(L"\\v9\\cap3.png") && result.keptBytes <= 2500 / 4 * 3,
+            "size cap trims oldest entries first");
+        return failures;
+    }
     static int Run(CMainWnd& window, const std::wstring& fixture) {
         int failures=CheckUiMetrics(window);
         auto check = [&](bool result, const char* name) {
@@ -1973,6 +2181,7 @@ struct MainWndRegressionAccess {
             "a sibling sharing the parent name prefix is not a descendant");
         check(DuiLib::TabStripRegressionAccess::Check(*window.m_pTabStrip), "150 percent tab title retains preferred width, idle/active equal, plus follows last tab");
         failures += CheckSelectionLatency(window, fixture);
+        failures += CheckViewSwitch(window, window.ParentPath(fixture));
         failures += CheckShellMenus(window, fixture);
         failures += CheckFileOperationEngine(window.ParentPath(fixture));
         failures += CheckHandlers(window);
@@ -2050,20 +2259,35 @@ int main(int argc, char** argv) {
     CloseHandle(file);
     file = CreateFileW((fixture + L"\\hidden.txt").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_HIDDEN, nullptr);
     CloseHandle(file);
+    // Isolated icon cache: a test run must never read, write or trim the user's cache.
+    // Seed an entry first to prove startup keeps (does not wipe) existing cache files.
+    const std::wstring iconCacheRoot = root + L"\\IconCache";
+    SetEnvironmentVariableW(L"FASTFILE_ICON_CACHE_DIR", iconCacheRoot.c_str());
+    SHCreateDirectoryExW(nullptr, (iconCacheRoot + L"\\" + MainWndRegressionAccess::IconCacheVersion()).c_str(), nullptr);
+    const std::wstring cacheMarker = L"0123456789ABCDEF_marker_32.png";
+    file = CreateFileW((iconCacheRoot + L"\\" + MainWndRegressionAccess::IconCacheVersion() + L"\\" + cacheMarker).c_str(),
+        GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+    CloseHandle(file);
+    size_t userCacheFiles = 0; ULONGLONG userCacheNewest = 0;
+    UserIconCacheSnapshot(userCacheFiles, userCacheNewest);
     auto* window = new CMainWnd; // same process-lifetime ownership as application main
     HWND hwnd = window->Create(nullptr, L"FastFile regression", UI_WNDSTYLE_FRAME, WS_EX_WINDOWEDGE);
     if (!hwnd) return 1;
+    const int cacheFailures = MainWndRegressionAccess::CheckIconCache(*window, root, cacheMarker, userCacheFiles, userCacheNewest);
     ShowWindow(hwnd, SW_HIDE);
     int failures = activationOnly ? MainWndRegressionAccess::CheckShellActivation(*window,fixture)
         : argc>1 && strcmp(argv[1],"--delete-permission-check")==0
         ? MainWndRegressionAccess::CheckDeletePermissionDialog(*window, root)
         : argc>1 && strcmp(argv[1],"--delete-partial-check")==0
         ? MainWndRegressionAccess::CheckDeletePermissionDialog(*window, root, true)
+        : argc>1 && strcmp(argv[1],"--view-switch-only")==0
+        ? MainWndRegressionAccess::CheckViewSwitch(*window, root)
         : argc>1 && strcmp(argv[1],"--ui-polish-only")==0
         ? MainWndRegressionAccess::CheckUiMetrics(*window) + MainWndRegressionAccess::CheckUiPolish(*window, root)
         : MainWndRegressionAccess::Run(*window, fixture);
     if(!activationOnly && !(argc>1 && (strcmp(argv[1],"--delete-permission-check")==0 || strcmp(argv[1],"--delete-partial-check")==0)))
         failures+=MainWndRegressionAccess::CheckPreferences(*window,root);
+    failures += cacheFailures;
     if(!AppIconMatchesSource()) {++failures;std::cerr<<"FAIL all embedded application icon sizes must match res/FastFile.ico\n";}
     if(IsWindow(hwnd))DestroyWindow(hwnd);
     // This fixture/profile is exclusively created by this test, and never uses user data.

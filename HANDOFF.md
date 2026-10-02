@@ -9,10 +9,10 @@
 - 技术栈仍为 C++ / Win32 / DuiLib，普通文件区由 Windows ExplorerBrowser 承载。不要改换 UI 框架。
 - 本地工作区包含大量未提交修改及未跟踪的源码、测试；接手先检查工作区，不要用 reset / clean 或只复制 Git 已跟踪文件的方式丢弃当前实现。本次改动已在本地提交，未推送。
 - [VERSION](VERSION) 仍为 **1.0.9**。安装包已于 2026-10-02 16:44 重新生成（`dist/FastFile-Setup-1.0.9.exe`，1,444,864 字节，SHA-256 `4002CEDD2A8B97E71031C59530925B216A2B5E0A7920154DA2301079A3D9FC9A`），包含 2026-10-02 全部设置、视图和打开行为修复。打包前核对常用 exe 哈希等于下述已验证快照且其后无产品源码修改，故未重新构建；用反射读取安装包内嵌资源，FastFile.exe 与 skin/main.xml 哈希与常用产物一致。旧包备份为 `dist/FastFile-Setup-1.0.9.before-20261002.exe`。下方各节「未重建安装包」的说明由此取代。
-- 最新完整验证（2026-10-02 20:07，右键菜单重命名与大图标选中框延迟，见下一节）：Release x64 构建成功，CTest **7/7 一次运行全部通过，120.84 秒**（主窗口回归 101.12 秒，其单项超时为 120 秒，比上一轮 88 秒多出的部分主要是新增的选中延迟测量；再增加主窗口测试时注意余量）。构建日志 `build-ui/ctxrename-final-build.log`，测试日志 `build-ui/ctxrename-final-tests.log`，旧实现模拟失败日志 `build-ui/ctxrename-before-tests.log`。这些日志和二进制属于本地忽略产物，换机器后需重新生成。上一轮（18:47，原生文件操作）为 7/7、107.68 秒，日志 `build-ui/nativeops-final-tests.log`。
+- 最新完整验证（2026-10-02 22:00，视图切换与图标缓存，见下一节）：Release x64 构建成功，CTest **7/7 一次运行全部通过，133.90 秒**（主窗口回归 113.08 秒；其单项超时已由 120 秒调到 180 秒，新增的视图切换检查约 10 秒）。构建日志 `build-ui/viewswitch-final-build.log`，测试日志 `build-ui/viewswitch-final-tests.log`，旧实现模拟失败日志 `build-ui/viewswitch-before-tests.log`（45 项失败）。这些日志和二进制属于本地忽略产物，换机器后需重新生成。上一轮（20:07，右键重命名）为 7/7、120.84 秒，日志 `build-ui/ctxrename-final-tests.log`。
 - 此前一次完整运行因 explorer.exe 会话撤销服务被一个隐藏的「已完成 95%」资源管理器操作卡住而失败（未修改的 HEAD 基线同样失败）；经用户同意重启资源管理器后，原生重命名撤销记录恢复可用，随后的完整运行通过。主窗口回归中的原生撤销 / 重做检查依赖该服务，再遇到同类连锁失败先检查是否有卡住的资源管理器操作。
-- 测试通过后才将 `build-ui/Release` 的 exe、map 和 skin 更新到常用 `build/Release`。两处 exe 的 SHA-256 已核对一致：`DCF493389BA5F27788E08AE7F8736B72C9C72F07FFA7A871A7CB4381C945DE7A`（map `E1BE4DCA…20EF650AA6`、skin/main.xml `3F2D4B6E…384BE` 亦一致）。这是本次交付快照，后续重构建应重新核对。
-- 本次交付时用户先前运行的 FastFile（PID 43608）已不在运行（本轮未结束该进程，只结束过挂起的回归测试进程）。上一版改名备份为 `build/Release/FastFile.before-ctx-rename.exe`（SHA-256 `B57D75E4…9CF1D0`，即原生文件操作版本），它不是新版启动入口；更早的 `FastFile.before-native-fileops.exe`、`FastFile.before-shell-activation.exe` 保留。安装包未重建，`dist/FastFile-Setup-1.0.9.exe` 不含原生文件操作及本次改动。
+- 测试通过后才将 `build-ui/Release` 的 exe、map 和 skin 更新到常用 `build/Release`。两处 exe 的 SHA-256 已核对一致：`3937CB34E608BF01291A9786DEA69840F51E93A03B082107C72E6872EFCF5198`（map `A98DFAB4…BD03B7E6`、skin/main.xml `3F2D4B6E…384BE` 亦一致）。这是本次交付快照，后续重构建应重新核对。
+- 本次交付时用户正在运行旧版 FastFile（PID 9316，20:35 启动，来自 `build/Release`）；未结束该进程。运行中的 exe 只能改名不能覆盖，因此旧常用 exe / map 改名为 `build/Release/FastFile.before-viewswitch.exe` / `.map`（SHA-256 `DCF49338…45DE7A`，即右键重命名版本），新版复制为 `FastFile.exe`，用户退出旧窗口后重新启动才生效。更早的 `FastFile.before-ctx-rename.exe`、`FastFile.before-native-fileops.exe`、`FastFile.before-shell-activation.exe` 保留。安装包未重建，`dist/FastFile-Setup-1.0.9.exe` 不含原生文件操作、右键重命名及本次改动。
 
 ### 本轮修改应从哪里读
 
@@ -49,12 +49,27 @@ if ($LASTEXITCODE -ne 0) { throw "回归失败" }
 
 ### 尚未完成的本轮验收
 
+- 视图切换：在正常桌面 `C:\Users\JINLONG\图片\Screenshots`、`G:\电影\国内电影` 中 详细信息 ↔ 大图标 / 超大图标、列表 ↔ 详细信息 来回切换，确认不再出现「旧行 + 少数新缩略图」的半成品画面、列表 / 详细信息首帧即为 26 像素行高、分组 / 排序 / 每文件夹记忆视图保持。自动测试和隔离桌面截图已验证，未经用户目视确认。
 - 右键重命名与选中框：在正常桌面对单个文件 / 文件夹右键，确认出现「重命名(M)」、点击后原位编辑、回车生效且 Ctrl+Z 可撤销；在 `C:\Users\JINLONG\图片`（GIRLS、屏幕截图）切换 大图标 / 超大图标 点击文件夹，确认选中框即时出现、右侧详情随后更新。自动测试在隔离桌面以真实按键消息验证，未经用户目视确认。
 - 原生文件操作：在正常桌面复制一个大文件，确认出现资源管理器原生进度窗口（暂停 / 取消 / 剩余时间），同名冲突时出现替换 / 跳过对话框，操作期间 FastFile 窗口可继续浏览；剪切粘贴、拖放、Delete / Shift+Delete 同样检查。自动测试只能在隔离桌面验证调用路径与标志，无法目视确认进度窗口。
 - 原生背景菜单：在正常桌面右键文件区空白处，确认 粘贴 / 粘贴快捷方式 / 撤销 / 分组依据 等出现、没有叠在一起的分隔线、查看 / 排序方式 作用于 FastFile 视图；Shift+右键显示扩展项。
 - 用户正常桌面上逐项点击系统右键「使用 FastFile 打开」，分别检查已有窗口和完全退出后的首次启动，覆盖文件夹与磁盘。自动测试已覆盖真实注册命令、进程启动与转发；尚未收到用户重启新版后的实际使用确认。
 - 正常界面中检查鼠标 / 键盘右键的新标签入口、重复目录和子目录保留原标签，以及列表 / 详细信息往返时首帧间距。相关自动运行回归已通过，本轮未人工逐项点选菜单验收。
 - 安装包已重新打包，但未实际安装 / 卸载验证：setup.cs 的安装流程（含 `--quiet --dir`）会结束正在运行的 FastFile 并写入开始菜单快捷方式与当前用户卸载项，不适合在用户正在使用的开发机上测试。仍需在合适时机验证安装路径、注册命令、卸载恢复及安装后运行。
+
+## 视图切换延迟与图标缓存（2026-10-02）
+
+- 背景：用户反馈切换 详细信息 / 列表 / 平铺 / 小 / 中 / 大 / 超大图标 时能看到明显的渲染过程。先做了只测量不改代码的剖析（临时剖析副本、隔离桌面、QPC、列表 WM_PAINT 时间线、PrintWindow 截图，对照无 FastFile 代码的纯 ExplorerBrowser）。结论：① Shell 浏览时 `SetViewMode` 每次都走 `RefreshListing`：重设 IFolderFilterSite 筛选、第二次 `ApplyShellViewMode`、`IShellView::Refresh`（重新枚举并清空大图标缓存，刚画过的缩略图要再取一次）、`UpdatePreviewForSelection`，多出约 15–20 ms 界面线程时间和 1–3 次中间重绘；② 中间重绘只覆盖部分区域，切到大 / 超大图标后约 250–380 ms 内画面是「旧详细信息行 + 两三个新缩略图」，切回详细信息时旧网格一直停留到最终重绘；③ 列表 ↔ 详细信息每次都先还原再重建 26 像素占位图像列表（857 项目录 27–56 ms），图标间距、排序、分组、列在未变化时也重复设置。约 250 ms 的最终重绘是 FVO_VISTALAYOUT（SysListView32）列表自身的延迟阶段，纯宿主同样存在，不是 FastFile 代码。
+- 修复 A（`CMainWnd::SetViewMode`）：保存每文件夹视图、更新按钮、`ApplyShellViewMode` 一次后，若 `IsShellBrowsingCurrentPath()`（Shell 视图已创建、可见、无搜索筛选、`IsAtPath(m_currentPath)`）则直接返回：不重设筛选、不 Refresh / 重新枚举、不清缩略图缓存、不刷新详情。搜索结果视图（DuiLib 渲染）和尚未导航到当前路径时仍走原有 listing 缓存 / `RefreshListing` 路径。
+- 修复 C（`ShellBrowserHost::ApplyViewMode` 等）：真正改变模式 / 尺寸 / DPI 时，若当前列表属于该视图且可见，则对列表 `WM_SETREDRAW FALSE`，完成表头、平铺、`SetViewModeAndIconSize`、间距、占位后 `WM_SETREDRAW TRUE` + 一次 `RedrawWindow(RDW_INVALIDATE|RDW_ERASE|RDW_FRAME)`（`m_redrawBatch` 期间 StyleNativeView 不再单独 InvalidateRect）。列表与详细信息共用 26 像素占位：两者之间不再还原 / 重建，只有切到其他模式或 DPI 变化时 `RestoreListSpacing`；从其他模式进入列表 / 详细信息时在 `SetViewModeAndIconSize` 之前先 `InstallListSpacer`，新布局只按最终行高计算一次（StyleNativeView 仍保留安装兜底，Shell 内部换图像列表时 WM_PAINT / LVM_SETIMAGELIST 的恢复逻辑不变）。图标间距记录上次设置的列表、槽位和 `LVM_GETITEMSPACING` 结果，相同则跳过（Shell 自己重置间距时结果不同会重新设置）；表头标志、详细信息四列、`SetSortColumns`、`SetGroupBy` 在当前值相同时跳过。
+- 截图对比（隔离桌面、屏幕截图目录、150%）：新版 详细信息 → 超大图标 在第一张截图（45 ms）即为最终网格，超大图标 → 详细信息 在 11 ms 即为最终列表；只做修复 A、不做重绘批处理时，「旧行 + 少数缩略图」半成品画面仍持续到约 200 ms 以上，所以批处理是消除可见渲染过程的关键。代价：媒体目录切到大 / 超大图标的同步时间约 +25 ms（原来在首帧绘制中做的取图 / 布局移到批处理结束时），总界面线程时间不增加。
+- 前后测量（临时剖析程序，同一驱动分别链接旧实现与新实现，6 个真实目录 × 12 次切换 × 2 轮，列表 WM_PAINT 由驱动侧子类记录）：每次切换界面线程忙碌平均 62.0 → 33.2 ms，同步耗时 27.3 → 14.6 ms，列表重绘 3.68 → 2.09 次，稳定帧中位数 287 → 252 ms，单条消息最长（热）50.5 → 27.2 ms。到详细信息 同步 22.0 → 5.1 ms；到大图标 忙碌 63 → 39 ms、绘制中最长 42.7 → 5.2 ms；屏幕截图目录 详细信息 → 大图标 忙碌 91 → 63 ms、稳定 381 → 251 ms；D:\Icons 详细信息 → 列表 忙碌 165 → 90 ms。
+- 图标缓存：`InitIconCache` 取代启动时 `WipeDirectoryFiles(%TEMP%\FastFileIconCache)`。根目录为 `FASTFILE_ICON_CACHE_DIR` 或 `%TEMP%\FastFileIconCache`，条目在 `<根>\v9\`（`kIconCacheVersion`，格式变化时递增）。文件 / 文件夹条目名为 `IconCacheLeaf`：键 + 源文件大小 + 最后写入时间的 64 位哈希，文件改动即换名；盘符根（下次可能是另一张介质）和虚拟项目用 `s_<会话标记>_` 会话文件；详情预览图改为会话文件（`SessionCacheFile`）。启动后低优先级后台线程 `MaintainIconCache`：删除根目录旧平铺 *.png / *.bmp（v8 及更早）和其他 `v<数字>` 目录、早于本次启动的会话文件、30 天以上条目，总量超过 256 MB 时按写入时间从旧到新删到 192 MB（本次启动写入的不删）。已知边界：同一扩展名的关联图标变化（例如新装程序接管某类型）不改变源文件戳，旧图标最多保留到 30 天清理或版本递增；内存中的 `m_iconCache` 仍按会话缓存（与此前相同）。
+- 测试隔离：回归测试进程在创建主窗口前设置 `FASTFILE_ICON_CACHE_DIR=<测试根>\IconCache`（子进程继承，启动专项也隔离），并预置一个缓存条目验证启动不清空。此前每次运行回归都会清空用户真实缓存，现已不会；`UserIconCacheSnapshot` 只读比较用户缓存的文件数和最新写入时间。
+- 回归（MainWndRegressionTests）：`CheckViewSwitch`（新建 66 项夹具，窗口在隔离桌面显示，先预热各模式图标）逐次切换 大 / 详细 / 超大 / 列表 / 详细 / 平铺 / 小 / 中 / 详细：Refresh 次数与筛选重设为 0、`ApplyViewMode` 与 `SetViewModeAndIconSize` 各恰好 1 次、至多一个重绘批次、整列表重绘 1–2 次（`fullPaints`：更新区覆盖列表 ≥90%）、每文件夹视图已保存、表头仅详细信息、26 像素占位仅列表 / 详细信息且行高 ≥26 逻辑像素；列表 ↔ 详细信息无占位替换；同模式重复应用不触碰间距 / 占位 / 列 / 排序 / 分组；大 ↔ 超大只设置一次间距；切换后选中保持。`CheckIconCache`：使用隔离目录、预置条目保留、用户真实缓存未变、未改文件同名 / 改动后换名 / 盘符根为会话文件、维护删除旧平铺文件 / 旧版本目录 / 过期 / 上次会话文件并保留新条目、超过上限时先删最旧。计数来自 `ShellBrowserHost::ViewCounters`（只增不减，生产代码开销可忽略）。另加 `FastFileMainWndRegressionTests --view-switch-only` 便于单独复测（打印每次切换同步耗时和重绘次数）。
+- 修复前复现：临时副本中恢复旧实现（SetViewMode 总走 RefreshListing、ApplyViewMode / SetSort / ApplyGrouping 无跳过与批处理、启动清空 `%TEMP%\FastFileIconCache`，并把 TEMP 指向临时目录以免清空用户缓存）后 `--view-switch-only` 45 项失败（Refresh / 筛选 / 应用两次、整列表重绘 3–4 次、占位替换、重复设置、缓存未隔离且被清空），日志 `build-ui/viewswitch-before-tests.log`。旧实现切换同步 17–157 ms、整列表重绘 31 次 / 9 次切换；新实现同步 4–26 ms（xlarge → 列表在 96 DPI 夹具约 98 ms）、18 次。
+- 踩坑：在 `%TEMP%` 下的 MSBuild 中间目录会报 MSB8029，头文件依赖不被跟踪；临时剖析副本改头文件后必须触碰全部 .cpp 再构建，否则类布局不一致。Expand-Archive 解压的文件保留压缩包内时间，可能比目标文件旧，覆盖后同样要刷新修改时间。
+- 未做：方案 B（缩略图后台预取 / 跨尺寸缓存）未实施；系统缩略图缓存冷启动未测（需删除系统缓存）；正常桌面目视验收见上方「尚未完成的本轮验收」。
 
 ## 右键菜单重命名与大图标选中框延迟（2026-10-02）
 
