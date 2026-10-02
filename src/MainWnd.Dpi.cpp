@@ -141,9 +141,7 @@ void CMainWnd::ApplyDpiScaledChrome()
     // Scale chrome bands + key panels from 96-DPI design sizes in main.xml.
     // Phase 3: command bar is 40px; separators/gaps DPI-scaled.
     ScaleNamedFixed(m_PaintManager, _T("titlebar"), 0, m_settings.tabHeight, m_dpi);
-    ScaleNamedFixed(m_PaintManager, _T("toolbar"), 0, UiTokens::ToolbarH, m_dpi);
-    if (auto* divider = m_PaintManager.FindControl(_T("command_body_divider")))
-        divider->SetFixedHeight(DpiScaleHairline(UiTokens::Hairline));
+    // Command bar height/dividers: ApplyCommandBarLayout (end of this pass).
     ScaleNamedFixed(m_PaintManager, _T("favorites_bar"), 0, m_settings.favoritesHeight, m_dpi);
     ScaleNamedFixed(m_PaintManager, _T("address_bar"), 0, UiTokens::AddressBarH, m_dpi);
     // breadcrumb merged into address_bar (Explorer-style); no separate breadcrumb_bar
@@ -177,10 +175,7 @@ void CMainWnd::ApplyDpiScaledChrome()
     ScaleNamedFixed(m_PaintManager, _T("btn_preview_share"), UiTokens::PreviewActionW, UiTokens::PreviewActionH, m_dpi);
     ScaleNamedFixed(m_PaintManager, _T("btn_cancel_copy"), UiTokens::StatusCancelW, UiTokens::StatusCancelH, m_dpi);
     ScaleNamedFixed(m_PaintManager, _T("view_switcher"), 248, 28, m_dpi);
-    ScaleNamedFixed(m_PaintManager, _T("search_box"), 210, UiTokens::FieldH, m_dpi);
-    // The path field shares the search field's metrics; without this it kept its raw XML
-    // height (32 physical px) and looked like a thin strip inside the roomier address row.
-    ScaleNamedFixed(m_PaintManager, _T("path_host"), 0, UiTokens::FieldH, m_dpi);
+    // search_box / path_host metrics: ApplyCommandBarLayout (search width follows the row).
     ScaleNamedFixed(m_PaintManager, _T("nav_hdr_quick"), 0, UiTokens::NavSectionHeaderH, m_dpi);
     ScaleNamedFixed(m_PaintManager, _T("nav_hdr_thispc"), 0, UiTokens::NavSectionHeaderH, m_dpi);
     if (m_pLeftQuick) {
@@ -199,16 +194,6 @@ void CMainWnd::ApplyDpiScaledChrome()
     ScaleNamedFixed(m_PaintManager, _T("left_nav_divider_host"), 0, 13, m_dpi);
     ScaleNamedFixed(m_PaintManager, _T("left_nav_divider"), 0, 1, m_dpi);
 
-    // Subtle vertical separators between command-bar groups
-    const LPCTSTR seps[] = {
-        _T("sep_new"), _T("sep_organize"), _T("sep_more"),
-    };
-    for (auto name : seps) {
-        CControlUI* c = m_PaintManager.FindControl(name);
-        if (!c) continue;
-        c->SetFixedWidth(DpiScale(1));
-        c->SetFixedHeight(DpiScale(UiTokens::SepH));
-    }
     const LPCTSTR gaps[] = {
         _T("gap_clip"), _T("gap_clip2"),
         _T("gap_org"), _T("gap_org2"), _T("gap_more"), _T("gap_more2"),
@@ -259,22 +244,8 @@ void CMainWnd::ApplyDpiScaledChrome()
     }
     if (CControlUI* addTab = m_PaintManager.FindControl(_T("btn_tab_add")))
         addTab->SetFixedHeight(DpiScale(m_settings.tabHeight));
-    // Search row: align with address (~28-32), not CmdBtnH 42
-    {
-        const int sh = DpiScale(UiTokens::SearchBoxH);
-        for (LPCTSTR nm : { _T("chk_recursive") }) {
-            if (CControlUI* c = m_PaintManager.FindControl(nm))
-            c->SetFixedHeight(DpiScale(UiTokens::SearchBoxH));
-        }
-        if (CControlUI* box = m_PaintManager.FindControl(_T("search_box")))
-            box->SetFixedHeight(sh);
-        for (LPCTSTR nm : { _T("btn_back"), _T("btn_forward"), _T("btn_up"), _T("btn_refresh") }) {
-            if (CControlUI* c = m_PaintManager.FindControl(nm))
-                c->SetFixedHeight(sh);
-        }
-        if (CControlUI* gap = m_PaintManager.FindControl(_T("gap_address_nav")))
-            gap->SetFixedWidth(DpiScale(UiTokens::SpaceXs));
-    }
+    if (CControlUI* c = m_PaintManager.FindControl(_T("chk_recursive")))
+        c->SetFixedHeight(DpiScale(UiTokens::SearchBoxH));
     // Standard DuiLib caption controls: max/restore visibility is updated by WindowImplBase.
     const LPCTSTR captionBtns[] = { _T("minbtn"), _T("maxbtn"), _T("restorebtn"), _T("closebtn") };
     for (auto name : captionBtns) {
@@ -314,12 +285,7 @@ void CMainWnd::ApplyDpiScaledChrome()
         if (CControlUI* c = m_PaintManager.FindControl(nm))
             c->SetBorderRound(ctlRound);
     }
-    // Path / search fields use the roomier Explorer radius (8 @96dpi).
-    const SIZE fieldRound = { DpiScale(UiTokens::FieldRound), DpiScale(UiTokens::FieldRound) };
-    for (LPCTSTR nm : { _T("path_host"), _T("search_box") }) {
-        if (CControlUI* c = m_PaintManager.FindControl(nm))
-            c->SetBorderRound(fieldRound);
-    }
+    ApplyCommandBarLayout();
 
     // Grow client area to design*scale on first apply so 150%/200% feels premium
     if (!m_dpiChromeApplied && m_hWnd && m_dpi != 96) {
@@ -404,4 +370,113 @@ void CMainWnd::OnDpiChanged(UINT newDpi, const RECT* suggested)
             SWP_NOZORDER | SWP_NOACTIVATE);
     }
     m_PaintManager.NeedUpdate();
+}
+
+// Command bar + address row, aligned to Win11 Explorer measured at 150% (logical px):
+//  - command bar: 48 total = hairline (command_top_divider) + white body + hairline
+//    (command_body_divider), 32px buttons, icon-only buttons 40 wide on a 48 pitch, label
+//    buttons 84 wide, 1x32 #F0F0F0 separators with 18px from the neighbouring ink, first icon
+//    18 from the window edge;
+//  - address row: 48 high, nav hit boxes 40 wide on a 48 pitch (first glyph 21 from the edge),
+//    32px radius-4 address/search boxes, 8px between them, search width follows the row.
+// Spacing is carried by each control's left padding so XML, code and tokens stay in step.
+void CMainWnd::ApplyCommandBarLayout()
+{
+    using namespace UiTokens;
+    auto find = [&](LPCTSTR name) { return m_PaintManager.FindControl(name); };
+    auto padLeft = [&](LPCTSTR name, int left) {
+        if (CControlUI* c = find(name)) c->SetPadding(RECT{ DpiScale(left), 0, 0, 0 });
+    };
+    auto size = [&](LPCTSTR name, int w, int h) {
+        if (CControlUI* c = find(name)) {
+            if (w >= 0) c->SetFixedWidth(DpiScale(w));
+            if (h >= 0) c->SetFixedHeight(DpiScale(h));
+        }
+    };
+    const int hair = DpiScaleHairline(Hairline);
+    if (auto* bar = dynamic_cast<CContainerUI*>(find(_T("toolbar")))) {
+        bar->SetFixedHeight((std::max)(DpiScale(ToolbarH) - 2 * hair, DpiScale(CmdBtnH)));
+        bar->SetInset(RECT{ DpiScale(ToolbarPadL), 0, DpiScale(ToolbarPadR), 0 });
+        bar->SetChildPadding(DpiScale(m_settings.density * 2));
+        bar->SetAttribute(_T("bordersize"), _T("0"));
+    }
+    for (LPCTSTR name : { _T("command_top_divider"), _T("command_body_divider") }) {
+        if (CControlUI* c = find(name)) {
+            c->SetFixedHeight(hair);
+            c->SetBkColor(ArgbCmdLine);
+        }
+    }
+    for (LPCTSTR name : { _T("sep_new"), _T("sep_organize"), _T("sep_more") }) {
+        if (CControlUI* c = find(name)) {
+            c->SetFixedWidth(DpiScale(1));
+            c->SetFixedHeight(DpiScale(SepH));
+            c->SetBkColor(ArgbCmdSeparator);
+        }
+        padLeft(name, ToolbarSepMargin);
+    }
+    for (LPCTSTR name : { _T("btn_new"), _T("btn_sort"), _T("btn_view_menu") }) {
+        size(name, ToolbarTextBtnMinW, CmdBtnH);
+        if (CControlUI* c = find(name)) {
+            c->SetAttribute(_T("font"), _T("7"));
+            c->SetAttribute(_T("align"), _T("left"));
+            c->SetAttribute(_T("textcolor"), ColorCmdText);
+            c->SetAttribute(_T("disabledtextcolor"), ColorCmdTextDisabled);
+        }
+    }
+    for (LPCTSTR name : { _T("btn_cut"), _T("btn_copy"), _T("btn_paste"), _T("btn_rename"),
+                          _T("btn_share"), _T("btn_delete"), _T("btn_more"), _T("btn_settings") })
+        size(name, ToolbarBtnW, CmdBtnH);
+    padLeft(_T("btn_new"), 0);
+    padLeft(_T("btn_cut"), ToolbarSepMargin);
+    for (LPCTSTR name : { _T("btn_copy"), _T("btn_paste"), _T("btn_rename"), _T("btn_share"), _T("btn_delete") })
+        padLeft(name, ToolbarItemGap);
+    padLeft(_T("btn_sort"), ToolbarSortPad);
+    padLeft(_T("btn_view_menu"), ToolbarLabelGap);
+    padLeft(_T("btn_more"), ToolbarMorePad);
+    padLeft(_T("btn_settings"), 0);
+
+    if (auto* row = dynamic_cast<CContainerUI*>(find(_T("address_bar")))) {
+        row->SetFixedHeight(DpiScale(AddressBarH));
+        row->SetInset(RECT{ DpiScale(AddressBarPadL), DpiScale(AddressBarPadY),
+                            DpiScale(AddressBarPadR), DpiScale(AddressBarPadY) });
+        row->SetAttribute(_T("bordersize"), _T("0"));
+    }
+    for (LPCTSTR name : { _T("btn_back"), _T("btn_forward"), _T("btn_up"), _T("btn_refresh") }) {
+        size(name, ToolbarNavBtnW, FieldH);
+        padLeft(name, NavBtnGap);
+    }
+    padLeft(_T("btn_back"), 0);
+    size(_T("gap_address_nav"), AddressNavGap, -1);
+    size(_T("gap_address_search"), AddressSearchGap, -1);
+    const SIZE fieldRound = { DpiScale(FieldRound), DpiScale(FieldRound) };
+    for (LPCTSTR name : { _T("path_host"), _T("search_box") }) {
+        size(name, -1, FieldH);
+        if (CControlUI* c = find(name)) c->SetBorderRound(fieldRound);
+    }
+    if (auto* box = dynamic_cast<CContainerUI*>(find(_T("search_box"))))
+        box->SetInset(RECT{ DpiScale(FieldPadL), DpiScale(2), DpiScale(SearchGlyphPadR), DpiScale(2) });
+    if (auto* host = dynamic_cast<CContainerUI*>(find(_T("path_host"))))
+        host->SetInset(RECT{ DpiScale(FieldPadL), DpiScale(2), DpiScale(FieldPadL), DpiScale(2) });
+    size(_T("search_glyph"), SearchGlyphPx, SearchGlyphPx);
+    padLeft(_T("search_glyph"), SearchGlyphGap);
+    UpdateSearchBoxWidth();
+}
+
+void CMainWnd::UpdateSearchBoxWidth(int rowPx)
+{
+    CControlUI* box = m_PaintManager.FindControl(_T("search_box"));
+    if (!box) return;
+    if (rowPx <= 0) {
+        if (CControlUI* row = m_PaintManager.FindControl(_T("address_bar")))
+            rowPx = static_cast<int>(row->GetWidth());
+    }
+    if (rowPx <= 0 && m_hWnd) {
+        RECT rc = {};
+        ::GetClientRect(m_hWnd, &rc);
+        rowPx = rc.right - rc.left;
+    }
+    const int w = UiTokens::SearchBoxWidthFor(rowPx, DpiScale(UiTokens::SearchBoxMinW),
+        DpiScale(UiTokens::SearchBoxMaxW));
+    if (box->GetFixedWidth() != w)
+        box->SetFixedWidth(w);
 }

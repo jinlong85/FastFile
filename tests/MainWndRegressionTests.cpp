@@ -1383,6 +1383,186 @@ struct MainWndRegressionAccess {
         check(!drag.Captured(),"switching focus to a native file view cancels the old scrollbar gesture");
         return failures;
     }
+    // Cmd-bar alignment pass: command bar + address row follow the Win11 Explorer metrics
+    // measured at 150% (logical px). Layout is checked at 150% DPI on a maximized-like
+    // 1707-logical (2560 physical) row, and the painted pixels are sampled from an offscreen
+    // render of the top area. FASTFILE_TOP_SHOT=<png> also saves that render.
+    static int CheckCommandBarAlignment(CMainWnd& window) {
+        int failures=0;
+        auto check=[&](bool ok,const char* name) { if(!ok) {std::cerr<<"FAIL "<<name<<'\n';++failures;} };
+        auto within=[](int a,int b,int tol) { return a>=b-tol && a<=b+tol; };
+        auto ctl=[&](const wchar_t* name) { return window.m_PaintManager.FindControl(name); };
+        // XML / tokens / code consistency: the design values in main.xml are the tokens.
+        {
+            wchar_t module[MAX_PATH]{}; GetModuleFileNameW(nullptr,module,MAX_PATH);
+            PathRemoveFileSpecW(module);
+            std::ifstream xml((std::wstring(module)+L"\\skin\\main.xml").c_str(),std::ios::binary);
+            const std::string text((std::istreambuf_iterator<char>(xml)),std::istreambuf_iterator<char>());
+            auto has=[&](const char* fragment) { return text.find(fragment)!=std::string::npos; };
+            check(!text.empty(),"skin main.xml is readable next to the test executable");
+            check(has("name=\"search_box\" width=\"240\" height=\"32\"") && UiTokens::SearchBoxW==240
+                && UiTokens::SearchBoxMinW==240 && UiTokens::SearchBoxMaxW==435 && UiTokens::SearchBoxRowPct==30,
+                "search box design width/height agree between main.xml and UiTokens");
+            check(has("name=\"path_host\" height=\"32\" bkcolor=\"#FFFCFCFB\" bordercolor=\"#FFFCFCFB\" bordersize=\"1\" borderround=\"4,4\"")
+                && UiTokens::FieldH==32 && UiTokens::FieldRound==4,"address box xml uses 32px height, radius 4 and borderless FCFCFB fill");
+            check(has("name=\"toolbar\" height=\"46\"") && has("name=\"command_top_divider\" height=\"1\" bkcolor=\"#FFE0E0E0\"")
+                && has("name=\"command_body_divider\" height=\"1\" bkcolor=\"#FFE0E0E0\"") && UiTokens::ToolbarH==48,
+                "command bar xml = 1 + 46 + 1 = ToolbarH 48 with E0E0E0 hairlines");
+            check(has("name=\"sep_new\" width=\"1\" height=\"32\"") && has("bkcolor=\"#FFF0F0F0\"") && UiTokens::SepH==32,
+                "separators are 1x32 F0F0F0 in xml and tokens");
+            check(has("name=\"btn_cut\" text=\"\" width=\"40\" height=\"32\"") && has("name=\"btn_back\" text=\"\" width=\"40\" height=\"32\"")
+                && has("text=\"新建\" width=\"84\"") && text.find("⌄")==std::string::npos,
+                "xml buttons use the 40/84 widths and no text chevrons");
+        }
+        for(int row:{2560,1770,1180,700})
+            check(UiTokens::SearchBoxWidthFor(row,360,653)==(std::min)(653,(std::max)(360,row*30/100)),
+                "search width is clamp(min, 30 percent of row, max)");
+
+        const UINT initialDpi=window.m_dpi;
+        window.m_dpi=144;
+        window.ApplyDpiScaledFonts();window.ApplyDpiScaledChrome();window.ApplyUiChromeTokens();
+        window.ApplyChromeShellIcons();window.UpdateCommandBarState();window.UpdateNavButtons();
+        window.RebuildFavoritesBar();
+        const int W=2560,H=1100;
+        window.UpdateSearchBoxWidth(W);
+        window.m_PaintManager.GetRoot()->SetPos({0,0,W,H},false);
+        window.RebuildBreadcrumb();
+        window.m_PaintManager.GetRoot()->SetPos({0,0,W,H},false);
+        auto pos=[&](const wchar_t* name) { CControlUI* c=ctl(name); return c ? c->GetPos() : RECT{}; };
+        const RECT top=pos(L"command_top_divider"),bar=pos(L"toolbar"),body=pos(L"command_body_divider");
+        check(body.bottom-top.top==72 && top.bottom-top.top==2 && body.bottom-body.top==2 && bar.top==top.bottom && body.top==bar.bottom,
+            "command bar is 48 logical at 150 percent including a hairline above and below");
+        const RECT newBtn=pos(L"btn_new"),cut=pos(L"btn_cut"),del=pos(L"btn_delete"),sep=pos(L"sep_new"),sepOrg=pos(L"sep_organize");
+        check(newBtn.bottom-newBtn.top==48 && cut.bottom-cut.top==48 && cut.right-cut.left==60 && newBtn.right-newBtn.left==126,
+            "command buttons are 32 high, icon-only 40 wide and label buttons 84 wide");
+        check(within(newBtn.left+window.DpiScale(12),27,1),"first command icon sits 18 logical from the window edge");
+        const wchar_t* icons[]={L"btn_cut",L"btn_copy",L"btn_paste",L"btn_rename",L"btn_share",L"btn_delete"};
+        bool pitch=true;
+        for(int i=1;i<6;++i) pitch=pitch && pos(icons[i]).left-pos(icons[i-1]).left==72;
+        check(pitch,"icon-only commands are 48 logical apart center to center");
+        check(sep.right-sep.left==2 && sep.bottom-sep.top==48 && ctl(L"sep_new")->GetBkColor()==0xFFF0F0F0,
+            "group separators are 1x32 logical and very light");
+        const int chevronInk=newBtn.right-window.DpiScale(12),cutInk=cut.left+(60-24)/2;
+        check(within(sep.left-chevronInk,27,2) && within(cutInk-sep.right,27,2) && within(sepOrg.left-(del.left+(60-24)/2+24),27,2),
+            "separators sit 18 logical from the neighbouring ink");
+        const RECT settings=pos(L"btn_settings");
+        check(settings.right==W-window.DpiScale(6) && settings.right-settings.left==60,"settings gear stays at the right end of the bar");
+        const RECT row=pos(L"address_bar"),back=pos(L"btn_back"),fwd=pos(L"btn_forward"),up=pos(L"btn_up"),refresh=pos(L"btn_refresh");
+        check(row.bottom-row.top==72 && row.bottom==top.top,"address row is 48 logical directly above the command bar");
+        check(within(back.left+(back.right-back.left-18)/2,32,1) && fwd.left-back.left==72 && up.left-fwd.left==72 && refresh.left-up.left==72,
+            "nav glyphs start 21 logical from the edge on a 48 logical pitch");
+        const RECT path=pos(L"path_host"),search=pos(L"search_box"),glyph=pos(L"search_glyph");
+        check(path.bottom-path.top==48 && search.bottom-search.top==48 && path.top-row.top==12
+            && ctl(L"path_host")->GetBorderRound().cx==6 && ctl(L"search_box")->GetBorderRound().cx==6,
+            "address and search boxes are 32 logical high with radius 4");
+        check(search.right-search.left==window.DpiScale(435) && search.left-path.right==12,
+            "maximized search box is 435 logical wide and 8 logical after the address box");
+        check(glyph.right-glyph.left==window.DpiScale(11) && search.right-glyph.right==window.DpiScale(13),
+            "search glyph is 11 logical and 13 logical from the right edge");
+        check(path.left-refresh.right==window.DpiScale(10),"address box starts 10 logical after Refresh like Explorer");
+
+        // The colour check below needs a disabled copy command; the selection state depends on
+        // what earlier checks did, so force it (UpdateCommandBarState restores it afterwards).
+        ctl(L"btn_copy")->SetEnabled(false);window.ApplyCommandIcon(ctl(L"btn_copy"),2,false);
+        // Paint the top area offscreen and sample real pixels.
+        const int shotH=body.bottom+window.DpiScale(8);
+        BITMAPINFO info{};info.bmiHeader.biSize=sizeof(info.bmiHeader);info.bmiHeader.biWidth=W;info.bmiHeader.biHeight=-shotH;
+        info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;info.bmiHeader.biCompression=BI_RGB;
+        void* bits=nullptr;HDC screen=GetDC(nullptr),dc=CreateCompatibleDC(screen);
+        HBITMAP dib=CreateDIBSection(screen,&info,DIB_RGB_COLORS,&bits,nullptr,0);auto old=SelectObject(dc,dib);
+        RECT canvas{0,0,W,shotH};FillRect(dc,&canvas,reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+        window.m_PaintManager.GetRoot()->Paint(dc,canvas,nullptr);GdiFlush();
+        auto px=[&](int x,int y)->DWORD { if(x<0||y<0||x>=W||y>=shotH) return 0; return static_cast<const DWORD*>(bits)[size_t(y)*W+x]&0xFFFFFF; };
+        auto anyIn=[&](RECT r,DWORD rgb,int tol) {
+            for(int y=r.top;y<r.bottom;++y) for(int x=r.left;x<r.right;++x) {
+                const DWORD p=px(x,y);
+                if(within(int(p>>16&255),int(rgb>>16&255),tol)&&within(int(p>>8&255),int(rgb>>8&255),tol)&&within(int(p&255),int(rgb&255),tol)) return true;
+            } return false; };
+        check(px(W/2,top.top)==0xE0E0E0 && px(W/2,top.bottom-1)==0xE0E0E0 && px(W/2,body.top)==0xE0E0E0,
+            "command bar hairlines paint E0E0E0 above and below");
+        check(px((sep.left+sep.right)/2,(sep.top+sep.bottom)/2)==0xF0F0F0 && px(sep.right+3,(sep.top+sep.bottom)/2)==0xFFFFFF,
+            "separator paints F0F0F0 on the white bar");
+        check(px(path.right-4,(path.top+path.bottom)/2)==0xFCFCFB && px(path.right-window.DpiScale(16),path.top)==0xFCFCFB,
+            "address box fill is FCFCFB with no visible idle border");
+        check(!ctl(L"btn_copy")->IsEnabled() && anyIn(pos(L"btn_copy"),0xC2C2C2,3) && anyIn(pos(L"btn_copy"),0xA3CEEF,3),
+            "disabled copy shows grey C2C2C2 and blue A3CEEF at 36 percent");
+        const RECT more=pos(L"btn_more");
+        check(anyIn(more,0x1B1B1B,2),"more dots are 1B1B1B");
+        auto imageFile=[&](const wchar_t* name) {
+            std::wstring attr=static_cast<CButtonUI*>(ctl(name))->GetForeImage();
+            const size_t a=attr.find(L"file='"),b=a==std::wstring::npos ? a : attr.find(L'\'',a+6);
+            return a==std::wstring::npos||b==std::wstring::npos ? std::wstring() : attr.substr(a+6,b-a-6);
+        };
+        {
+            // Label button bitmap: icon at 12, chevron = small E70D, 777777, 12 from the right.
+            Gdiplus::Bitmap canvasBmp(imageFile(L"btn_new").c_str());
+            int left=10000,right=-1,topY=10000,bottomY=-1;bool grey77=false;
+            const int bw=int(canvasBmp.GetWidth()),zone=bw-window.DpiScale(12)-window.DpiScale(8);
+            for(int y=0;y<int(canvasBmp.GetHeight());++y) for(int x=zone;x<bw;++x) {
+                Gdiplus::Color c;canvasBmp.GetPixel(x,y,&c);
+                if(c.GetAlpha()<24) continue;
+                left=(std::min)(left,x);right=(std::max)(right,x);topY=(std::min)(topY,y);bottomY=(std::max)(bottomY,y);
+                grey77=grey77||(c.GetR()==0x77&&c.GetG()==0x77&&c.GetB()==0x77);
+            }
+            check(bw==126 && grey77 && right>=0 && right-left+1<=window.DpiScale(6)+1 && bottomY-topY+1<=window.DpiScale(4)+1
+                && within(bw-1-right,window.DpiScale(12),2),
+                "label chevron is a small 5.3x3.3 E70D glyph in 777777 at the 12px right padding");
+        }
+        auto glyphColor=[&](const wchar_t* name,wchar_t glyph,COLORREF color) {
+            const std::wstring expected=window.GetGlyphIconBmp(glyph,window.DpiScale(UiTokens::NavGlyphPx),color);
+            return !expected.empty() && imageFile(name)==expected;
+        };
+        check(glyphColor(L"btn_back",UiTokens::GlyphNavBack,RGB(0xA2,0xA2,0xA0))
+            && glyphColor(L"btn_refresh",UiTokens::GlyphNavRefresh,RGB(0x1A,0x1A,0x1A))
+            && glyphColor(L"btn_up",UiTokens::GlyphNavUp,RGB(0x1A,0x1A,0x1A)),
+            "nav glyphs are Segoe Fluent E72B/E72A/E74A/E72C at 12px in 1A1A1A, disabled A2A2A0");
+        check(anyIn(back,0xC8C8C6,30) && anyIn(refresh,0x404040,40),"nav glyphs actually paint");
+        wchar_t shot[MAX_PATH]{};
+        if(GetEnvironmentVariableW(L"FASTFILE_TOP_SHOT",shot,MAX_PATH)) {
+            std::vector<DWORD> argb(size_t(W)*shotH);
+            for(size_t i=0;i<argb.size();++i) argb[i]=0xFF000000u|(static_cast<const DWORD*>(bits)[i]&0xFFFFFF);
+            check(CMainWnd::SaveArgbPng(argb,W,shotH,shot),"top-area screenshot saved");
+        }
+        SelectObject(dc,old);DeleteObject(dib);DeleteDC(dc);ReleaseDC(nullptr,screen);
+        window.UpdateCommandBarState();
+
+        // Icon bitmaps: grey #555555 + accent #0078D4, hollow accent, disabled at 36%.
+        for(bool dim:{false,true}) {
+            Gdiplus::Bitmap icon(window.GetCommandIconBmp(2,24,dim).c_str());
+            int grey=0,blue=0,maxAlpha=0;
+            for(UINT y=0;y<icon.GetHeight();++y) for(UINT x=0;x<icon.GetWidth();++x) {
+                Gdiplus::Color c;icon.GetPixel(x,y,&c);maxAlpha=(std::max)(maxAlpha,int(c.GetAlpha()));
+                if(c.GetAlpha()<(dim?80:230)) continue;
+                if(c.GetR()==0x55&&c.GetG()==0x55&&c.GetB()==0x55) ++grey;
+                if(c.GetR()==0x00&&c.GetG()==0x78&&c.GetB()==0xD4) ++blue;
+            }
+            check(grey>0 && blue>0,"copy icon has a 555555 grey layer and a 0078D4 accent layer");
+            check(maxAlpha==(dim?int(UiTokens::CmdDisabledAlpha):255),"disabled command icon is the whole icon at 36 percent");
+            Gdiplus::Color inside;icon.GetPixel(UINT(24*10.5/16),UINT(24*6.5/16),&inside);
+            check(inside.GetAlpha()==0,"copy accent sheet is hollow, not a tinted fill");
+        }
+        {
+            // Stroke weight: a vertical stroke of the delete glyph at 24 px is ~1.5 px (1 logical).
+            Gdiplus::Bitmap icon(window.GetCommandIconBmp(6,24,false).c_str());
+            double coverage=0;const UINT y=UINT(24*0.6);
+            for(UINT x=0;x<UINT(24*0.3);++x) {Gdiplus::Color c;icon.GetPixel(x,y,&c);coverage+=c.GetAlpha()/255.0;}
+            check(coverage>0.9 && coverage<2.3,"command glyph stroke is about 1 logical px instead of 1.78");
+        }
+        window.m_dpi=initialDpi;
+        window.ApplyDpiScaledFonts();window.ApplyDpiScaledChrome();window.ApplyUiChromeTokens();
+        window.ApplyChromeShellIcons();window.UpdateCommandBarState();window.UpdateNavButtons();
+        window.RebuildFavoritesBar();window.UpdateSearchBoxWidth(1180);
+        window.m_PaintManager.GetRoot()->SetPos({0,0,1180,740},false);window.RebuildBreadcrumb();
+        return failures;
+    }
+    // Sequenced explicitly: operands of + have no evaluation order, and the command-bar check
+    // must run before CheckUiPolish selects files.
+    static int RunUiPolish(CMainWnd& window, const std::wstring& root) {
+        int failures=CheckUiMetrics(window);
+        failures+=CheckCommandBarAlignment(window);
+        failures+=CheckUiPolish(window, root);
+        return failures;
+    }
     static int CheckUiMetrics(CMainWnd& window) {
         int failures = 0;
         auto check = [&](bool result, const char* name) {
@@ -1391,14 +1571,47 @@ struct MainWndRegressionAccess {
         const UINT initialDpi = window.m_dpi;
         for (UINT dpi : {96u,144u,192u}) {
             window.m_dpi=dpi;window.ApplyDpiScaledChrome();window.ApplyUiChromeTokens();window.ApplyDpiScaledFonts();window.RebuildFavoritesBar();
-            check(static_cast<CContainerUI*>(window.m_PaintManager.FindControl(L"toolbar"))->GetChildPadding()==MulDiv(4,dpi,96),"command buttons have DPI-scaled separation");
+            auto* toolbarRow=static_cast<CContainerUI*>(window.m_PaintManager.FindControl(L"toolbar"));
+            check(toolbarRow->GetChildPadding()==0 && toolbarRow->GetInset().left==MulDiv(6,dpi,96)
+                && toolbarRow->GetFixedHeight()+2*window.DpiScaleHairline(1)==MulDiv(48,dpi,96),
+                "command bar is 48 logical including hairlines and spaces commands by padding");
             for(const auto* name:{L"btn_new",L"btn_sort",L"btn_view_menu"})
-                check(window.m_PaintManager.FindControl(name)->GetFixedWidth()==MulDiv(88,dpi,96),"label commands reserve icon text and chevron space");
+                check(window.m_PaintManager.FindControl(name)->GetFixedWidth()==MulDiv(84,dpi,96),"label commands are 84 logical: padding icon label chevron");
+            for(const auto* name:{L"btn_cut",L"btn_copy",L"btn_paste",L"btn_rename",L"btn_share",L"btn_delete",L"btn_more"}) {
+                auto* c=window.m_PaintManager.FindControl(name);
+                check(c->GetFixedWidth()==MulDiv(40,dpi,96) && c->GetFixedHeight()==MulDiv(32,dpi,96),"icon-only commands are 40x32 logical");
+            }
+            for(const auto* name:{L"btn_copy",L"btn_paste",L"btn_rename",L"btn_share",L"btn_delete"})
+                check(window.m_PaintManager.FindControl(name)->GetPadding().left==MulDiv(8,dpi,96),"icon-only commands keep an 8 logical gap (48 pitch)");
+            for(const auto* name:{L"sep_new",L"sep_organize",L"sep_more"}) {
+                auto* c=window.m_PaintManager.FindControl(name);
+                check(c->GetFixedWidth()==MulDiv(1,dpi,96) && c->GetFixedHeight()==MulDiv(32,dpi,96) && c->GetBkColor()==0xFFF0F0F0
+                    && c->GetPadding().left==MulDiv(6,dpi,96),"group separators are 1x32 F0F0F0 with 6 logical clearance");
+            }
+            auto* addressRow=static_cast<CContainerUI*>(window.m_PaintManager.FindControl(L"address_bar"));
+            check(addressRow->GetFixedHeight()==MulDiv(48,dpi,96) && addressRow->GetInset().left==MulDiv(7,dpi,96),"address row is 48 logical");
+            for(const auto* name:{L"btn_back",L"btn_forward",L"btn_up",L"btn_refresh"}) {
+                auto* c=window.m_PaintManager.FindControl(name);
+                check(c->GetFixedWidth()==MulDiv(40,dpi,96) && c->GetPadding().left==(wcscmp(name,L"btn_back")==0 ? 0 : MulDiv(8,dpi,96)),
+                    "nav buttons are 40 wide on a 48 logical pitch");
+            }
+            for(const auto* name:{L"path_host",L"search_box"}) {
+                auto* c=window.m_PaintManager.FindControl(name);
+                check(c->GetFixedHeight()==MulDiv(32,dpi,96) && c->GetBorderRound().cx==MulDiv(4,dpi,96)
+                    && c->GetBkColor()==0xFFFCFCFB && c->GetBorderColor()==0xFFFCFCFB,
+                    "address and search boxes are 32 logical, radius 4, FCFCFB with no visible border");
+            }
+            check(window.m_PaintManager.FindControl(L"gap_address_search")->GetFixedWidth()==MulDiv(8,dpi,96),"address and search boxes are 8 logical apart");
+            check(window.m_PaintManager.FindControl(L"search_glyph")->GetFixedWidth()==MulDiv(11,dpi,96)
+                && static_cast<CContainerUI*>(window.m_PaintManager.FindControl(L"search_box"))->GetInset().right==MulDiv(13,dpi,96),
+                "search glyph is 11 logical and 13 logical from the right edge");
             auto* settingsButton=window.m_PaintManager.FindControl(L"btn_settings");
-            check(settingsButton && settingsButton->GetFixedWidth()==MulDiv(32,dpi,96)
+            check(settingsButton && settingsButton->GetFixedWidth()==MulDiv(40,dpi,96)
                 && settingsButton->GetFixedHeight()==MulDiv(32,dpi,96),"settings gear hit area follows 96 144 and 192 DPI");
+            auto* topLine=window.m_PaintManager.FindControl(L"command_top_divider");
+            check(topLine && topLine->GetFixedHeight()==window.DpiScaleHairline(1) && topLine->GetBkColor()==0xFFE0E0E0,"command bar has a painted E0E0E0 hairline above it");
             auto* divider=window.m_PaintManager.FindControl(L"command_body_divider");
-            check(divider && divider->GetFixedHeight()==window.DpiScaleHairline(1) && divider->GetBkColor()==0xFFD0D0D0,"file area uses a real painted separator instead of bottom-only border");
+            check(divider && divider->GetFixedHeight()==window.DpiScaleHairline(1) && divider->GetBkColor()==0xFFE0E0E0,"file area uses a real painted separator instead of bottom-only border");
             check(static_cast<CContainerUI*>(window.m_PaintManager.FindControl(L"body_host"))->GetInset().top==MulDiv(8,dpi,96),"file group headers have breathing room below command bar");
             if(divider) {
                 const RECT previous=divider->GetPos();const int h=divider->GetFixedHeight();
@@ -1406,7 +1619,7 @@ struct MainWndRegressionAccess {
                 HBITMAP bitmap=CreateCompatibleBitmap(screen,64,h+2);auto old=SelectObject(dc,bitmap);
                 RECT canvas{0,0,64,h+2};FillRect(dc,&canvas,reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
                 divider->SetPos({0,0,64,h},false);divider->Paint(dc,canvas,nullptr);
-                check(GetPixel(dc,32,0)==RGB(0xd0,0xd0,0xd0) && GetPixel(dc,32,h)==RGB(255,255,255),
+                check(GetPixel(dc,32,0)==RGB(0xe0,0xe0,0xe0) && GetPixel(dc,32,h)==RGB(255,255,255),
                     "command separator actually paints its full row with no spill into file area");
                 divider->SetPos(previous,false);SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);ReleaseDC(nullptr,screen);
             }
@@ -1484,13 +1697,14 @@ struct MainWndRegressionAccess {
                     for(UINT y=0;y<icon.GetHeight();++y)for(UINT x=0;x<icon.GetWidth();++x) {
                         Gdiplus::Color pixel;icon.GetPixel(x,y,&pixel);
                         alpha=(std::max)(alpha,pixel.GetAlpha());coverage[pixel.GetAlpha()]=true;
-                        if(pixel.GetAlpha()==(dim?102:255)) check(pixel.GetR()>=0x19 && pixel.GetR()<=0x1B && pixel.GetG()==pixel.GetR() && pixel.GetB()==pixel.GetR(),
-                            "command icon uses requested monochrome ink");
+                        if(pixel.GetAlpha()>0) check(pixel.GetR()==0x55 && pixel.GetG()==0x55 && pixel.GetB()==0x55,
+                            "grey command icon layer uses Explorer 555555");
                     }
-                    int smoothLevels=0;for(int a=1;a<(dim?102:255);++a)if(coverage[a])++smoothLevels;
-                    check(smoothLevels>=16,"command vector edges retain graded alpha at actual DPI size");
-                    check(icon.GetWidth()==UINT(MulDiv(16,dpi,96)) && alpha==(dim?102:255),
-                        "command bitmap is rendered at physical size with overall 40 percent disabled alpha");
+                    const int full=dim?int(UiTokens::CmdDisabledAlpha):255;
+                    int smoothLevels=0;for(int a=1;a<full;++a)if(coverage[a])++smoothLevels;
+                    check(smoothLevels>=(dim?6:10),"command glyph edges retain graded alpha at actual DPI size");
+                    check(icon.GetWidth()==UINT(MulDiv(16,dpi,96)) && alpha==full,
+                        "command bitmap is rendered at physical size with overall 36 percent disabled alpha");
                 }
             }
             LOGFONTW font{};
@@ -2294,9 +2508,15 @@ struct MainWndRegressionAccess {
             auto* field = static_cast<CContainerUI*>(window.m_PaintManager.FindControl(name));
             const RECT bounds = field->GetPos(), row = addressBar->GetPos(), inset = field->GetInset();
             check(bounds.top > row.top && bounds.bottom < row.bottom &&
-                bounds.bottom - bounds.top >= window.DpiScale(36) &&
-                field->GetBorderRound().cx >= window.DpiScale(6) && inset.left >= window.DpiScale(10),
-                "rounded address/search fields have room for full height and inner text margins");
+                bounds.bottom - bounds.top == window.DpiScale(32) &&
+                field->GetBorderRound().cx == window.DpiScale(4) && inset.left >= window.DpiScale(10),
+                "rounded address/search fields are 32 logical with radius 4 and inner text margins");
+        }
+        {
+            auto* search = window.m_PaintManager.FindControl(L"search_box");
+            const int rowW = int(addressBar->GetWidth());
+            check(search->GetFixedWidth() == UiTokens::SearchBoxWidthFor(rowW, window.DpiScale(UiTokens::SearchBoxMinW),
+                window.DpiScale(UiTokens::SearchBoxMaxW)), "search width follows clamp(240, 30 percent of row, 435)");
         }
         auto* node = window.FindTreeNodeByPath(nullptr, fixture);
         check(node && node->IsVisible() && node->IsSelected(), "navigate must expand and select nested tree target");
@@ -2568,7 +2788,7 @@ int main(int argc, char** argv) {
         : argc>1 && strcmp(argv[1],"--thumbs-only")==0
         ? MainWndRegressionAccess::CheckAsyncThumbs(*window, root)
         : argc>1 && strcmp(argv[1],"--ui-polish-only")==0
-        ? MainWndRegressionAccess::CheckUiMetrics(*window) + MainWndRegressionAccess::CheckUiPolish(*window, root)
+        ? MainWndRegressionAccess::RunUiPolish(*window, root)
         : MainWndRegressionAccess::Run(*window, fixture);
     if(!activationOnly && !(argc>1 && (strcmp(argv[1],"--delete-permission-check")==0 || strcmp(argv[1],"--delete-partial-check")==0)))
         failures+=MainWndRegressionAccess::CheckPreferences(*window,root);

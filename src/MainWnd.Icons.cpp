@@ -840,81 +840,132 @@ bool CMainWnd::ExtractModuleIconSized(const wchar_t* moduleFile, int index, int 
     return saved;
 }
 
-bool CMainWnd::RenderGlyphToPng(wchar_t glyph, int px, COLORREF color, const std::wstring& pngPath)
-{
-    if (px <= 0 || pngPath.empty()) return false;
-    if (!EnsureGdiplus()) return false;
-    using namespace Gdiplus;
+namespace {
 
-    // Draw the glyph white-on-black into a 32bpp DIB, then treat the red channel as coverage
-    // and rebuild the pixels as straight-alpha ARGB in the requested colour.
-    HDC hdc = ::GetDC(nullptr);
-    if (!hdc) return false;
-    HDC mem = ::CreateCompatibleDC(hdc);
+// Windows icon fonts: Segoe Fluent Icons (Windows 11, C:\Windows\Fonts\SegoeIcons.ttf) is the
+// Explorer command-bar set; Segoe MDL2 Assets (segmdl2.ttf) carries the same code points on
+// Windows 10. Both put the em box at the cell origin (ascent = em, descent = 0).
+int CALLBACK IconFontFound(const LOGFONTW*, const TEXTMETRICW*, DWORD, LPARAM found)
+{
+    *reinterpret_cast<bool*>(found) = true;
+    return 0;
+}
+
+const wchar_t* CommandIconFace()
+{
+    static int which = -1;
+    if (which < 0) {
+        which = 0;
+        HDC dc = ::GetDC(nullptr);
+        auto has = [&](const wchar_t* face) {
+            LOGFONTW lf = {};
+            lf.lfCharSet = DEFAULT_CHARSET;
+            wcscpy_s(lf.lfFaceName, face);
+            bool found = false;
+            ::EnumFontFamiliesExW(dc, &lf, IconFontFound, reinterpret_cast<LPARAM>(&found), 0);
+            return found;
+        };
+        if (dc) {
+            if (has(L"Segoe Fluent Icons")) which = 1;
+            else if (has(L"Segoe MDL2 Assets")) which = 2;
+            ::ReleaseDC(nullptr, dc);
+        }
+    }
+    return which == 1 ? L"Segoe Fluent Icons" : which == 2 ? L"Segoe MDL2 Assets" : nullptr;
+}
+
+// Rasterizes one icon-font glyph white-on-black with GDI and max-merges its coverage into
+// `cov` (w x h, one byte per pixel). (x, y) is the top-left of the em box, emPx its size.
+bool AddGlyphCoverage(const wchar_t* face, wchar_t glyph, int emPx, int x, int y,
+                      int w, int h, std::vector<BYTE>& cov)
+{
+    if (!face || emPx <= 0 || w <= 0 || h <= 0) return false;
+    if (cov.size() != size_t(w) * size_t(h)) cov.assign(size_t(w) * size_t(h), 0);
+    HDC screen = ::GetDC(nullptr);
+    if (!screen) return false;
+    HDC mem = ::CreateCompatibleDC(screen);
     BITMAPINFO bi = {};
     bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bi.bmiHeader.biWidth = px;
-    bi.bmiHeader.biHeight = -px;   // top-down
+    bi.bmiHeader.biWidth = w;
+    bi.bmiHeader.biHeight = -h;
     bi.bmiHeader.biPlanes = 1;
     bi.bmiHeader.biBitCount = 32;
     bi.bmiHeader.biCompression = BI_RGB;
     void* bits = nullptr;
-    HBITMAP dib = ::CreateDIBSection(hdc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    if (!dib || !bits) {
-        if (dib) ::DeleteObject(dib);
-        ::DeleteDC(mem);
-        ::ReleaseDC(nullptr, hdc);
-        return false;
-    }
-    ::ZeroMemory(bits, static_cast<size_t>(px) * static_cast<size_t>(px) * 4u);
-    HGDIOBJ oldBmp = ::SelectObject(mem, dib);
-
-    LOGFONTW lf = {};
-    lf.lfHeight = -px;
-    lf.lfWeight = FW_NORMAL;
-    lf.lfCharSet = DEFAULT_CHARSET;
-    lf.lfQuality = ANTIALIASED_QUALITY;
-    wcscpy_s(lf.lfFaceName, L"Segoe MDL2 Assets");
-    HFONT font = ::CreateFontIndirectW(&lf);
-    HGDIOBJ oldFont = font ? ::SelectObject(mem, font) : nullptr;
-    ::SetBkMode(mem, TRANSPARENT);
-    ::SetTextColor(mem, RGB(255, 255, 255));
-    RECT rc = { 0, 0, px, px };
-    ::DrawTextW(mem, &glyph, 1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-
+    HBITMAP dib = ::CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
     bool ok = false;
-    {
-        Bitmap out(px, px, PixelFormat32bppARGB);
-        Rect lock(0, 0, px, px);
-        BitmapData bd = {};
-        if (out.GetLastStatus() == Ok
-            && out.LockBits(&lock, ImageLockModeWrite, PixelFormat32bppARGB, &bd) == Ok) {
-            const DWORD* src = static_cast<const DWORD*>(bits);
-            BYTE* dst = static_cast<BYTE*>(bd.Scan0);
-            const BYTE cr = GetRValue(color), cg = GetGValue(color), cb = GetBValue(color);
-            for (int y = 0; y < px; ++y) {
-                BYTE* row = dst + static_cast<size_t>(y) * static_cast<size_t>(bd.Stride);
-                for (int x = 0; x < px; ++x) {
-                    const BYTE coverage = static_cast<BYTE>(src[y * px + x] & 0xFFu);
-                    row[x * 4 + 0] = cb;
-                    row[x * 4 + 1] = cg;
-                    row[x * 4 + 2] = cr;
-                    row[x * 4 + 3] = coverage;
-                }
-            }
-            out.UnlockBits(&bd);
-            CLSID clsidPng = {};
-            ok = GetPngEncoderClsid(&clsidPng) && out.Save(pngPath.c_str(), &clsidPng, nullptr) == Ok;
+    if (dib && bits && mem) {
+        ::ZeroMemory(bits, size_t(w) * size_t(h) * 4u);
+        HGDIOBJ oldBmp = ::SelectObject(mem, dib);
+        LOGFONTW lf = {};
+        lf.lfHeight = -emPx;
+        lf.lfWeight = FW_NORMAL;
+        lf.lfCharSet = DEFAULT_CHARSET;
+        lf.lfQuality = ANTIALIASED_QUALITY;
+        wcscpy_s(lf.lfFaceName, face);
+        HFONT font = ::CreateFontIndirectW(&lf);
+        HGDIOBJ oldFont = font ? ::SelectObject(mem, font) : nullptr;
+        ::SetBkMode(mem, TRANSPARENT);
+        ::SetTextColor(mem, RGB(255, 255, 255));
+        ::SetTextAlign(mem, TA_TOP | TA_LEFT | TA_NOUPDATECP);
+        ok = ::TextOutW(mem, x, y, &glyph, 1) != FALSE;
+        ::GdiFlush();
+        const DWORD* src = static_cast<const DWORD*>(bits);
+        for (size_t i = 0, n = size_t(w) * size_t(h); i < n; ++i) {
+            const DWORD p = src[i];
+            const BYTE c = (std::max)({ BYTE(p & 0xFF), BYTE((p >> 8) & 0xFF), BYTE((p >> 16) & 0xFF) });
+            if (c > cov[i]) cov[i] = c;
         }
+        if (oldFont) ::SelectObject(mem, oldFont);
+        if (font) ::DeleteObject(font);
+        ::SelectObject(mem, oldBmp);
     }
-
-    if (oldFont) ::SelectObject(mem, oldFont);
-    if (font) ::DeleteObject(font);
-    ::SelectObject(mem, oldBmp);
-    ::DeleteObject(dib);
-    ::DeleteDC(mem);
-    ::ReleaseDC(nullptr, hdc);
+    if (dib) ::DeleteObject(dib);
+    if (mem) ::DeleteDC(mem);
+    ::ReleaseDC(nullptr, screen);
     return ok;
+}
+
+// Box-filters an s-times supersampled coverage buffer down to (w, h).
+std::vector<float> DownsampleCoverage(const std::vector<BYTE>& hi, int w, int h, int s)
+{
+    std::vector<float> out(size_t(w) * size_t(h), 0.0f);
+    if (hi.size() != size_t(w) * size_t(h) * size_t(s) * size_t(s)) return out;
+    const int hw = w * s;
+    const float norm = 1.0f / (255.0f * float(s * s));
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            unsigned sum = 0;
+            for (int j = 0; j < s; ++j) {
+                const BYTE* row = &hi[size_t(y * s + j) * size_t(hw) + size_t(x * s)];
+                for (int i = 0; i < s; ++i) sum += row[i];
+            }
+            out[size_t(y) * size_t(w) + size_t(x)] = float(sum) * norm;
+        }
+    return out;
+}
+
+
+} // namespace
+
+bool CMainWnd::RenderGlyphToPng(wchar_t glyph, int px, COLORREF color, const std::wstring& pngPath)
+{
+    if (px <= 0 || pngPath.empty()) return false;
+    if (!EnsureGdiplus()) return false;
+    const wchar_t* face = CommandIconFace();
+    if (!face) return false;
+    // Rasterize the em box 4x supersampled (white on black), box-filter to the exact size and
+    // rebuild straight-alpha pixels in the requested colour.
+    constexpr int s = 4;
+    std::vector<BYTE> hi;
+    if (!AddGlyphCoverage(face, glyph, px * s, 0, 0, px * s, px * s, hi)) return false;
+    const auto cov = DownsampleCoverage(hi, px, px, s);
+    const Gdiplus::ARGB rgb = (Gdiplus::ARGB(GetRValue(color)) << 16)
+        | (Gdiplus::ARGB(GetGValue(color)) << 8) | Gdiplus::ARGB(GetBValue(color));
+    std::vector<Gdiplus::ARGB> pixels(cov.size(), 0);
+    for (size_t i = 0; i < cov.size(); ++i)
+        if (cov[i] > 0.0f) pixels[i] = (Gdiplus::ARGB(std::lround(cov[i] * 255.0f)) << 24) | rgb;
+    return SaveArgbPng(pixels, px, px, pngPath);
 }
 
 std::wstring CMainWnd::GetGlyphIconBmp(wchar_t glyph, int px, COLORREF color)
@@ -935,7 +986,7 @@ std::wstring CMainWnd::GetGlyphIconBmp(wchar_t glyph, int px, COLORREF color)
 
     size_t h = std::hash<std::wstring>{}(key);
     wchar_t name[96] = {};
-    swprintf_s(name, L"gly_%08X_%04X_%d_v1.png", static_cast<unsigned>(h & 0xFFFFFFFFu),
+    swprintf_s(name, L"gly_%08X_%04X_%d_v2.png", static_cast<unsigned>(h & 0xFFFFFFFFu),
         static_cast<unsigned>(glyph), px);
     std::wstring bmpPath = m_iconCacheDir + name;
     if (::PathFileExistsW(bmpPath.c_str())) {
@@ -1047,8 +1098,8 @@ void DrawCommandIcon(Gdiplus::Graphics& g, int kind, float px)
     using namespace Gdiplus;
     const float s = px / 20.0f;
     auto X = [s](float v) { return v * s; };
-    // Explorer's glyphs are noticeably heavier than a hairline: ~1.7 logical px at 16px.
-    const float w = (std::max)(1.4f, px / 9.0f);
+    // Fallback art only (no icon font): Explorer's measured stroke is ~1 logical px at 16px.
+    const float w = (std::max)(1.0f, px / 16.0f);
     const float corner = 1.6f;                      // rounded-rect radius on the grid
     const CmdPalette pal = kCmdLit;
 
@@ -1206,14 +1257,265 @@ void DrawCommandIcon(Gdiplus::Graphics& g, int kind, float px)
     }
 }
 
+// ---- Two-tone glyph command icons (cmd-bar alignment pass) ------------------------------
+// The grey layer is the Segoe Fluent Icons glyph itself (the same art Explorer's command bar
+// uses). The accent part of each glyph is selected with a clip region on the glyph's 16-unit
+// design grid and drawn in the Windows accent blue; for glyphs whose accent touches the grey
+// strokes (Cut), the grey layer is additionally cut back by one design unit around the
+// region so a ~1 logical px gap separates the two layers, like Explorer.
+struct CmdShape {
+    char kind;      // 'c' circle (cx, cy, r) | 'r' rect (l, t, r, b) | 'p' polygon (n points)
+    int n;
+    float v[16];
+};
+struct CmdGlyphSpec {
+    int kind;
+    wchar_t glyph;
+    bool knockout;  // cut the grey layer back around the accent region
+    int count;
+    CmdShape shapes[4];
+};
+const CmdGlyphSpec kCmdGlyphs[] = {
+    { CmdIconNew,    0xECC8, false, 1, { { 'c', 3, { 7.5f, 7.5f, 4.6f } } } },
+    { CmdIconCut,    0xE8C6, true,  2, { { 'c', 3, { 4.0f, 13.0f, 3.05f } }, { 'c', 3, { 12.0f, 13.0f, 3.05f } } } },
+    { CmdIconCopy,   0xE8C8, true,  1, { { 'r', 4, { 5.9f, 0.9f, 15.1f, 12.1f } } } },
+    { CmdIconPaste,  0xE77F, true,  1, { { 'r', 4, { 6.9f, 4.9f, 15.1f, 16.0f } } } },
+    { CmdIconRename, 0xE8AC, false, 4, { { 'r', 4, { 2.1f, 3.9f, 8.9f, 11.1f } },
+                                         { 'r', 4, { 9.55f, 0.0f, 11.45f, 16.0f } },
+                                         { 'r', 4, { 7.8f, 0.0f, 13.2f, 1.3f } },
+                                         { 'r', 4, { 7.8f, 14.7f, 13.2f, 16.0f } } } },
+    { CmdIconShare,  0xE72D, true,  1, { { 'p', 8, { 3.0f, 11.6f, 3.0f, 7.5f, 7.2f, 4.2f, 9.6f, 3.6f,
+                                                     9.6f, 0.0f, 16.0f, 0.0f, 16.0f, 10.3f, 9.0f, 11.6f } } } },
+    { CmdIconDelete, 0xE74D, false, 0, {} },
+    { CmdIconSort,   0xE8CB, false, 1, { { 'p', 6, { 9.3f, 0.0f, 16.0f, 0.0f, 16.0f, 16.0f, 6.8f, 16.0f,
+                                                     6.8f, 8.2f, 9.3f, 8.2f } } } },
+    { CmdIconSettings, 0xE713, false, 0, {} },
+};
+
+const CmdGlyphSpec* FindCmdGlyph(int kind)
+{
+    for (const auto& spec : kCmdGlyphs)
+        if (spec.kind == kind) return &spec;
+    return nullptr;
+}
+
+// Fills (or, with grow > 0, fills and dilates) a glyph's accent shapes into an 8-bit mask.
+void FillCmdShapes(const CmdGlyphSpec& spec, float ox, float oy, float unit, float grow,
+                   int w, int h, std::vector<BYTE>& mask)
+{
+    using namespace Gdiplus;
+    mask.assign(size_t(w) * size_t(h), 0);
+    if (spec.count <= 0) return;
+    Bitmap bmp(w, h, PixelFormat32bppARGB);
+    if (bmp.GetLastStatus() != Ok) return;
+    {
+        Graphics g(&bmp);
+        g.Clear(Color(0, 0, 0, 0));
+        g.SetSmoothingMode(SmoothingModeAntiAlias);
+        g.SetPixelOffsetMode(PixelOffsetModeHalf);
+        SolidBrush white(Color(255, 255, 255, 255));
+        Pen widen(Color(255, 255, 255, 255), 2.0f * grow * unit);
+        widen.SetLineJoin(LineJoinRound);
+        auto X = [&](float v) { return ox + v * unit; };
+        auto Y = [&](float v) { return oy + v * unit; };
+        for (int i = 0; i < spec.count; ++i) {
+            const CmdShape& s = spec.shapes[i];
+            GraphicsPath path;
+            if (s.kind == 'c') {
+                const float r = s.v[2];
+                path.AddEllipse(X(s.v[0] - r), Y(s.v[1] - r), 2.0f * r * unit, 2.0f * r * unit);
+            } else if (s.kind == 'r') {
+                path.AddRectangle(RectF(X(s.v[0]), Y(s.v[1]), (s.v[2] - s.v[0]) * unit, (s.v[3] - s.v[1]) * unit));
+            } else {
+                PointF pts[8];
+                const int n = (std::min)(s.n, 8);
+                for (int k = 0; k < n; ++k) pts[k] = PointF(X(s.v[k * 2]), Y(s.v[k * 2 + 1]));
+                path.AddPolygon(pts, n);
+            }
+            g.FillPath(&white, &path);
+            if (grow > 0.0f) g.DrawPath(&widen, &path);
+        }
+    }
+    BitmapData data{};
+    Rect bounds(0, 0, w, h);
+    if (bmp.LockBits(&bounds, ImageLockModeRead, PixelFormat32bppARGB, &data) != Ok) return;
+    for (int y = 0; y < h; ++y) {
+        const BYTE* row = static_cast<const BYTE*>(data.Scan0) + ptrdiff_t(y) * data.Stride;
+        for (int x = 0; x < w; ++x) mask[size_t(y) * size_t(w) + size_t(x)] = row[x * 4 + 3];
+    }
+    bmp.UnlockBits(&data);
+}
+
+// Vector coverage (white = ink) for icons without a matching glyph: the 查看 icon (two
+// rounded squares + two rules, Explorer's view glyph) and the GDI+ fallback art when no icon
+// font is installed. Stroke = 1 design unit = em / 16 (~1 logical px at 16).
+void AddVectorCoverage(int kind, float ox, float oy, float em, int w, int h, std::vector<BYTE>& cov)
+{
+    using namespace Gdiplus;
+    if (cov.size() != size_t(w) * size_t(h)) cov.assign(size_t(w) * size_t(h), 0);
+    Bitmap bmp(w, h, PixelFormat32bppARGB);
+    if (bmp.GetLastStatus() != Ok) return;
+    {
+        Graphics g(&bmp);
+        g.Clear(Color(0, 0, 0, 0));
+        g.SetSmoothingMode(SmoothingModeAntiAlias);
+        g.SetPixelOffsetMode(PixelOffsetModeHalf);
+        const float u = em / 16.0f;
+        if (kind == CmdIconMore) {
+            // Explorer's 更多: three 3.3 logical px dots, 6.25 apart, centred in the 16px box.
+            SolidBrush brush(Color(255, 255, 255, 255));
+            const float d = 3.3f * u;
+            for (float cx : { 8.0f - 6.25f, 8.0f, 8.0f + 6.25f })
+                g.FillEllipse(&brush, ox + cx * u - d / 2.0f, oy + 8.0f * u - d / 2.0f, d, d);
+        } else if (kind == CmdIconView) {
+            Pen pen(Color(255, 255, 255, 255), u);
+            pen.SetStartCap(LineCapRound);
+            pen.SetEndCap(LineCapRound);
+            pen.SetLineJoin(LineJoinRound);
+            auto square = [&](float l, float t, float side) {
+                GraphicsPath path;
+                const float d = 2.0f * u;
+                const float x = ox + l * u, y = oy + t * u, s = side * u;
+                path.AddArc(x, y, d, d, 180, 90);
+                path.AddArc(x + s - d, y, d, d, 270, 90);
+                path.AddArc(x + s - d, y + s - d, d, d, 0, 90);
+                path.AddArc(x, y + s - d, d, d, 90, 90);
+                path.CloseFigure();
+                g.DrawPath(&pen, &path);
+            };
+            square(1.5f, 2.5f, 4.5f);
+            square(1.5f, 9.0f, 4.5f);
+            g.DrawLine(&pen, ox + 9.0f * u, oy + 4.75f * u, ox + 15.0f * u, oy + 4.75f * u);
+            g.DrawLine(&pen, ox + 9.0f * u, oy + 11.25f * u, ox + 15.0f * u, oy + 11.25f * u);
+        } else {
+            GraphicsContainer state = g.BeginContainer();
+            g.TranslateTransform(ox, oy);
+            DrawCommandIcon(g, kind, em);
+            g.EndContainer(state);
+        }
+    }
+    BitmapData data{};
+    Rect bounds(0, 0, w, h);
+    if (bmp.LockBits(&bounds, ImageLockModeRead, PixelFormat32bppARGB, &data) != Ok) return;
+    for (int y = 0; y < h; ++y) {
+        const BYTE* row = static_cast<const BYTE*>(data.Scan0) + ptrdiff_t(y) * data.Stride;
+        for (int x = 0; x < w; ++x) {
+            BYTE& c = cov[size_t(y) * size_t(w) + size_t(x)];
+            c = (std::max)(c, row[x * 4 + 3]);
+        }
+    }
+    bmp.UnlockBits(&data);
+}
+
+// Renders a command-bar bitmap of w x h physical px: the two-tone icon at (iconX, iconY) and,
+// when chevEm > 0, Explorer's small E70D chevron with its ink box starting at chevX and
+// centred on chevCY. Everything is drawn 4x supersampled and box-filtered, then composed as
+// grey / accent / chevron layers. Disabled icons are the whole icon at 36% alpha (#C2C2C2 /
+// #A3CEEF on white); the chevron switches to its own disabled grey.
+std::vector<Gdiplus::ARGB> RenderCommandCanvas(int kind, int w, int h, int iconX, int iconY, int iconPx,
+                                               float chevX, float chevCY, float chevEm, bool dim)
+{
+    constexpr int s = 4;
+    const int hw = w * s, hh = h * s;
+    const wchar_t* face = CommandIconFace();
+    const CmdGlyphSpec* spec = FindCmdGlyph(kind);
+    std::vector<BYTE> ink(size_t(hw) * size_t(hh), 0), accent, knock, chev;
+    if (spec && face)
+        AddGlyphCoverage(face, spec->glyph, iconPx * s, iconX * s, iconY * s, hw, hh, ink);
+    else
+        AddVectorCoverage(kind, float(iconX * s), float(iconY * s), float(iconPx * s), hw, hh, ink);
+    const float unit = float(iconPx * s) / 16.0f;
+    if (spec && face && spec->count > 0) {
+        FillCmdShapes(*spec, float(iconX * s), float(iconY * s), unit, 0.0f, hw, hh, accent);
+        if (spec->knockout)
+            FillCmdShapes(*spec, float(iconX * s), float(iconY * s), unit, 1.0f, hw, hh, knock);
+    }
+    std::vector<BYTE> grey(ink.size(), 0), blue(ink.size(), 0);
+    for (size_t i = 0; i < ink.size(); ++i) {
+        const unsigned a = accent.empty() ? 0u : accent[i];
+        const unsigned k = (std::max)(a, knock.empty() ? 0u : unsigned(knock[i]));
+        blue[i] = BYTE(unsigned(ink[i]) * a / 255u);
+        grey[i] = BYTE(unsigned(ink[i]) * (255u - k) / 255u);
+    }
+    if (chevEm > 0.0f) {
+        const int emHi = (std::max)(4, int(std::lround(chevEm * s)));
+        // E972 (ChevronDownSmall) ink box: x 341..1707, y 682..1451 of a 2048 em (y down).
+        const int ex = int(std::lround(chevX * s - (341.0f / 2048.0f) * emHi));
+        const int ey = int(std::lround(chevCY * s - (1066.5f / 2048.0f) * emHi));
+        if (face) {
+            AddGlyphCoverage(face, UiTokens::GlyphChevronDown, emHi, ex, ey, hw, hh, chev);
+        } else {
+            using namespace Gdiplus;
+            chev.assign(ink.size(), 0);
+            Bitmap bmp(hw, hh, PixelFormat32bppARGB);
+            {
+                Graphics g(&bmp);
+                g.Clear(Color(0, 0, 0, 0));
+                g.SetSmoothingMode(SmoothingModeAntiAlias);
+                Pen pen(Color(255, 255, 255, 255), emHi / 16.0f);
+                pen.SetStartCap(LineCapRound); pen.SetEndCap(LineCapRound); pen.SetLineJoin(LineJoinRound);
+                const PointF pts[3] = { PointF(ex + 0.16f * emHi, ey + 0.34f * emHi),
+                    PointF(ex + 0.5f * emHi, ey + 0.69f * emHi), PointF(ex + 0.84f * emHi, ey + 0.34f * emHi) };
+                g.DrawLines(&pen, pts, 3);
+            }
+            BitmapData data{}; Rect bounds(0, 0, hw, hh);
+            if (bmp.LockBits(&bounds, ImageLockModeRead, PixelFormat32bppARGB, &data) == Ok) {
+                for (int y = 0; y < hh; ++y) {
+                    const BYTE* row = static_cast<const BYTE*>(data.Scan0) + ptrdiff_t(y) * data.Stride;
+                    for (int x = 0; x < hw; ++x) chev[size_t(y) * size_t(hw) + size_t(x)] = row[x * 4 + 3];
+                }
+                bmp.UnlockBits(&data);
+            }
+        }
+    }
+    const auto g = DownsampleCoverage(grey, w, h, s);
+    const auto b = DownsampleCoverage(blue, w, h, s);
+    const auto c = chev.empty() ? std::vector<float>(size_t(w) * size_t(h), 0.0f) : DownsampleCoverage(chev, w, h, s);
+    const Gdiplus::ARGB greyInk = kind == CmdIconMore ? UiTokens::ArgbCmdMore : UiTokens::ArgbCmdIcon;
+    const Gdiplus::ARGB blueInk = UiTokens::ArgbCmdAccent;
+    const Gdiplus::ARGB chevInk = dim ? UiTokens::ArgbCmdChevronDisabled : UiTokens::ArgbCmdChevron;
+    const float iconAlpha = dim ? float(UiTokens::CmdDisabledAlpha) / 255.0f : 1.0f;
+    auto ch = [](Gdiplus::ARGB c, int shift) { return float((c >> shift) & 0xFF); };
+    std::vector<Gdiplus::ARGB> out(size_t(w) * size_t(h), 0);
+    for (size_t i = 0; i < out.size(); ++i) {
+        const float ag = g[i] * iconAlpha, ab = b[i] * iconAlpha, ac = c[i];
+        const float sum = ag + ab + ac;
+        if (sum <= 0.0f) continue;
+        const float a = (std::min)(1.0f, sum);
+        auto mix = [&](int shift) {
+            return Gdiplus::ARGB(std::lround((ch(greyInk, shift) * ag + ch(blueInk, shift) * ab + ch(chevInk, shift) * ac) / sum)) & 0xFF;
+        };
+        out[i] = (Gdiplus::ARGB(std::lround(a * 255.0f)) << 24) | (mix(16) << 16) | (mix(8) << 8) | mix(0);
+    }
+    return out;
+}
+
 } // namespace
 
-std::wstring CMainWnd::GetCommandIconBmp(int kind, int px, bool dim)
+bool CMainWnd::SaveArgbPng(const std::vector<DWORD>& pixels, int w, int h, const std::wstring& path)
 {
-    if (px < 8) px = 8;
-    if (px > 128) px = 128;
-    wchar_t keybuf[64] = {};
-    swprintf_s(keybuf, L"cmdi-v6:%d@%d%s", kind, px, dim ? L"#dim" : L"");
+    using namespace Gdiplus;
+    if (w <= 0 || h <= 0 || pixels.size() != size_t(w) * size_t(h) || path.empty()) return false;
+    Bitmap bmp(w, h, PixelFormat32bppARGB);
+    if (bmp.GetLastStatus() != Ok) return false;
+    BitmapData data{};
+    Rect bounds(0, 0, w, h);
+    if (bmp.LockBits(&bounds, ImageLockModeWrite, PixelFormat32bppARGB, &data) != Ok) return false;
+    for (int y = 0; y < h; ++y)
+        memcpy(static_cast<BYTE*>(data.Scan0) + ptrdiff_t(y) * data.Stride, &pixels[size_t(y) * size_t(w)], size_t(w) * 4u);
+    bmp.UnlockBits(&data);
+    CLSID png = {};
+    return GetPngEncoderClsid(&png) && bmp.Save(path.c_str(), &png, nullptr) == Ok;
+}
+
+std::wstring CMainWnd::GetCommandCanvasBmp(int kind, int w, int h, int iconX, int iconY, int iconPx,
+    float chevX, float chevCY, float chevEm, bool dim)
+{
+    if (w < 8 || h < 8 || w > 512 || h > 256 || iconPx < 8 || iconPx > 128) return {};
+    const wchar_t* face = CommandIconFace();
+    wchar_t keybuf[160] = {};
+    swprintf_s(keybuf, L"cmdc-v7:%d@%dx%d:%d,%d,%d:%.2f,%.2f,%.2f%s:%s", kind, w, h, iconX, iconY, iconPx,
+        chevX, chevCY, chevEm, dim ? L"#dim" : L"", face ? face : L"vector");
     const std::wstring key = keybuf;
     {
         std::lock_guard<std::mutex> lock(m_iconCacheMutex);
@@ -1223,98 +1525,81 @@ std::wstring CMainWnd::GetCommandIconBmp(int kind, int px, bool dim)
     }
     if (m_iconCacheDir.empty() || !EnsureGdiplus())
         return {};
-
-    size_t h = std::hash<std::wstring>{}(key);
     wchar_t name[96] = {};
-    swprintf_s(name, L"cmd_%08X_%d_%d_%d_v6.png", static_cast<unsigned>(h & 0xFFFFFFFFu),
-        kind, px, dim ? 1 : 0);
+    swprintf_s(name, L"cmdc_%08X_%d_%dx%d_%d_v7.png",
+        static_cast<unsigned>(std::hash<std::wstring>{}(key) & 0xFFFFFFFFu), kind, w, h, dim ? 1 : 0);
     const std::wstring pngPath = m_iconCacheDir + name;
-    if (::PathFileExistsW(pngPath.c_str())) {
-        std::lock_guard<std::mutex> lock(m_iconCacheMutex);
-        m_iconCache[key] = pngPath;
-        return pngPath;
+    if (!::PathFileExistsW(pngPath.c_str())) {
+        const auto pixels = RenderCommandCanvas(kind, w, h, iconX, iconY, iconPx, chevX, chevCY, chevEm, dim);
+        if (!SaveArgbPng(pixels, w, h, pngPath)) return {};
     }
-
-    bool ok = false;
-    {
-        using namespace Gdiplus;
-        Bitmap bmp(px, px, PixelFormat32bppARGB);
-        if (bmp.GetLastStatus() == Ok) {
-            {
-                // Rasterize original vector paths at 4x, then filter to the exact window-DPI
-                // size. DuiLib receives a 1:1 bitmap rather than stretching a small asset.
-                constexpr int samples = 4;
-                Bitmap high(px * samples, px * samples, PixelFormat32bppARGB);
-                Graphics vector(&high);
-                vector.Clear(Color(0,0,0,0));
-                vector.SetSmoothingMode(SmoothingModeAntiAlias);
-                vector.SetPixelOffsetMode(PixelOffsetModeHalf);
-                DrawCommandIcon(vector, kind, static_cast<float>(px * samples));
-                vector.Flush(FlushIntentionSync);
-                Graphics g(&bmp);
-                g.Clear(Color(0,0,0,0));
-                g.SetCompositingMode(CompositingModeSourceCopy);
-                g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
-                g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
-                ImageAttributes edges;
-                edges.SetWrapMode(WrapModeTileFlipXY);
-                g.DrawImage(&high, Rect(0,0,px,px), 0,0,px*samples,px*samples,UnitPixel,&edges);
-            }
-            {
-                // Bicubic filtering may overshoot RGB near transparent edges. Keep exact
-                // monochrome ink and use the filtered alpha solely for coverage.
-                BitmapData pixels{};
-                Rect bounds(0,0,px,px);
-                if (bmp.LockBits(&bounds, ImageLockModeRead | ImageLockModeWrite, PixelFormat32bppARGB, &pixels) != Ok) return {};
-                for (int y=0;y<px;++y) {
-                    BYTE* row=static_cast<BYTE*>(pixels.Scan0)+ptrdiff_t(y)*pixels.Stride;
-                    for (int x=0;x<px;++x) {
-                        BYTE* pixel=row+x*4;
-                        if(dim) pixel[3]=BYTE((unsigned(pixel[3])*2+2)/5);
-                        pixel[0]=pixel[1]=pixel[2]=pixel[3] ? 0x1A : 0;
-                    }
-                }
-                bmp.UnlockBits(&pixels);
-            }
-            CLSID clsidPng = {};
-            ok = GetPngEncoderClsid(&clsidPng)
-                && bmp.Save(pngPath.c_str(), &clsidPng, nullptr) == Ok;
-        }
-    }
-    if (!ok) return {};
-    {
-        std::lock_guard<std::mutex> lock(m_iconCacheMutex);
-        m_iconCache[key] = pngPath;
-    }
+    std::lock_guard<std::mutex> lock(m_iconCacheMutex);
+    m_iconCache[key] = pngPath;
     return pngPath;
 }
 
-// Places a command-bar bitmap on a button. Icon-only buttons centre the bitmap; label
-// buttons keep the icon left of the text. While the button is disabled the dimmed variant is
-// used, so the bar reads like Explorer (commands light up once they apply).
+std::wstring CMainWnd::GetCommandIconBmp(int kind, int px, bool dim)
+{
+    if (px < 8) px = 8;
+    if (px > 128) px = 128;
+    return GetCommandCanvasBmp(kind, px, px, 0, 0, px, 0.0f, 0.0f, 0.0f, dim);
+}
+
+// Places a command-bar bitmap on a button. Icon-only buttons centre the 16px icon (1 logical
+// px below centre, like Explorer). Label buttons get one bitmap spanning the whole button:
+// icon 12 from the left edge, label 8 after the icon (DuiLib text), and the small E70D
+// chevron 12 from the right edge. While the button is disabled the dimmed variant is used.
 void CMainWnd::ApplyCommandIcon(CControlUI* c, int kind, bool withLabel)
 {
     if (!c) return;
     const int px = DpiScale(UiTokens::ToolbarGlyphPx);
-    const std::wstring bmp = GetCommandIconBmp(kind, px, !c->IsEnabled());
-    if (bmp.empty()) return;
-    const int bw = c->GetFixedWidth();
+    const bool dim = !c->IsEnabled();
+    int bw = c->GetFixedWidth();
     int bh = c->GetFixedHeight();
+    if (bw <= 0) bw = DpiScale(withLabel ? UiTokens::ToolbarTextBtnMinW : UiTokens::ToolbarBtnW);
     if (bh <= 0) bh = DpiScale(UiTokens::CmdBtnH);
-    const int padL = DpiScale(UiTokens::ToolbarIconPad);
-    int x = withLabel ? padL : (bw > 0 ? (bw - px) / 2 : padL);
-    if (x < 0) x = 0;
-    int y = (bh - px) / 2;
-    if (y < 0) y = 0;
-    ApplyControlForeIcon(c, bmp, px, x, y, false);
+    const int drop = DpiScale(UiTokens::ToolbarIconDropY);
+    const int iconY = (std::max)(0, (bh - px) / 2 + drop);
     if (withLabel) {
+        const int pad = DpiScale(UiTokens::ToolbarIconPad);
+        const float chevEm = DpiScaleF(static_cast<float>(UiTokens::ToolbarChevronEm));
+        const float chevX = static_cast<float>(bw - pad) - chevEm * (1366.0f / 2048.0f);
+        const float chevCY = static_cast<float>(iconY) + px * 0.5f;
+        const std::wstring bmp = GetCommandCanvasBmp(kind, bw, bh, pad, iconY, px, chevX, chevCY, chevEm, dim);
+        if (bmp.empty()) return;
+        CDuiString img;
+        img.Format(_T("file='%s' dest='0,0,%d,%d'"), bmp.c_str(), bw, bh);
+        c->SetAttribute(_T("foreimage"), img.GetData());
+        c->SetAttribute(_T("hotforeimage"), img.GetData());
         CDuiString tp;
-        tp.Format(_T("%d,0,%d,0"),
-            padL + px + DpiScale(6), DpiScale(UiTokens::SpaceSm));
+        tp.Format(_T("%d,%d,%d,0"), pad + px + DpiScale(UiTokens::ToolbarIconLabelGap), 2 * drop,
+            DpiScale(UiTokens::ToolbarChevronPad));
         c->SetAttribute(_T("textpadding"), tp.GetData());
     } else {
+        const std::wstring bmp = GetCommandIconBmp(kind, px, dim);
+        if (bmp.empty()) return;
+        ApplyControlForeIcon(c, bmp, px, (std::max)(0, (bw - px) / 2), iconY, false);
         c->SetAttribute(_T("textpadding"), _T("0,0,0,0"));
     }
+    c->Invalidate();
+}
+
+// Address-row navigation glyphs (Segoe Fluent E72B / E72A / E74A / E72C) at 12 logical px,
+// #1A1A1A, or #A2A2A0 while the button is disabled (no history).
+void CMainWnd::ApplyNavButtonIcon(CControlUI* c, wchar_t glyph)
+{
+    if (!c) return;
+    const int px = DpiScale(UiTokens::NavGlyphPx);
+    const unsigned argb = c->IsEnabled() ? UiTokens::ArgbNavGlyph : UiTokens::ArgbNavGlyphDisabled;
+    const std::wstring bmp = GetGlyphIconBmp(glyph, px,
+        RGB((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF));
+    if (bmp.empty()) return;
+    int bw = c->GetFixedWidth();
+    int bh = c->GetFixedHeight();
+    if (bw <= 0) bw = DpiScale(UiTokens::ToolbarNavBtnW);
+    if (bh <= 0) bh = DpiScale(UiTokens::FieldH);
+    ApplyControlForeIcon(c, bmp, px, (bw - px) / 2, (bh - px) / 2, false);
+    c->SetAttribute(_T("textpadding"), _T("0,0,0,0"));
     c->Invalidate();
 }
 
@@ -1399,30 +1684,24 @@ void CMainWnd::ApplyChromeShellIcons()
     auto applyCmdIcon = [&](LPCTSTR name, int kind, bool withLabel) {
         ApplyCommandIcon(m_PaintManager.FindControl(name), kind, withLabel);
     };
-    // Windows built-in Segoe MDL2 glyphs keep the command bar visually aligned
-    // with Explorer without copying icons or using legacy coloured shell32 art.
-    // Address-row navigation: the same glyphs, rendered as bitmaps so they scale with the
-    // roomier row instead of relying on the MDL2 font size.
-    auto applyNavIcon = [&](LPCTSTR name, wchar_t glyph) {
-        CControlUI* c = m_PaintManager.FindControl(name);
-        if (!c) return;
-        const int px = DpiScale(UiTokens::NavGlyphPx);
-        // Render at twice the final resolution, then let the image renderer downsample
-        // coverage for smooth, quiet strokes at fractional DPI.
-        const std::wstring bmp = GetGlyphIconBmp(glyph, px * 2, RGB(0x70, 0x70, 0x70));
-        if (bmp.empty()) return;
-        int bw = c->GetFixedWidth();
-        int bh = c->GetFixedHeight();
-        if (bw <= 0) bw = DpiScale(UiTokens::ToolbarNavBtnW + 12);
-        if (bh <= 0) bh = DpiScale(UiTokens::CmdBtnH);
-        ApplyControlForeIcon(c, bmp, px, (bw - px) / 2, (bh - px) / 2, false);
-        c->SetAttribute(_T("textpadding"), _T("0,0,0,0"));
-        c->Invalidate();
-    };
-    applyNavIcon(_T("btn_back"), 0xE0A6);
-    applyNavIcon(_T("btn_forward"), 0xE0AB);
-    applyNavIcon(_T("btn_up"), 0xE74A);
-    applyNavIcon(_T("btn_refresh"), 0xE72C);
+    // Address-row navigation: Explorer's Segoe Fluent glyphs as 12px bitmaps, dark while
+    // enabled and #A2A2A0 while disabled (UpdateNavButtons re-applies them on history changes).
+    ApplyNavButtonIcon(m_PaintManager.FindControl(_T("btn_back")), UiTokens::GlyphNavBack);
+    ApplyNavButtonIcon(m_PaintManager.FindControl(_T("btn_forward")), UiTokens::GlyphNavForward);
+    ApplyNavButtonIcon(m_PaintManager.FindControl(_T("btn_up")), UiTokens::GlyphNavUp);
+    ApplyNavButtonIcon(m_PaintManager.FindControl(_T("btn_refresh")), UiTokens::GlyphNavRefresh);
+    // Search box magnifier (E721) right-aligned inside the box.
+    if (CControlUI* glyph = m_PaintManager.FindControl(_T("search_glyph"))) {
+        const int px = DpiScale(UiTokens::SearchGlyphPx);
+        const unsigned argb = UiTokens::ArgbSearchGlyph;
+        const std::wstring bmp = GetGlyphIconBmp(UiTokens::GlyphSearch, px,
+            RGB((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF));
+        if (!bmp.empty()) {
+            CDuiString img;
+            img.Format(_T("file='%s' dest='0,0,%d,%d'"), bmp.c_str(), px, px);
+            glyph->SetAttribute(_T("bkimage"), img.GetData());
+        }
+    }
     applyFluent(_T("btn_toggle_preview"), 0xE7F4);
     applyFluent(_T("btn_newfolder"), 0xE710);
 

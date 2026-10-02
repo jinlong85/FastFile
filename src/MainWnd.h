@@ -72,6 +72,10 @@ public:
     void RefreshDpiFromWindow();
     void ApplyDpiScaledFonts();
     void ApplyDpiScaledChrome();
+    // Command bar + address row metrics (Explorer-measured tokens), shared by DPI and theme passes.
+    void ApplyCommandBarLayout();
+    // Search box width = clamp(240, 30% of the row, 435) logical; rowPx <= 0 uses the client width.
+    void UpdateSearchBoxWidth(int rowPx = 0);
     void OnDpiChanged(UINT newDpi, const RECT* suggested);
 
     // Called by OLE drop target
@@ -371,6 +375,11 @@ private:
     // GDI+ so the toolbar matches the Explorer command bar without shipping icon assets.
     // The icon ids live in MainWnd.Icons.cpp.
     std::wstring GetCommandIconBmp(int kind, int px, bool dim);
+    // Whole-button command bitmap: icon at (iconX, iconY) plus, when chevEm > 0, the E70D chevron.
+    std::wstring GetCommandCanvasBmp(int kind, int w, int h, int iconX, int iconY, int iconPx,
+        float chevX, float chevCY, float chevEm, bool dim);
+    static bool SaveArgbPng(const std::vector<DWORD>& pixels, int w, int h, const std::wstring& path);
+    void ApplyNavButtonIcon(CControlUI* btn, wchar_t glyph);
     // Applies the command-bar bitmap for a button, picking the dimmed variant while the
     // button is disabled (Explorer greys out the commands that need a selection).
     void ApplyCommandIcon(CControlUI* btn, int kind, bool withLabel);

@@ -303,6 +303,9 @@ void CMainWnd::UpdateNavButtons()
         m_pBtnForward->SetEnabled(canFwd);
         m_pBtnForward->SetAttribute(_T("textcolor"), canFwd ? _T("#FF1F2937") : _T("#FF9CA3AF"));
     }
+    // Glyph bitmaps carry the colour: #1A1A1A enabled, #A2A2A0 disabled (Explorer).
+    ApplyNavButtonIcon(m_pBtnBack, UiTokens::GlyphNavBack);
+    ApplyNavButtonIcon(m_pBtnForward, UiTokens::GlyphNavForward);
 }
 
 void CMainWnd::OnItemActivate(CControlUI* pSender)
@@ -812,7 +815,7 @@ void CMainWnd::EnterAddressEditMode()
     // Focus must be visible: while the address is editable the field wears the system accent
     // border (the caret alone was too easy to miss).
     if (m_pPathHost) {
-        m_pPathHost->SetAttribute(_T("bordercolor"), L"#FF0078D4");
+        m_pPathHost->SetAttribute(_T("bordercolor"), UiTokens::ColorFieldFocus);
         m_pPathHost->SetAttribute(_T("bordersize"), _T("1"));
     }
     if (m_pBreadcrumb)

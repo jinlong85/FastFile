@@ -7,6 +7,9 @@
 // Phase 4: empty-preview chrome + scrollbar/nav density polish.
 // Phase 5: typography hierarchy + chrome density (command bar 48->40, address 36->32,
 //          favorites 30->26, toolbar icons 18->16, section headers no longer smaller than body).
+// Cmd-bar alignment (phase 1 of the Explorer metrics pass): command bar + address row follow
+//          values measured on Win11 Explorer at 150% (bar 48, buttons 32 on a 48 pitch,
+//          1x32 separators, 32px r4 address/search boxes, 12px nav glyphs).
 
 namespace UiTokens {
 
@@ -23,7 +26,7 @@ constexpr int InnerPadY = 4;        // chrome band vertical padding
 constexpr int ChromeRound = 8;      // window/chrome container (was 10)
 constexpr int RadiusControl = 4;    // command-bar buttons, input boxes, list rows, chips
 constexpr int GapGroup = SpaceSm;   // toolbar group gaps
-constexpr int SepH = 20;            // command-bar separators (bar is 40, buttons 32)
+constexpr int SepH = 32;            // command-bar separators: 1 x 32 like Explorer (bar 48, buttons 32)
 constexpr int HitTabH = 29;           // compact tab-row height; plus width stays 32
 constexpr int TabIconPx = 16;
 constexpr int TabMinW = 120;          // default width increased by 50 percent
@@ -35,7 +38,7 @@ constexpr int DriveBarRound = 2;
 constexpr int DriveLowFreeWarnPct = 20; // < 20% free -> orange
 constexpr int DriveLowFreeRedPct = 10;  // < 10% free -> red
 constexpr int TabCloseW = 20;
-constexpr int HitBreadcrumbH = 30;      // address text stays vertically centered
+constexpr int HitBreadcrumbH = 28;      // fits the 32px address box minus its 2px insets
 constexpr int CmdBtnH = 32;
 constexpr int Hairline = 1;           // 1 design px; DpiScaleHairline() rounds *up* so a
                                       // divider lands on 2 physical px at 150% instead of
@@ -49,7 +52,7 @@ constexpr int TabBarH = 29;          // round(36 * 0.8), 96-DPI units
 constexpr int TabCardH = TabBarH;     // active and idle cards both fill the row
 constexpr int TabCardGap = 4;         // gap between chips
 constexpr int TabCardRound = 6;       // chip corner radius (Explorer-like)
-constexpr int ToolbarH = 40;
+constexpr int ToolbarH = 48;          // Explorer: 48 total = hairline + white body + hairline
 constexpr int BreadcrumbBarH = 36;     // legacy; path merged into address_bar
 constexpr int BreadcrumbSegPadX = 3;   // compact Explorer-style segment gap
 constexpr int BreadcrumbSepW = 12;
@@ -66,12 +69,25 @@ constexpr int FavChipPadX = 8;         // chip inner left/right padding
 constexpr int FavChipIconGap = 8;      // icon -> label gap
 constexpr int FavChipGap = 8;          // between chips
 constexpr int FavChipMaxW = 168;       // DT_END_ELLIPSIS beyond this
-constexpr int AddressBarH = 48;       // leaves room for fields and their rounded borders
-constexpr int FieldRound = 6;
-constexpr int FieldH = 36;
-constexpr int AddressBarPadY = 6;
+constexpr int AddressBarH = 48;       // Explorer address row
+constexpr int FieldRound = 4;          // Explorer address/search box corner radius
+constexpr int FieldH = 32;             // Explorer address/search box height
+constexpr int AddressBarPadY = (AddressBarH - FieldH) / 2;  // 8: boxes centred in the row
+constexpr int AddressBarPadL = 7;      // first nav glyph lands 7 + (40 - 12) / 2 = 21 from the edge
+constexpr int AddressBarPadR = 12;
+constexpr int AddressNavGap = 10;      // Refresh hit box -> address box (Explorer box starts at 201)
+constexpr int AddressSearchGap = 8;    // address box -> search box
 constexpr int SearchBoxH = FieldH;
-constexpr int SearchBoxW = 260;        // search box width (design), never stretched
+// Search box width follows the row: clamp(SearchBoxMinW, SearchBoxRowPct% of row, SearchBoxMaxW)
+// (Explorer is 435 wide when maximized). main.xml carries the minimum as its design width.
+constexpr int SearchBoxMinW = 240;
+constexpr int SearchBoxMaxW = 435;
+constexpr int SearchBoxRowPct = 30;
+constexpr int SearchBoxW = SearchBoxMinW;
+constexpr int SearchGlyphPx = 11;      // Segoe Fluent E721 magnifier
+constexpr int SearchGlyphPadR = 13;    // glyph right edge -> box right edge
+constexpr int SearchGlyphGap = 8;      // text -> glyph
+constexpr int FieldPadL = 10;          // text inset inside the address/search boxes
 constexpr int SearchChkW = 100;        // ☐ 含子目录
 // One scrollbar thickness for the whole window: the file views sit right next to the
 // preview rail (and the rail sits next to the file list), so a thinner list bar made the
@@ -113,17 +129,30 @@ constexpr int DetailsIconPadL = SpaceXs; // left inset before icon
 constexpr int DetailsIconTextGap = SpaceXs;
 
 // ---- Phase toolbar: Win11 Explorer command-bar density ----
-constexpr int ToolbarIconPx = 16;       // denser line glyph; avoid clip with label
-constexpr int ToolbarGlyphPx = 16;      // Segoe MDL2 glyph size for command-bar icons
-constexpr int ToolbarBtnW = 32;         // icon-only command button
+// Cmd-bar alignment pass: measured from Win11 Explorer at 150% (values are logical px).
+constexpr int ToolbarIconPx = 16;       // Explorer command icons are 16 logical px
+constexpr int ToolbarGlyphPx = 16;      // Segoe Fluent glyph em for command-bar icons
+constexpr int ToolbarBtnW = 40;         // icon-only command button: 40 wide + 8 gap = 48 pitch
 constexpr int ToolbarBtnH = 32;
-constexpr int ToolbarTextBtnMinW = 88;  // New/Sort/View: icon + label + chevron
-constexpr int ToolbarIconPad = 8;       // left/right pad around toolbar glyphs
-constexpr int ToolbarChevronPad = 16;   // room for dropdown chevron
-constexpr int ToolbarNavBtnW = 32;     // address-row navigation buttons (Explorer 32x32)
-constexpr int NavGlyphPx = 16;
+constexpr int ToolbarTextBtnMinW = 84;  // New/Sort/View: 12 + icon 16 + 8 + label 24 + 7 + chevron 5 + 12
+constexpr int ToolbarIconPad = 12;      // button edge -> icon (label buttons)
+constexpr int ToolbarIconLabelGap = 8;  // icon -> label
+constexpr int ToolbarLabelChevronGap = 7;
+constexpr int ToolbarChevronEm = 8;     // E972 (ChevronDownSmall) at an 8px em = 5.3 x 3.0 ink
+constexpr int ToolbarChevronW = 5;
+constexpr int ToolbarChevronPad = ToolbarLabelChevronGap + ToolbarChevronW + ToolbarIconPad; // text right pad
+constexpr int ToolbarPadL = 6;          // window edge -> first icon = 6 + 12 = 18 (Explorer 18)
+constexpr int ToolbarPadR = 6;          // settings gear mirrors the left edge
+constexpr int ToolbarSepMargin = 6;     // separator <-> neighbour hit box; ink -> separator = 18
+constexpr int ToolbarSortPad = 4;       // separator -> Sort hit box (Explorer ink 16-17 from the line)
+constexpr int ToolbarLabelGap = 5;      // Sort -> View
+constexpr int ToolbarMorePad = 3;       // separator -> More hit box (dots 17 from the line)
+constexpr int ToolbarIconDropY = 1;     // Explorer icons sit ~1px below the bar centre
+constexpr int ToolbarNavBtnW = 40;      // address-row navigation hit boxes, 48 pitch
+constexpr int NavBtnGap = 8;
+constexpr int NavGlyphPx = 12;          // Explorer back/forward/up/refresh glyph size
 constexpr int ToolbarGroupGap = SpaceSm;
-constexpr int ToolbarItemGap = 4;      // separate adjacent command hit areas
+constexpr int ToolbarItemGap = 8;      // between icon-only command hit areas
 constexpr int BodyTopGap = 8;          // group headers belong below the command divider
 constexpr int ToolbarSepPad = SpaceSm;
 
@@ -167,8 +196,14 @@ inline constexpr const wchar_t* ColorTabActive     = L"#FFF3F3F3";  // active ca
 inline constexpr const wchar_t* ColorTabActiveHot  = L"#FFF7F7F7";
 inline constexpr const wchar_t* ColorTabActiveBorder = L"#FFE5E5E5";
 inline constexpr const wchar_t* ColorChromeDivider = L"#FFDCDCDC";  // band separators
-inline constexpr const wchar_t* ColorFieldBg       = L"#FFFFFFFF";  // path / search field
-inline constexpr const wchar_t* ColorFieldBorder   = L"#FFE5E5E5";
+inline constexpr const wchar_t* ColorFieldBg       = L"#FFFCFCFB";  // path / search field (Explorer)
+inline constexpr const wchar_t* ColorFieldBorder   = L"#FFFCFCFB";  // idle border = fill (no visible border)
+inline constexpr const wchar_t* ColorFieldFocus    = L"#FF0078D4";  // address edit mode accent border
+// Command bar (measured Explorer palette)
+inline constexpr const wchar_t* ColorCmdLine       = L"#FFE0E0E0";  // hairlines above/below the bar
+inline constexpr const wchar_t* ColorCmdSeparator  = L"#FFF0F0F0";  // 1x32 group separators
+inline constexpr const wchar_t* ColorCmdText       = L"#FF1B1B1B";
+inline constexpr const wchar_t* ColorCmdTextDisabled = L"#FFA3A3A3";
 inline constexpr const wchar_t* ColorTransparent   = L"#00FFFFFF";
 inline constexpr const wchar_t* ColorDanger        = L"#FFB91C1C";
 inline constexpr const wchar_t* ColorDangerHover   = L"#FFFEE2E2";
@@ -222,5 +257,33 @@ constexpr unsigned ArgbTextSecondary = 0xFF5A5A5Au;
 constexpr unsigned ArgbListHover     = 0xFFE8F4FCu;
 constexpr unsigned ArgbListSelected  = 0xFFE0EEF9u;
 constexpr unsigned ArgbNavSection    = 0xFF6B6B6Bu;
+constexpr unsigned ArgbCmdLine       = 0xFFE0E0E0u;
+constexpr unsigned ArgbCmdSeparator  = 0xFFF0F0F0u;
+constexpr unsigned ArgbCmdText       = 0xFF1B1B1Bu;
+constexpr unsigned ArgbCmdTextDisabled = 0xFFA3A3A3u;
+constexpr unsigned ArgbFieldBg       = 0xFFFCFCFBu;
+// Command icons: grey layer + blue accent; disabled = the whole icon at 36% (C2C2C2 / A3CEEF).
+constexpr unsigned ArgbCmdIcon       = 0xFF555555u;
+constexpr unsigned ArgbCmdAccent     = 0xFF0078D4u;
+constexpr unsigned ArgbCmdMore       = 0xFF1B1B1Bu;
+constexpr unsigned CmdDisabledAlpha  = 92u;          // 36% of 255
+constexpr unsigned ArgbCmdChevron    = 0xFF777777u;
+constexpr unsigned ArgbCmdChevronDisabled = 0xFFB0B0B0u;
+constexpr unsigned ArgbNavGlyph      = 0xFF1A1A1Au;
+constexpr unsigned ArgbNavGlyphDisabled = 0xFFA2A2A0u;
+constexpr unsigned ArgbSearchGlyph   = 0xFF1A1A1Au;
+// Segoe Fluent Icons code points (Explorer): Back / Forward / Up / Refresh / Search / chevron.
+constexpr wchar_t GlyphNavBack = 0xE72B;
+constexpr wchar_t GlyphNavForward = 0xE72A;
+constexpr wchar_t GlyphNavUp = 0xE74A;
+constexpr wchar_t GlyphNavRefresh = 0xE72C;
+constexpr wchar_t GlyphSearch = 0xE721;
+constexpr wchar_t GlyphChevronDown = 0xE972;  // ChevronDownSmall: E70D's compact, heavier twin
+
+// Search box width for a given address-row width (all physical px).
+constexpr int SearchBoxWidthFor(int rowPx, int minPx, int maxPx) {
+    const int want = rowPx * SearchBoxRowPct / 100;
+    return want < minPx ? minPx : (want > maxPx ? maxPx : want);
+}
 
 } // namespace UiTokens

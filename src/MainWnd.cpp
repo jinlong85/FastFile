@@ -501,6 +501,10 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     }
     if (uMsg == WM_CAPTURECHANGED || uMsg == WM_CANCELMODE || uMsg == WM_KILLFOCUS)
         CancelScrollBarGestures();
+    // The search box width follows the row (clamp(240, 30%, 435) logical); set it before
+    // DuiLib lays the row out for the new client size.
+    if (uMsg == WM_SIZE && wParam != SIZE_MINIMIZED && LOWORD(lParam) > 0)
+        UpdateSearchBoxWidth(LOWORD(lParam));
     if (uMsg == kMsgShellFolderOpen) {
         std::unique_ptr<std::wstring> path(reinterpret_cast<std::wstring*>(lParam));
         if(path) {if(wParam)AddTab(*path,true,wParam==2);else NavigateToNow(*path,true);}

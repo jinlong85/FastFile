@@ -242,20 +242,13 @@ void CMainWnd::ApplyUiChromeTokens()
     // Title row = caption: no vertical inset, so the 32px band is fully usable by the tab cards
     // and the caption buttons (an inset here squashed both).
     setInset(_T("titlebar"), 0, 0, 0, 0);
-    // Content chrome retains its 8px inset; the titlebar stays flush with the window edge.
-    setInset(_T("toolbar"), 8, 4, 8, 4);
+    // Command bar insets / spacing come from ApplyCommandBarLayout (Explorer metrics).
     setInset(_T("body_host"), 0, UiTokens::BodyTopGap, 0, 0);
-    if (auto* toolbar = dynamic_cast<CContainerUI*>(m_PaintManager.FindControl(_T("toolbar"))))
-        toolbar->SetChildPadding(DpiScale(UiTokens::ToolbarItemGap + m_settings.density*2));
-    // This DuiLib build skips bottom-only borders; use a dedicated painted separator.
-    if (auto* divider = m_PaintManager.FindControl(_T("command_body_divider"))) {
-        divider->SetFixedHeight(DpiScaleHairline(UiTokens::Hairline));
-        divider->SetBkColor(0xFFD0D0D0);
-    }
+    // This DuiLib build skips bottom-only borders; the command bar's top and bottom lines are
+    // dedicated painted hairlines (command_top_divider / command_body_divider).
     // Favourite chips hang below the tab strip: the top inset keeps them off the strip and
     // lets the address row's own inset make the gaps above/below look even.
     setInset(_T("favorites_bar"), 8, UiTokens::FavBarPadTop, 8, UiTokens::FavBarPadBottom);
-    setInset(_T("address_bar"), 8, UiTokens::AddressBarPadY, 8, UiTokens::AddressBarPadY);
     setInset(_T("status_bar"), 12, 4, 12, 4);
     setPad(_T("left_panel"), UiTokens::SpaceSm, UiTokens::SpaceSm, UiTokens::SpaceSm, UiTokens::SpaceSm);
     setPad(_T("icon_scroll"), px, px, px, px);
@@ -275,8 +268,7 @@ void CMainWnd::ApplyUiChromeTokens()
     CDuiString hair;
     hair.Format(_T("0,0,0,%d"), DpiScaleHairline(UiTokens::Hairline));
     for (LPCTSTR band : {
-        _T("titlebar"), _T("toolbar"),
-        _T("address_bar"),
+        _T("titlebar"),
         _T("status_bar"), _T("left_panel")
     }) {
         setBk(band, surf);
@@ -287,13 +279,19 @@ void CMainWnd::ApplyUiChromeTokens()
     setBk(_T("favorites_bar"), UiTokens::ColorContent);
     setBorder(_T("favorites_bar"), border, hair.GetData());
     setBk(_T("toolbar"), UiTokens::ColorContent);
-    // Path / search fields: white rounded boxes on the chrome surface.
+    // Address row keeps FastFile's chrome surface (#F3F3F3; Explorer's backdrop is #F4F4F2).
+    // No border: the command bar's own top hairline separates the two rows.
+    setBk(_T("address_bar"), surf);
+    setBorder(_T("address_bar"), UiTokens::ColorTransparent, _T("0"));
+    setBorder(_T("toolbar"), UiTokens::ColorTransparent, _T("0"));
+    // Path / search fields: Explorer's borderless #FCFCFB rounded boxes on the chrome surface
+    // (the idle border matches the fill; address edit mode swaps in the accent border).
     for (LPCTSTR field : { _T("path_host"), _T("search_box") }) {
         setPad(field, 0, 0, 0, 0);
-        setInset(field, 10, 2, 10, 2);
         if (CControlUI* c = m_PaintManager.FindControl(field)) {
             c->SetAttribute(_T("bkcolor"), UiTokens::ColorFieldBg);
-            c->SetAttribute(_T("bordercolor"), UiTokens::ColorFieldBorder);
+            const bool editing = m_addressEditMode && wcscmp(field, _T("path_host")) == 0;
+            c->SetAttribute(_T("bordercolor"), editing ? UiTokens::ColorFieldFocus : UiTokens::ColorFieldBorder);
             c->SetAttribute(_T("bordersize"), _T("1"));
             CDuiString round;
             round.Format(_T("%d,%d"), DpiScale(UiTokens::FieldRound), DpiScale(UiTokens::FieldRound));
@@ -328,13 +326,7 @@ void CMainWnd::ApplyUiChromeTokens()
         if (CControlUI* c = m_PaintManager.FindControl(gap))
             c->SetFixedWidth(DpiScale(UiTokens::GapGroup));
     }
-    for (LPCTSTR sep : { _T("sep_new"), _T("sep_organize"), _T("sep_more") }) {
-        if (CControlUI* c = m_PaintManager.FindControl(sep)) {
-            c->SetFixedWidth(DpiScale(1));
-            c->SetFixedHeight(DpiScale(UiTokens::SepH));
-            c->SetAttribute(_T("bkcolor"), UiTokens::ColorSeparator);
-        }
-    }
+    ApplyCommandBarLayout();
 
     // Phase 2: details list hover/select + header chrome-aligned surface
     if (m_pFileList) {

@@ -9,10 +9,10 @@
 - 技术栈仍为 C++ / Win32 / DuiLib，普通文件区由 Windows ExplorerBrowser 承载。不要改换 UI 框架。
 - 本地工作区包含大量未提交修改及未跟踪的源码、测试；接手先检查工作区，不要用 reset / clean 或只复制 Git 已跟踪文件的方式丢弃当前实现。本次改动已在本地提交，未推送。
 - [VERSION](VERSION) 仍为 **1.0.9**。安装包已于 2026-10-02 16:44 重新生成（`dist/FastFile-Setup-1.0.9.exe`，1,444,864 字节，SHA-256 `4002CEDD2A8B97E71031C59530925B216A2B5E0A7920154DA2301079A3D9FC9A`），包含 2026-10-02 全部设置、视图和打开行为修复。打包前核对常用 exe 哈希等于下述已验证快照且其后无产品源码修改，故未重新构建；用反射读取安装包内嵌资源，FastFile.exe 与 skin/main.xml 哈希与常用产物一致。旧包备份为 `dist/FastFile-Setup-1.0.9.before-20261002.exe`。下方各节「未重建安装包」的说明由此取代。
-- 最新完整验证（2026-10-02 22:45，大 / 超大图标异步缩略图，见下一节）：Release x64 构建成功，CTest **9/9 一次运行全部通过，156.81 秒**（主窗口回归 103.53 秒，视图切换 16.76 秒，异步缩略图 13.89 秒）。视图切换检查已从主回归移到独立的 `FastFileViewSwitchTests`（`--view-switch-only`），新增 `FastFileAsyncThumbTests`（`--thumbs-only`），两者超时各 90 秒，主回归超时仍为 180 秒。构建日志 `build-ui/asyncthumbs-final-build.log`，测试日志 `build-ui/asyncthumbs-final-tests.log`，旧实现模拟失败日志 `build-ui/asyncthumbs-before-tests.log`（16 项失败）。这些日志和二进制属于本地忽略产物，换机器后需重新生成。上一轮（22:00，视图切换与图标缓存）为 7/7、133.90 秒，日志 `build-ui/viewswitch-final-tests.log`。
+- 最新完整验证（2026-10-02 23:20，命令栏与地址栏对齐资源管理器实测尺寸，见下一节「命令栏与地址栏对齐」）：Release x64 构建成功，CTest **9/9 一次运行全部通过，155.75 秒**（主窗口回归 102.59 秒，UI 精致度 15.25 秒）。构建日志 `build-ui/cmdbar-build.log`，测试日志 `build-ui/cmdbar-ctest.log`，150% 顶部区域离屏截图 `build-ui/cmdbar-top_150.png`。上一轮（22:45，大 / 超大图标异步缩略图）：Release x64 构建成功，CTest **9/9 一次运行全部通过，156.81 秒**（主窗口回归 103.53 秒，视图切换 16.76 秒，异步缩略图 13.89 秒）。视图切换检查已从主回归移到独立的 `FastFileViewSwitchTests`（`--view-switch-only`），新增 `FastFileAsyncThumbTests`（`--thumbs-only`），两者超时各 90 秒，主回归超时仍为 180 秒。构建日志 `build-ui/asyncthumbs-final-build.log`，测试日志 `build-ui/asyncthumbs-final-tests.log`，旧实现模拟失败日志 `build-ui/asyncthumbs-before-tests.log`（16 项失败）。这些日志和二进制属于本地忽略产物，换机器后需重新生成。上一轮（22:00，视图切换与图标缓存）为 7/7、133.90 秒，日志 `build-ui/viewswitch-final-tests.log`。
 - 此前一次完整运行因 explorer.exe 会话撤销服务被一个隐藏的「已完成 95%」资源管理器操作卡住而失败（未修改的 HEAD 基线同样失败）；经用户同意重启资源管理器后，原生重命名撤销记录恢复可用，随后的完整运行通过。主窗口回归中的原生撤销 / 重做检查依赖该服务，再遇到同类连锁失败先检查是否有卡住的资源管理器操作。
-- 测试通过后才将 `build-ui/Release` 的 exe、map 和 skin 更新到常用 `build/Release`。两处 exe 的 SHA-256 已核对一致：`A0BFF7466AF06E15C09120C78FF3067E08647939C99C10C5DF63A0F90D9BF78A`（map `5D61C064…1716F68E`、skin/main.xml `3F2D4B6E…384BE` 亦一致）。这是本次交付快照，后续重构建应重新核对。
-- 本次交付时没有运行中的 FastFile 进程（此前的 PID 9316 已退出）。旧常用 exe / map 改名为 `build/Release/FastFile.before-async-thumbs.exe` / `.map`（SHA-256 `3937CB34…EFCF5198`，即视图切换版本），新版复制为 `FastFile.exe`，下次启动即生效。更早的 `FastFile.before-viewswitch.exe`、`FastFile.before-ctx-rename.exe`、`FastFile.before-native-fileops.exe`、`FastFile.before-shell-activation.exe` 保留。安装包未重建，`dist/FastFile-Setup-1.0.9.exe` 不含原生文件操作、右键重命名、视图切换及本次改动。
+- 测试通过后才将 `build-ui/Release` 的 exe、map 和 skin 更新到常用 `build/Release`。两处 exe 的 SHA-256 已核对一致：`8E675E808700F1FADD4B1F115D19E89AF9F1C7161CD39A13BC3E8E6145EFD48E`（map `56B47A62…6D9F3176`、skin/main.xml `3C336D29…4DD2ADE68` 亦一致）。这是本次交付快照，后续重构建应重新核对。
+- 本次交付时没有运行中的 FastFile 进程。旧常用 exe / map 改名为 `build/Release/FastFile.before-cmdbar-align.exe` / `.map`（SHA-256 `A0BFF746…F0F9BF78A`，即异步缩略图版本），新版复制为 `FastFile.exe`，下次启动即生效。更早的 `FastFile.before-async-thumbs.exe`（视图切换版本）、`FastFile.before-viewswitch.exe`、`FastFile.before-ctx-rename.exe`、`FastFile.before-native-fileops.exe`、`FastFile.before-shell-activation.exe` 保留。安装包未重建，`dist/FastFile-Setup-1.0.9.exe` 不含原生文件操作、右键重命名、视图切换、异步缩略图及本次改动。
 
 ### 本轮修改应从哪里读
 
@@ -28,6 +28,8 @@
 | [src/MainWnd.Preview.cpp](src/MainWnd.Preview.cpp)、[src/MainWnd.Nav.cpp](src/MainWnd.Nav.cpp) `SyncShellViewSelection` | 选中处理只做快照、命令栏和状态栏，随后 `FlushPaint` 并以 `kTimerSelectionPreview`（30 ms）延迟更新详情；文件夹大图标由 `LoadPreviewShellIconAsync` 在 STA 后台线程提取，`kMsgPreviewIconReady`（WM_APP+0x458，勿与 WM_USER+103 的 kMsgThumbReady 重复）回到 UI 线程按序号丢弃过期结果。不要把详情更新放回选中处理里同步执行。 |
 | [src/ShellMenuUtil.h](src/ShellMenuUtil.h) | Shell 菜单分隔线规范化（按 MFT_SEPARATOR / 空文本判断，不按 id）与按 verb 查找菜单项。 |
 | [src/MainWnd.FileOps.cpp](src/MainWnd.FileOps.cpp) | StartFileOperation：每项操作一个 STA 后台线程（附着主窗口桌面），完成后 kMsgFileOpFinished 回到 UI 线程写入历史；状态栏只显示结果摘要。 |
+| [src/UiTokens.h](src/UiTokens.h)、[skin/main.xml](skin/main.xml)、[src/MainWnd.Dpi.cpp](src/MainWnd.Dpi.cpp) `ApplyCommandBarLayout` / `UpdateSearchBoxWidth` | 命令栏与地址栏的全部尺寸、间距、颜色来自 UiTokens（资源管理器 150% 实测值），XML 设计值与令牌一致，运行时只由 `ApplyCommandBarLayout` 按 DPI 设置（间距靠各控件左 padding，命令栏 childpadding 仅保留布局密度附加值）。不要再在 Theme / Dpi 其他位置单独设置这些控件的宽高、inset 或分隔线颜色。 |
+| [src/MainWnd.Icons.cpp](src/MainWnd.Icons.cpp) `RenderCommandCanvas` / `kCmdGlyphs` | 命令栏双色图标：灰层是 Segoe Fluent Icons（无则 Segoe MDL2 Assets）字形本身，强调层由 16 格设计网格上的裁剪区域选出并着 #0078D4；标签按钮整块位图含图标与 E972 下拉箭头。不可用 = 整体 36% 透明度。 |
 | [tests/MainWndRegressionTests.cpp](tests/MainWndRegressionTests.cpp)、[tests/ShellBrowserHostTests.cpp](tests/ShellBrowserHostTests.cpp) | 本轮回归、真实 Shell 视图与菜单、隔离桌面及生产入口多进程启动测试。测试登记见 [CMakeLists.txt](CMakeLists.txt)。 |
 
 ### 构建、验证与更新常用程序
@@ -49,6 +51,7 @@ if ($LASTEXITCODE -ne 0) { throw "回归失败" }
 
 ### 尚未完成的本轮验收
 
+- 命令栏 / 地址栏对齐：在正常桌面 150% 缩放最大化 FastFile，与资源管理器并排目视比对命令栏和地址栏（图标颜色与镂空、分隔线、下拉箭头、地址 / 搜索框无边框与圆角、搜索框宽度）；悬停 / 按下效果、新建 / 排序 / 查看 下拉菜单位置、设置齿轮、编辑地址时的蓝色焦点框、选中文件后剪切等命令变亮。自动测试与隔离桌面离屏截图已验证，未经用户目视确认；100% / 200% 缩放只做了尺寸断言。
 - 异步缩略图：在正常桌面打开一个从未浏览过的视频目录（系统缩略图缓存冷），切到大图标 / 超大图标，确认先显示类型图标、缩略图逐格出现且滚动 / 点击不卡；来回切换视图和 F5 后缩略图立即出现、无闪烁；图片 / 视频右下角关联程序角标正常。自动测试与隔离桌面截图已验证（热缓存下首张截图即为最终缩略图），冷缓存与用户目视未验证。
 - 视图切换：在正常桌面 `C:\Users\JINLONG\图片\Screenshots`、`G:\电影\国内电影` 中 详细信息 ↔ 大图标 / 超大图标、列表 ↔ 详细信息 来回切换，确认不再出现「旧行 + 少数新缩略图」的半成品画面、列表 / 详细信息首帧即为 26 像素行高、分组 / 排序 / 每文件夹记忆视图保持。自动测试和隔离桌面截图已验证，未经用户目视确认。
 - 右键重命名与选中框：在正常桌面对单个文件 / 文件夹右键，确认出现「重命名(M)」、点击后原位编辑、回车生效且 Ctrl+Z 可撤销；在 `C:\Users\JINLONG\图片`（GIRLS、屏幕截图）切换 大图标 / 超大图标 点击文件夹，确认选中框即时出现、右侧详情随后更新。自动测试在隔离桌面以真实按键消息验证，未经用户目视确认。
@@ -57,6 +60,18 @@ if ($LASTEXITCODE -ne 0) { throw "回归失败" }
 - 用户正常桌面上逐项点击系统右键「使用 FastFile 打开」，分别检查已有窗口和完全退出后的首次启动，覆盖文件夹与磁盘。自动测试已覆盖真实注册命令、进程启动与转发；尚未收到用户重启新版后的实际使用确认。
 - 正常界面中检查鼠标 / 键盘右键的新标签入口、重复目录和子目录保留原标签，以及列表 / 详细信息往返时首帧间距。相关自动运行回归已通过，本轮未人工逐项点选菜单验收。
 - 安装包已重新打包，但未实际安装 / 卸载验证：setup.cs 的安装流程（含 `--quiet --dir`）会结束正在运行的 FastFile 并写入开始菜单快捷方式与当前用户卸载项，不适合在用户正在使用的开发机上测试。仍需在合适时机验证安装路径、注册命令、卸载恢复及安装后运行。
+
+## 命令栏与地址栏对齐资源管理器实测尺寸（2026-10-02）
+
+- 范围：用户批准的第一阶段，只改命令栏与地址栏；导航窗格和此电脑驱动器磁贴留待后续阶段，未改。参考图在本次会话的工作盒 `/workspace/ff/measure/s1.png`（命令栏裁切）与 `s2.png`（整窗），均为 150% 缩放的资源管理器。
+- 令牌（`UiTokens.h`，逻辑像素）：`ToolbarH` 48（= `command_top_divider` 细线 + 白色主体 + `command_body_divider` 细线，主体高度 = DpiScale(48) − 2 × DpiScaleHairline(1)，150% 下 2 + 68 + 2）；`CmdBtnH` 32；`ToolbarBtnW` 40 + `ToolbarItemGap` 8（中心距 48）；`ToolbarTextBtnMinW` 84 = 12 + 图标 16 + 8 + 标签 24 + 7 + 箭头 5.3 + 12；`ToolbarPadL` 6（首图标距左缘 18）；`ToolbarSepMargin` 6、`ToolbarSortPad` 4、`ToolbarLabelGap` 5、`ToolbarMorePad` 3（按实测图微调，分隔线到两侧墨迹 16–18）；`SepH` 32；`ToolbarIconDropY` 1（图标比中线低约 1）；`AddressBarH` 48、`AddressBarPadL` 7（首个导航字形距左缘 21）、`ToolbarNavBtnW` 40 + `NavBtnGap` 8、`NavGlyphPx` 12、`AddressNavGap` 10、`FieldH` 32、`FieldRound` 4、`AddressSearchGap` 8、`SearchBoxMinW/MaxW/RowPct` 240 / 435 / 30、`SearchGlyphPx` 11、`SearchGlyphPadR` 13。颜色：`ColorCmdLine` #E0E0E0、`ColorCmdSeparator` #F0F0F0、`ColorCmdText` #1B1B1B（不可用 #A3A3A3）、`ArgbCmdIcon` #555555、`ArgbCmdAccent` #0078D4、`CmdDisabledAlpha` 92（36%）、`ArgbCmdChevron` #777777（不可用 #B0B0B0）、`ArgbCmdMore` #1B1B1B、`ArgbNavGlyph` #1A1A1A（不可用 #A2A2A0）、`ColorFieldBg` = `ColorFieldBorder` = #FCFCFB（无可见边框）、`ColorFieldFocus` #0078D4。
+- 布局（`CMainWnd::ApplyCommandBarLayout`，由 `ApplyDpiScaledChrome` 与 `ApplyUiChromeTokens` 末尾调用）：命令栏 childpadding 只保留布局密度附加值（`density × 2`），间距全部写在各控件左 padding 上；XML 中的设计值与令牌相同（测试读取 `skin/main.xml` 核对）。地址栏与命令栏的旧 `bordersize="0,0,0,1"` 去掉（此 DuiLib 不画仅底边框），分隔改由两条实绘细线。
+- 搜索框宽度：`UiTokens::SearchBoxWidthFor(row, DpiScale(240), DpiScale(435))` = 行宽 30% 夹在 240–435。`HandleMessage` 在 `WM_SIZE` 交给 DuiLib 布局前按新客户区宽度设置，`SyncLayoutDependents`（200 ms 定时器）与 DPI 变化时按 `address_bar` 宽度再核对。旧代码 `ScaleNamedFixed(search_box, 210)`、XML 260、令牌 260 三处不一致的问题一并消除。
+- 图标（`MainWnd.Icons.cpp`）：`CommandIconFace()` 优先 Segoe Fluent Icons，回退 Segoe MDL2 Assets，两者都没有才用原 GDI+ 矢量（线宽改为 em / 16）。`RenderCommandCanvas` 4 倍超采样：GDI 绘出字形覆盖率作灰层；`kCmdGlyphs` 在 16 格网格上给出强调区域（圆 / 矩形 / 多边形）并以 GDI+ 填充为遮罩，强调层 = 字形 × 遮罩，灰层 = 字形 × (1 − 遮罩)；剪切 / 复制 / 粘贴 / 共享设置 `knockout`，灰层在强调区域外再退 1 格，强调部分穿过灰层处留出约 1 逻辑像素空隙。字形：新建 ECC8（圆 + 加号，E710 只有加号）、剪切 E8C6、复制 E8C8、粘贴 E77F、重命名 E8AC、共享 E72D、删除 E74D、排序 E8CB、设置 E713；查看沿用矢量（两个圆角方块 + 两条线，接近资源管理器）；更多改为矢量三点（直径 3.3、间距 6.25，E712 在 16 号下点太小太密）。下拉箭头用 E972（ChevronDownSmall，8 像素 em = 5.3 × 3.0 墨迹）：E70D 按 5.3 宽缩小后线宽只有 0.66 物理像素、最深只到 #A1A1A1，资源管理器实测最深为 #777777，E972 可达 #858585。标签按钮的位图覆盖整个按钮（图标在左 12、箭头在右 12），标签仍由 DuiLib 用字体 7（12 号微软雅黑）绘制。缓存键 `cmdc-v7`，含字体名，切换字体或几何时自动换新文件。导航与搜索字形经 `GetGlyphIconBmp`（同样改为 4 倍超采样、文件后缀 `_v2`），后退 / 前进的颜色随 `UpdateNavButtons` 的可用状态切换。
+- 地址框：`path_host` / `search_box` 填充与平时边框都是 #FCFCFB，`EnterAddressEditMode` 换成 `ColorFieldFocus` 蓝框，`ExitAddressEditMode` 换回；`ApplyUiChromeTokens` 若在编辑状态下被调用会保留蓝框。面包屑段高 `HitBreadcrumbH` 由 30 改为 28 以放入 32 高的框（上下 inset 2）。
+- 地址栏背景保持 FastFile 的 #F3F3F3（资源管理器 #F4F4F2）：同一 `ColorSurface` 还用于标题栏、状态栏和左侧面板，单改地址栏会与它们出现色差，故未改。
+- 150% 离屏截图（`CheckCommandBarAlignment`，2560 物理像素宽）与 s1 / s2 逐项对比（物理像素，资源管理器 → FastFile）：新建图标 27–49 → 27–49，标签 63–98 → 63–98，箭头 109–116 → 109–116，分隔线 143 → 144，剪切 173 → 174，排序图标 609 → 610，查看图标 743 → 745，第三条分隔线 859 → 861，更多三点 885 → 886；图标、标签竖直位置相差不超过 1 像素；导航字形 x 32 / 104 / 176 / 248 完全一致，竖直高 1 像素；地址框距刷新按钮 15 物理像素。
+- 回归：`CheckUiMetrics`（96 / 144 / 192 DPI）新增命令栏 48、按钮 40×32 / 84、间距 8、分隔线 1×32 #F0F0F0、地址栏 48、导航 40 + 8、框高 32 / 圆角 4 / #FCFCFB 无边框、框间距 8、搜索字形 11 / 13、上下细线 #E0E0E0；新增 `CheckCommandBarAlignment`（UI 精致度测试内，`RunUiPolish` 顺序执行，避免 `+` 求值顺序让文件选中先发生）：读取 skin 核对 XML 与令牌一致、搜索宽度公式、150% 下实际坐标（命令栏 72、首图标 27、中心距 72、分隔线到墨迹 27、齿轮在右端、导航起点 32 与间距 72、框高 48、搜索宽 653 与间距 12、字形位置）、离屏绘制像素（细线、分隔线、#FCFCFB 无边框、不可用复制含 #C2C2C2 与 #A3CEEF、更多点 #1B1B1B、导航字形位图颜色）、标签箭头位图尺寸与 #777777、复制图标双色且前页镂空、删除图标线宽约 1 逻辑像素。设置环境变量 `FASTFILE_TOP_SHOT=<png>` 运行 `FastFileMainWndRegressionTests.exe --ui-polish-only` 会保存顶部截图。主回归里地址 / 搜索框检查由「高 ≥36、圆角 ≥6」改为「高 32、圆角 4」并核对搜索宽度公式；删除图标颜色检查由 #1A1A1A 改为 #555555、不可用透明度由 40% 改为 36%。
 
 ## 大 / 超大图标异步缩略图（2026-10-02）
 

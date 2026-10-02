@@ -562,6 +562,7 @@ void CMainWnd::UpdatePreviewPath(const std::wstring& path, bool isDir)
 void CMainWnd::SyncLayoutDependents()
 {
     RevealSyncedTreeNode(); // DuiLib has now laid out newly expanded descendants
+    UpdateSearchBoxWidth();  // keeps clamp(240, 30% of row, 435) after DPI / size changes
     if (m_shellBrowser && m_shellBrowser->IsCreated() && m_pListHost)
         m_shellBrowser->SetBounds(m_pListHost->GetPos());
     if (m_pBreadcrumb) {
