@@ -1,5 +1,6 @@
 ﻿#include "MainWndInternal.h"
 #include "FavoriteStarUI.h"
+#include "ShellMenuUtil.h"
 class FastFileActivationWindow : public CMainWnd {
 public:
     HWND Create(HWND parent,LPCTSTR title,DWORD style,DWORD extendedStyle) {
@@ -499,9 +500,19 @@ struct MainWndRegressionAccess {
         };
         auto select = [&]() { check(key('A', true), "native Ctrl A routes to selection"); pump(); };
         auto finish = [&]() {
-            const DWORD until = GetTickCount() + 5000;
+            const DWORD until = GetTickCount() + 8000;
             do { pump(); } while (window.m_copyRunning && GetTickCount() < until);
             check(!window.m_copyRunning, "keyboard file job finishes");
+        };
+        // Every keyboard file operation must run through IFileOperation with the native
+        // Windows progress UI (production flags), never FastFile's old status-bar progress.
+        auto nativeOperation = [&](ShellFileOps::Kind kind, const char* name) {
+            const auto& last = window.m_lastFileOperation;
+            const std::wstring status = window.m_pStatus ? window.m_pStatus->GetText().GetData() : L"";
+            check(last.engine == ShellFileOps::Engine::FileOperation && last.kind == kind &&
+                window.m_lastFileOpRequestFlags == last.flags &&
+                (last.flags & (FOF_SILENT | FOF_NOERRORUI | FOFX_NOMINIMIZEBOX)) == 0 &&
+                status.find(L'%') == std::wstring::npos, name);
         };
         navigate(source); select();
         {
@@ -540,6 +551,7 @@ struct MainWndRegressionAccess {
         window.m_clipboard.clear(); navigate(target);
         check(window.m_pBtnPaste->IsEnabled(), "system clipboard enables paste button");
         check(key(VK_INSERT, false, true), "Shift Insert pastes native file clipboard"); finish();
+        nativeOperation(ShellFileOps::Kind::Copy, "paste copies through IFileOperation with native progress UI");
         const auto copied = target + L"\\keyboard.txt";
         file = CreateFileW(copied.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
         char actual[sizeof(payload)]{}; DWORD read = 0;
@@ -591,6 +603,7 @@ struct MainWndRegressionAccess {
         check(clipboardReady,
             "Ctrl X publishes the Windows move effect");
         navigate(moved); check(key('V', true), "cut paste shortcut handled"); finish();
+        nativeOperation(ShellFileOps::Kind::Move, "cut paste moves through IFileOperation with native progress UI");
         check(GetFileAttributesW(copied.c_str()) == INVALID_FILE_ATTRIBUTES &&
             GetFileAttributesW((moved + L"\\keyboard.txt").c_str()) != INVALID_FILE_ATTRIBUTES,
             "Ctrl X V moves the selected fixture");
@@ -606,22 +619,37 @@ struct MainWndRegressionAccess {
         check(hook != nullptr, "fixture-only delete confirmation hook installed");
         if (hook) {
             deleteTestReply = IDNO; deleteDialogCount = 0;
-            check(key(VK_DELETE, false), "Delete runs recycle operation without custom confirmation"); pump();
+            check(key(VK_DELETE, false), "Delete runs recycle operation without custom confirmation"); finish();
+            nativeOperation(ShellFileOps::Kind::Recycle, "Delete recycles through IFileOperation with native progress UI");
             check(deleteDialogCount == 0, "ordinary Delete never opens FastFile confirmation");
             check(GetFileAttributesW((moved + L"\\keyboard.txt").c_str()) == INVALID_FILE_ATTRIBUTES,
                 "ordinary Delete immediately recycles fixture");
+            {
+                // A FastFile copy after a recycle must not push its own Explorer undo record:
+                // undoing the copy and then the recycle has to restore the recycled item.
+                window.PublishFileClipboard({{original, false}}, false);
+                navigate(target); key('V', true); finish();
+                const auto alignedCopy = target + L"\\keyboard.txt";
+                check(GetFileAttributesW(alignedCopy.c_str()) != INVALID_FILE_ATTRIBUTES &&
+                    window.m_undoStack.back().kind == CMainWnd::UndoRecord::Kind::Copy, "copy after recycle joins history");
+                key('Z', true); pump();
+                check(GetFileAttributesW(alignedCopy.c_str()) == INVALID_FILE_ATTRIBUTES &&
+                    GetFileAttributesW(original.c_str()) != INVALID_FILE_ATTRIBUTES, "copy after recycle is undone first");
+                navigate(moved);
+            }
             key('Z', true); pump();
             check(GetFileAttributesW((moved + L"\\keyboard.txt").c_str()) != INVALID_FILE_ATTRIBUTES,
-                "Delete Ctrl Z restores recycled item");
+                "Delete Ctrl Z restores recycled item, also after a later FastFile copy was undone (stacks stay aligned)");
             key('Y', true); pump();
             check(GetFileAttributesW((moved + L"\\keyboard.txt").c_str()) == INVALID_FILE_ATTRIBUTES,
                 "Delete Ctrl Y repeats recycle operation");
             navigate(source); select(); deleteTestReply = IDNO;
-            check(key(VK_DELETE, false, true), "Shift Delete cancellation handled"); pump();
+            check(key(VK_DELETE, false, true), "Shift Delete cancellation handled"); finish();
             check(GetFileAttributesW(original.c_str()) != INVALID_FILE_ATTRIBUTES,
                 "cancelled permanent Delete retains fixture");
             deleteTestReply = IDYES;
-            check(key(VK_DELETE, false, true), "Shift Delete handled"); pump();
+            check(key(VK_DELETE, false, true), "Shift Delete handled"); finish();
+            nativeOperation(ShellFileOps::Kind::Delete, "Shift Delete removes through IFileOperation with native progress UI");
             check(GetFileAttributesW(original.c_str()) == INVALID_FILE_ATTRIBUTES, "Shift Delete permanently removes fixture");
             createFixtureFolder = true;
             check(key('N', true, true), "Ctrl Shift N opens new folder prompt"); pump();
@@ -739,6 +767,7 @@ struct MainWndRegressionAccess {
         CopyFileW(nested.c_str(), standalone.c_str(), TRUE);
         window.PublishFileClipboard({{directory,true},{standalone,false}}, false);
         navigate(batchDestination); key('V', true); finish();
+        nativeOperation(ShellFileOps::Kind::Copy, "batch paste copies through IFileOperation");
         check(window.m_undoStack.back().moved.size() == 2, "batch copy records both completed top-level items");
         navigate(batchDestination + L"\\Folder"); key('Z', true); pump();
         check(window.m_currentPath == batchDestination &&
@@ -1358,6 +1387,150 @@ struct MainWndRegressionAccess {
         window.RebuildTabStrip();
         return failures;
     }
+    // Shell menus use separators with ids 0, -1 and private ids (0x7FFD / 0x7FFE). The old
+    // tidy pass only recognised id 0, so pruning 授予访问权限 left two stacked lines.
+    static int CheckShellMenus(CMainWnd& window, const std::wstring& folder) {
+        int failures = 0;
+        auto check = [&](bool ok, const char* name) { if (!ok) { ++failures; std::cerr << "FAIL " << name << '\n'; } };
+        auto pump = [&](DWORD ms) {
+            const DWORD until = GetTickCount() + ms;
+            do {
+                MSG message;
+                while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                    if (message.message != WM_QUIT && !CPaintManagerUI::TranslateMessage(&message)) {
+                        ::TranslateMessage(&message); DispatchMessageW(&message);
+                    }
+                }
+                Sleep(5);
+            } while (GetTickCount() < until);
+        };
+        auto stacked = [](HMENU menu) {
+            const int count = GetMenuItemCount(menu);
+            for (int i = 0; i < count; ++i) {
+                if (!ShellMenuUtil::IsSeparatorAt(menu, i)) continue;
+                if (i == 0 || i == count - 1 || ShellMenuUtil::IsSeparatorAt(menu, i - 1)) return true;
+            }
+            return false;
+        };
+        {
+            HMENU menu = CreatePopupMenu();
+            auto separator = [&](UINT id) {
+                MENUITEMINFOW info{}; info.cbSize = sizeof(info);
+                info.fMask = MIIM_FTYPE | MIIM_ID; info.fType = MFT_SEPARATOR; info.wID = id;
+                InsertMenuItemW(menu, GetMenuItemCount(menu), TRUE, &info);
+            };
+            separator(0x7FFC);
+            AppendMenuW(menu, MF_STRING, 1, L"刷新");
+            separator(0xFFFFFFFF);
+            AppendMenuW(menu, MF_STRING, 2, L"在终端中打开(&T)");
+            separator(0); separator(0x7FFD);           // the doubled line from the screenshot
+            AppendMenuW(menu, MF_STRING, 3, L"新建(&W)");
+            separator(0x7FFE);
+            AppendMenuW(menu, MF_STRING, 4, L"属性(&R)");
+            separator(0x7FFC);
+            CMainWnd::TidyMenuSeparators(menu);
+            check(!stacked(menu) && GetMenuItemCount(menu) == 7 && GetMenuItemID(menu, 0) == 1 &&
+                GetMenuItemID(menu, 6) == 4, "Shell menu separators with any id are normalized");
+            DestroyMenu(menu);
+        }
+        window.NavigateToNow(folder, true);
+        const DWORD deadline = GetTickCount() + 4000;
+        do { pump(50); } while (!window.ShellBrowserShowsFolder(folder) && GetTickCount() < deadline);
+        pump(300);
+        IContextMenu* menu = nullptr; HMENU popup = nullptr; UINT shellMax = 0; bool fromView = false;
+        const bool built = window.BuildShellBackgroundMenu(folder, &menu, &popup, &shellMax, &fromView);
+        check(built && fromView, "folder background menu comes from the live Explorer view (SVGIO_BACKGROUND)");
+        if (built) {
+            check(ShellMenuUtil::FindVerb(menu, popup, 1, shellMax, L"paste") >= 0, "background menu contains native paste");
+            check(ShellMenuUtil::FindVerb(menu, popup, 1, shellMax, L"properties") >= 0, "background menu contains native properties");
+            check(ShellMenuUtil::FindVerb(menu, popup, 1, shellMax, L"groupby") >= 0, "background menu contains native group-by");
+            bool viewMenu = false, sortMenu = false;
+            for (int i = 0; i < GetMenuItemCount(popup); ++i) {
+                HMENU sub = GetSubMenu(popup, i);
+                if (!sub || GetMenuItemCount(sub) == 0) continue;
+                const UINT first = GetMenuItemID(sub, 0);
+                viewMenu = viewMenu || first == static_cast<UINT>(CMainWnd::kCmdBgViewBase + int(CMainWnd::ViewMode::ExtraLargeIcons));
+                sortMenu = sortMenu || first == static_cast<UINT>(CMainWnd::kCmdBgSortBase);
+            }
+            check(viewMenu && sortMenu, "background 查看 and 排序方式 keep driving the FastFile view");
+            check(!stacked(popup), "background menu has no leading, trailing or stacked separators");
+            DestroyMenu(popup); menu->Release();
+            window.ReleaseRetiredShellMenus();
+        }
+        window.m_shellMenuBackground = true; window.m_shellMenuFolder = folder;
+        check(window.HandleRoutedShellVerb(L"refresh"), "background refresh is routed to FastFile refresh");
+        check(!window.HandleRoutedShellVerb(L"pastelink") && !window.HandleRoutedShellVerb(L"properties"),
+            "other native background verbs stay with Windows");
+        window.m_shellMenuBackground = false; window.m_shellMenuFolder.clear();
+        return failures;
+    }
+    // Copy / move / recycle / delete run through IFileOperation. Production flags keep the
+    // native progress, conflict and error UI; the non-interactive mode is for tests only.
+    static int CheckFileOperationEngine(const std::wstring& root) {
+        using namespace ShellFileOps;
+        int failures = 0;
+        auto check = [&](bool ok, const char* name) { if (!ok) { ++failures; std::cerr << "FAIL " << name << '\n'; } };
+        for (Kind kind : {Kind::Copy, Kind::Move, Kind::Recycle, Kind::Delete}) {
+            const DWORD flags = OperationFlags(kind, true);
+            check((flags & (FOF_SILENT | FOF_NOERRORUI | FOFX_NOMINIMIZEBOX | FOFX_EARLYFAILURE)) == 0,
+                "interactive file operations keep the Windows progress dialog and error UI");
+            check((flags & FOFX_SHOWELEVATIONPROMPT) != 0, "interactive file operations allow elevation");
+            check((OperationFlags(kind, false) & (FOF_SILENT | FOF_NOERRORUI | FOF_NOCONFIRMATION)) ==
+                (FOF_SILENT | FOF_NOERRORUI | FOF_NOCONFIRMATION), "test mode suppresses every Windows dialog");
+        }
+        for (Kind kind : {Kind::Copy, Kind::Move})
+            check((OperationFlags(kind, true) & (FOF_NOCONFIRMATION | FOF_RENAMEONCOLLISION | FOFX_ADDUNDORECORD)) == 0,
+                "copy and move ask the native replace / skip question and stay in FastFile history");
+        check((OperationFlags(Kind::Recycle, true) & (FOFX_RECYCLEONDELETE | FOF_ALLOWUNDO | FOFX_ADDUNDORECORD)) ==
+            (FOFX_RECYCLEONDELETE | FOF_ALLOWUNDO | FOFX_ADDUNDORECORD), "recycle keeps the Explorer undo record");
+        check((OperationFlags(Kind::Delete, true) & (FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE)) == 0,
+            "permanent delete never recycles");
+
+        const auto base = root + L"\\FileOperationEngine";
+        const auto source = base + L"\\源", target = base + L"\\目标", moved = base + L"\\移动", legacy = base + L"\\旧引擎";
+        for (const auto& path : {base, source, target, moved, legacy}) CreateDirectoryW(path.c_str(), nullptr);
+        const auto file = source + L"\\数据.txt";
+        const auto folder = source + L"\\子目录";
+        CreateDirectoryW(folder.c_str(), nullptr);
+        auto write = [](const std::wstring& path) {
+            HANDLE handle = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+            DWORD written = 0; WriteFile(handle, "FastFile", 8, &written, nullptr); CloseHandle(handle);
+        };
+        write(file); write(folder + L"\\内部.txt");
+        auto exists = [](const std::wstring& path) { return GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES; };
+        Request request; request.interactive = false;
+        request.kind = Kind::Copy; request.sources = {file, folder}; request.destination = target;
+        auto result = Perform(request);
+        check(result.engine == Engine::FileOperation && SUCCEEDED(result.hr) && result.completed.size() == 2 &&
+            exists(target + L"\\数据.txt") && exists(target + L"\\子目录\\内部.txt") && exists(file),
+            "IFileOperation copy reports both top-level items and keeps sources");
+        request.sources = {file}; request.destination = source;
+        result = Perform(request);
+        check(result.completed.size() == 1 && !PathsEqual(result.completed[0].second, file) &&
+            exists(result.completed[0].second) && result.notUndoable == 0,
+            "copy into the same folder records the renamed copy");
+        const auto duplicate = result.completed.empty() ? std::wstring() : result.completed[0].second;
+        request.kind = Kind::Move; request.sources = {target + L"\\数据.txt"}; request.destination = moved;
+        result = Perform(request);
+        check(result.engine == Engine::FileOperation && result.completed.size() == 1 &&
+            PathsEqual(result.completed[0].second, moved + L"\\数据.txt") &&
+            !exists(target + L"\\数据.txt") && exists(moved + L"\\数据.txt"), "IFileOperation move reports the moved item");
+        std::atomic<bool> cancel{true};
+        request.kind = Kind::Copy; request.sources = {file}; request.destination = legacy;
+        result = Perform(request, &cancel);
+        check(result.completed.empty() && !exists(legacy + L"\\数据.txt"), "cancelled operation records nothing");
+        request.kind = Kind::Recycle; request.sources = {duplicate};
+        result = Perform(request);
+        check(!duplicate.empty() && result.completed.size() == 1 && !exists(duplicate), "IFileOperation recycle reports the recycled item");
+        request.kind = Kind::Delete; request.sources = {target + L"\\子目录"};
+        result = Perform(request);
+        check(result.completed.size() == 1 && !exists(target + L"\\子目录"), "IFileOperation delete reports the removed folder");
+        request.kind = Kind::Copy; request.sources = {file}; request.destination = legacy; request.useLegacyEngine = true;
+        result = Perform(request);
+        check(result.engine == Engine::LegacyFileOp && result.completed.size() == 1 && exists(legacy + L"\\数据.txt"),
+            "SHFileOperation fallback copies and reports the created item");
+        return failures;
+    }
     static int Run(CMainWnd& window, const std::wstring& fixture) {
         int failures=CheckUiMetrics(window);
         auto check = [&](bool result, const char* name) {
@@ -1583,6 +1756,8 @@ struct MainWndRegressionAccess {
         check(window.m_tabs.size() == tabCount + 2 && window.m_currentPath == siblingPrefix,
             "a sibling sharing the parent name prefix is not a descendant");
         check(DuiLib::TabStripRegressionAccess::Check(*window.m_pTabStrip), "150 percent tab title retains preferred width, idle/active equal, plus follows last tab");
+        failures += CheckShellMenus(window, fixture);
+        failures += CheckFileOperationEngine(window.ParentPath(fixture));
         failures += CheckHandlers(window);
         failures += CheckShortcuts(window, window.ParentPath(fixture));
         failures += CheckUiPolish(window, window.ParentPath(fixture));

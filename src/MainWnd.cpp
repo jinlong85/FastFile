@@ -668,6 +668,24 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 return 0;
             m_closeConfirmed = true;
         }
+        // Windows file operations run on worker threads inside this process. Closing would
+        // kill them mid-copy, so offer to cancel the remaining items and close once they end.
+        if (!m_fileOpJobs.empty()) {
+            if (!m_closeAfterFileOps) {
+                CDuiString message;
+                message.Format(_T("还有 %d 个文件操作正在进行。\n\n选择「是」：取消尚未处理的项目，当前项目结束后关闭 FastFile。\n选择「否」：继续文件操作，不关闭窗口。"),
+                    static_cast<int>(m_fileOpJobs.size()));
+                if (::MessageBoxW(m_hWnd, message.GetData(), L"FastFile - 文件操作进行中",
+                        MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) {
+                    m_closeConfirmed = false;
+                    return 0;
+                }
+                m_closeAfterFileOps = true;
+                m_copyCancel.store(true);
+            }
+            UpdateStatus(_T("正在等待 Windows 文件操作结束，随后关闭…"));
+            return 0;
+        }
         CaptureColumnWidths();
         if (m_hWnd) {
             ::KillTimer(m_hWnd, kTimerVirtSync);
@@ -1504,14 +1522,9 @@ LRESULT CMainWnd::HandleCustomMessage(UINT uMsg, WPARAM wParam, LPARAM lParam, B
         bHandled = FALSE;
         return 0;
     }
-    if (uMsg == kMsgCopyProgress) {
+    if (uMsg == kMsgFileOpFinished) {
         bHandled = TRUE;
-        OnCopyProgressMessage();
-        return 0;
-    }
-    if (uMsg == kMsgCopyFinished) {
-        bHandled = TRUE;
-        OnCopyFinishedMessage(wParam);
+        OnFileOperationFinished(wParam, lParam);
         return 0;
     }
     if (uMsg == kMsgThumbReady) {

@@ -201,7 +201,7 @@ void CMainWnd::SyncShellViewSelection()
     m_shellBrowser->EnsureSelectionVisible();
     UpdatePreviewForSelection();
     UpdateCommandBarState();
-    if (!m_copyRunning.load()) {
+    {
         CDuiString status;
         status.Format(_T("%s  ·  已选 %d 项"),
             IsThisPcPath(m_currentPath) ? _T("此电脑") : m_currentPath.c_str(),
@@ -338,7 +338,7 @@ void CMainWnd::RefreshListing()
             }
             UpdateNavButtons();
             UpdateCommandBarState();
-            if (!m_copyRunning.load()) {
+            {
                 CDuiString status;
                 if (m_searchFilter.empty())
                     status.Format(_T("%s  ·  Windows 原生文件视图"),
@@ -355,8 +355,7 @@ void CMainWnd::RefreshListing()
 
     CancelThumbJobs();
 
-    if (!m_copyRunning.load())
-        UpdateStatus(_T("正在枚举…"));
+    UpdateStatus(_T("正在枚举…"));
 
     if (m_pFileList)
         m_pFileList->RemoveAll();
@@ -463,11 +462,6 @@ void CMainWnd::RefreshListing()
     else
         RebuildDetailsView(m_listingDirs, m_listingFiles, m_listingTruncated);
 
-    if (m_copyRunning.load()) {
-        OnCopyProgressMessage();
-        return;
-    }
-
     UpdateListingStatusTip();
     UpdateEmptyStateHint();
 }
@@ -488,8 +482,6 @@ void CMainWnd::UpdateListingStatusTip()
     // Selection changed: keep the Explorer-style command bar in sync (icons dim when the
     // action does not apply yet).
     UpdateCommandBarState();
-    if (m_copyRunning.load())
-        return;
     const int shown = static_cast<int>(m_listingDirs.size() + m_listingFiles.size());
     CDuiString tip;
     if (!m_searchFilter.empty()) {

@@ -332,59 +332,6 @@ std::wstring CMainWnd::ResolveDropDirectory(POINT ptScreen) const
     return d;
 }
 
-bool CMainWnd::TransferWithShell(const std::vector<std::wstring>& srcPaths,
-    const std::wstring& destDir, bool move)
-{
-    if (srcPaths.empty() || destDir.empty() || IsThisPcPath(destDir))
-        return false;
-
-    std::wstring from;
-    for (const auto& p : srcPaths) {
-        // prevent drop into self / child
-        std::wstring src = NormalizePath(p);
-        std::wstring dst = NormalizePath(destDir);
-        if (_wcsicmp(src.c_str(), dst.c_str()) == 0)
-            continue;
-        std::wstring prefix = src;
-        if (!prefix.empty() && prefix.back() != L'\\') prefix.push_back(L'\\');
-        if (dst.size() >= prefix.size()
-            && _wcsnicmp(dst.c_str(), prefix.c_str(), (int)prefix.size()) == 0)
-            continue;
-        from += p;
-        from.push_back(L'\0');
-    }
-    if (from.empty()) {
-        UpdateStatus(_T("不能拖放到自身或子目录"));
-        return false;
-    }
-    from.push_back(L'\0');
-
-    std::wstring to = destDir;
-    if (!to.empty() && to.back() != L'\\') to.push_back(L'\\');
-    to.push_back(L'\0');
-
-    SHFILEOPSTRUCTW op = {};
-    op.hwnd = m_hWnd;
-    op.wFunc = move ? FO_MOVE : FO_COPY;
-    op.pFrom = from.c_str();
-    op.pTo = to.c_str();
-    op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR;
-
-    int r = ::SHFileOperationW(&op);
-    if (r != 0 || op.fAnyOperationsAborted) {
-        CDuiString tip;
-        tip.Format(_T("%s失败 (%d)"), move ? _T("移动") : _T("复制"), r);
-        UpdateStatus(tip.GetData());
-        return false;
-    }
-    CDuiString tip;
-    tip.Format(_T("已%s %d 项 → %s"), move ? _T("移动") : _T("复制"),
-        (int)srcPaths.size(), destDir.c_str());
-    UpdateStatus(tip.GetData());
-    RefreshListing();
-    return true;
-}
-
 bool CMainWnd::PerformDropTransfer(const std::vector<std::wstring>& srcPaths,
     const std::wstring& destDir, DWORD effect)
 {
@@ -405,10 +352,9 @@ bool CMainWnd::PerformDropTransfer(const std::vector<std::wstring>& srcPaths,
         UpdateStatus(_T("只能将文件夹固定到收藏栏"));
         return false;
     }
-    const bool move = (effect & DROPEFFECT_MOVE) != 0;
-    if (move)
-        return TransferWithBackgroundCopy(srcPaths, destDir, /*move*/ true);
-    return TransferWithBackgroundCopy(srcPaths, destDir);
+    // Drops onto the native Shell file area are handled by Explorer's own drop target; drops
+    // onto FastFile's tree / panes use the same Windows copy engine as paste.
+    return TransferWithFileOperation(srcPaths, destDir, (effect & DROPEFFECT_MOVE) != 0);
 }
 
 bool CMainWnd::BeginDragSelectedItems()
@@ -440,7 +386,7 @@ bool CMainWnd::BeginDragSelectedItems()
         if (effect & DROPEFFECT_MOVE) {
             // External move: refresh source listing
             RefreshListing();
-            // An in-app drop starts its own background job; don't stomp that readout.
+            // An in-app drop runs as a Windows file operation and reports its own result.
             if (!m_copyRunning.load())
                 UpdateStatus(_T("已通过拖拽移动"));
         } else if (effect & DROPEFFECT_COPY) {
@@ -477,18 +423,14 @@ CTreeNodeUI* CMainWnd::HitTestTreeNode(POINT ptClient) const
     return nullptr;
 }
 
-bool CMainWnd::TransferWithBackgroundCopy(const std::vector<std::wstring>& srcPaths,
+bool CMainWnd::TransferWithFileOperation(const std::vector<std::wstring>& srcPaths,
     const std::wstring& destDir, bool move)
 {
     if (srcPaths.empty() || destDir.empty() || IsThisPcPath(destDir))
         return false;
-    if (m_copyRunning.load()) {
-        UpdateStatus(_T("已有复制/移动任务进行中，请稍候或取消后再试"));
-        return false;
-    }
 
-    std::vector<ClipboardItem> items;
-    items.reserve(srcPaths.size());
+    std::vector<std::wstring> sources;
+    sources.reserve(srcPaths.size());
     std::wstring dst = NormalizePath(destDir);
     for (const auto& p : srcPaths) {
         std::wstring src = NormalizePath(p);
@@ -498,18 +440,14 @@ bool CMainWnd::TransferWithBackgroundCopy(const std::vector<std::wstring>& srcPa
         if (dst.size() >= prefix.size()
             && _wcsnicmp(dst.c_str(), prefix.c_str(), (int)prefix.size()) == 0)
             continue;
-        DWORD attrs = ::GetFileAttributesW(p.c_str());
-        if (attrs == INVALID_FILE_ATTRIBUTES) continue;
-        ClipboardItem it;
-        it.path = p;
-        it.isDir = (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
-        items.push_back(std::move(it));
+        if (move && PathEquals(ParentPath(p), dst)) continue; // already in the target folder
+        if (::GetFileAttributesW(p.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
+        sources.push_back(p);
     }
-    if (items.empty()) {
+    if (sources.empty()) {
         UpdateStatus(_T("没有可放下的有效源（或目标不合法）"));
         return false;
     }
-    m_lastCopyDest = destDir;
-    StartCopyJob(std::move(items), destDir, move);
-    return true;
+    return StartFileOperation(move ? ShellFileOps::Kind::Move : ShellFileOps::Kind::Copy,
+        std::move(sources), destDir);
 }

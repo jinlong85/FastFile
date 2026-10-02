@@ -1,9 +1,12 @@
-// FastFile - file operations and the background copy engine
+// FastFile - file operations (Windows IFileOperation engine on STA workers) and history
 // Implements CMainWnd members moved out of the original monolithic MainWnd.cpp.
-// Behaviour is unchanged; declarations live in MainWnd.h.
+// Declarations live in MainWnd.h; the copy engine itself is ShellFileOperation.cpp.
 
 #include "MainWndInternal.h"
 #include "FastFileCore.h"
+
+#include <memory>
+#include <sherrors.h>
 
 namespace {
 
@@ -228,15 +231,11 @@ void CMainWnd::OnCopyPaths()
 void CMainWnd::OnPasteClicked()
 {
     if (m_shellHistoryPending) { UpdateStatus(_T("正在完成 Windows 文件操作，请稍候")); return; }
-    if (m_copyRunning.load()) {
-        UpdateStatus(_T("已有复制任务在进行，请等待或取消"));
-        return;
-    }
     if (!ReadFileClipboard(m_clipboard, m_clipboardIsCut)) {
         UpdateStatus(_T("剪贴板为空 — 先选中项目并点「复制」"));
         return;
     }
-    if (m_currentPath.empty()) {
+    if (m_currentPath.empty() || IsThisPcPath(m_currentPath)) {
         UpdateStatus(_T("当前目录无效"));
         return;
     }
@@ -259,27 +258,30 @@ void CMainWnd::OnPasteClicked()
         }
     }
 
-    if (m_clipboardIsCut) {
-        // Cut + paste runs through the background job engine so a move gets the same
-        // in-app progress readout and cancel button as a copy (no Shell dialog).
-        std::vector<ClipboardItem> moving = m_clipboard;
+    const bool move = m_clipboardIsCut;
+    std::vector<std::wstring> sources;
+    for (const auto& it : m_clipboard) {
+        // Moving an item into the folder it already lives in is a no-op in Explorer too.
+        if (move && PathEquals(ParentPath(it.path), m_currentPath)) continue;
+        sources.push_back(it.path);
+    }
+    if (sources.empty()) { UpdateStatus(_T("项目已在当前文件夹中")); return; }
+    if (move) {
         m_clipboard.clear();
         m_clipboardIsCut = false;
         ApplyCopyUiState();
-        m_lastCopyDest = m_currentPath;
-        StartCopyJob(std::move(moving), m_currentPath, /*move*/ true);
-        return;
     }
-
-    m_lastCopyDest = m_currentPath;
-    StartCopyJob(m_clipboard, m_currentPath);
+    // Copy and cut+paste both run in the Windows copy engine: Explorer's own progress
+    // dialog, replace/skip conflict dialog and pause/cancel. No status-bar progress text.
+    StartFileOperation(move ? ShellFileOps::Kind::Move : ShellFileOps::Kind::Copy,
+        std::move(sources), m_currentPath);
 }
 
 void CMainWnd::OnCancelCopyClicked()
 {
     if (!m_copyRunning.load()) return;
     m_copyCancel.store(true);
-    UpdateStatus(m_jobIsMove ? _T("正在取消移动…") : _T("正在取消复制…"));
+    UpdateStatus(_T("正在取消剩余的文件操作…"));
 }
 
 void CMainWnd::OnDeleteClicked(bool permanent)
@@ -291,7 +293,12 @@ void CMainWnd::OnDeleteClicked(bool permanent)
         UpdateStatus(_T("请先选中要删除的项目"));
         return;
     }
+    DeletePaths(items, permanent);
+}
 
+void CMainWnd::DeletePaths(const std::vector<ClipboardItem>& items, bool permanent)
+{
+    if (items.empty()) return;
     if (permanent) {
         CDuiString msg;
         if (items.size() == 1) {
@@ -307,96 +314,38 @@ void CMainWnd::OnDeleteClicked(bool permanent)
             return;
         }
     }
-
-    std::vector<std::wstring> completed;
-    const bool allDeleted = DeleteItems(items, permanent, &completed);
-    if (!completed.empty()) {
-        if (!permanent) {
-            UndoRecord record; record.kind = UndoRecord::Kind::ShellDelete;
-            for (const auto& path : completed) record.moved.emplace_back(path, path);
-            ClearRedoHistory(); m_historyStarted = true;
-            m_undoStack.push_back(std::move(record));
-        } else ClearRedoHistory();
-        if (allDeleted) {
-            CDuiString tip;
-            tip.Format(permanent ? _T("已永久删除 %d 项") : _T("已删除到回收站 %d 项"),
-                static_cast<int>(completed.size()));
-            UpdateStatus(tip.GetData());
-        }
-    }
-    // Cancellation can follow a partially completed batch: always refresh.
-    RefreshAfterHistory();
+    std::vector<std::wstring> sources;
+    for (const auto& item : items) sources.push_back(item.path);
+    // Recycle / permanent delete use the same native engine and progress dialog as copy.
+    StartFileOperation(permanent ? ShellFileOps::Kind::Delete : ShellFileOps::Kind::Recycle,
+        std::move(sources));
 }
 
 DWORD CMainWnd::DeleteOperationFlags(bool permanent)
 {
     // Keep Shell error/elevation UI available. Only routine confirmation is
     // suppressed; WANTNUKEWARNING still warns when recycling is impossible.
-    return FOF_NOCONFIRMATION | FOFX_SHOWELEVATIONPROMPT |
-        (permanent ? 0 : FOF_ALLOWUNDO | FOFX_ADDUNDORECORD |
-            FOFX_RECYCLEONDELETE | FOF_WANTNUKEWARNING);
+    return ShellFileOps::OperationFlags(permanent ? ShellFileOps::Kind::Delete : ShellFileOps::Kind::Recycle, true);
 }
 
 bool CMainWnd::DeleteItems(const std::vector<ClipboardItem>& items, bool permanent,
     std::vector<std::wstring>* completed)
 {
+    // Synchronous variant on the calling (UI) thread; the interactive ACL checks use it to
+    // observe the Windows permission dialog. User commands go through DeletePaths().
     if (completed) completed->clear();
     if (items.empty()) return false;
-    IFileOperation* operation = nullptr;
-    HRESULT hr = CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_INPROC_SERVER,
-        IID_PPV_ARGS(&operation));
-    if (SUCCEEDED(hr)) hr = operation->SetOwnerWindow(m_hWnd);
-    if (SUCCEEDED(hr)) hr = operation->SetOperationFlags(DeleteOperationFlags(permanent));
-    std::vector<std::wstring> existing;
-    for (const auto& item : items) {
-        if (FAILED(hr)) break;
-        IShellItem* source = nullptr;
-        hr = SHCreateItemFromParsingName(item.path.c_str(), nullptr, IID_PPV_ARGS(&source));
-        if (SUCCEEDED(hr)) {
-            if (GetFileAttributesW(item.path.c_str()) != INVALID_FILE_ATTRIBUTES)
-                existing.push_back(item.path);
-            hr = operation->DeleteItem(source, nullptr);
-            source->Release();
-        }
-    }
-    bool performed = false;
-    BOOL aborted = FALSE;
-    if (SUCCEEDED(hr)) {
-        performed = true;
-        hr = operation->PerformOperations();
-        const HRESULT result = operation->GetAnyOperationsAborted(&aborted);
-        if (SUCCEEDED(hr) && FAILED(result)) hr = result;
-    }
-    if (operation) operation->Release();
-    // Do not include missing inputs, skipped items or access-denied paths in
-    // history. A canceled batch can still have successfully recycled items.
-    size_t count = 0;
-    if (performed) for (const auto& path : existing) {
-        if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
-            const DWORD error = GetLastError();
-            if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) {
-                ++count;
-                if (completed) completed->push_back(path);
-            }
-        }
-    }
-    if (FAILED(hr) || aborted || count != items.size()) {
-        CDuiString tip;
-        if (hr == HRESULT_FROM_WIN32(ERROR_CANCELLED) || hr == E_ABORT || aborted)
-            tip.Format(_T("删除已取消或部分项目已跳过，已处理 %d / %d 项"), int(count), int(items.size()));
-        else {
-            wchar_t* message = nullptr;
-            FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
-                FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, DWORD(hr), 0,
-                reinterpret_cast<wchar_t*>(&message), 0, nullptr);
-            tip.Format(_T("删除未全部完成，已处理 %d / %d 项：%s (0x%08X)"),
-                int(count), int(items.size()), message ? message : L"Windows 未完成该操作", DWORD(hr));
-            if (message) LocalFree(message);
-        }
-        UpdateStatus(tip.GetData());
-        return false;
-    }
-    return true;
+    ShellFileOps::Request request;
+    request.kind = permanent ? ShellFileOps::Kind::Delete : ShellFileOps::Kind::Recycle;
+    for (const auto& item : items) request.sources.push_back(item.path);
+    request.owner = m_hWnd;
+    request.interactive = m_fileOpsInteractive;
+    const auto result = ShellFileOps::Perform(request);
+    m_lastFileOperation = result;
+    if (completed) for (const auto& pair : result.completed) completed->push_back(pair.first);
+    const bool all = SUCCEEDED(result.hr) && !result.aborted && result.completed.size() == items.size();
+    if (!all) UpdateStatus(DescribeFileOperation(result).c_str());
+    return all;
 }
 
 void CMainWnd::OnRenameClicked()
@@ -757,14 +706,15 @@ bool CMainWnd::PromptText(HWND owner, const wchar_t* title, const wchar_t* promp
     return !out.empty();
 }
 
-// ---- Background copy -----------------------------------------------------
+// ---- Windows file operations (IFileOperation on STA worker threads) ----------
 
 void CMainWnd::ApplyCopyUiState()
 {
-    const bool running = m_copyRunning.load();
+    // Progress, pause and cancel live in the Windows progress dialog; the old status-bar
+    // cancel button stays hidden.
     if (m_pBtnCancelCopy) {
-        m_pBtnCancelCopy->SetVisible(running);
-        m_pBtnCancelCopy->SetEnabled(running);
+        m_pBtnCancelCopy->SetVisible(false);
+        m_pBtnCancelCopy->SetEnabled(false);
     }
     // The command bar buttons (cut/copy/paste/rename/share/delete) follow the selection and
     // clipboard state instead of being hard-wired here.
@@ -774,120 +724,149 @@ void CMainWnd::ApplyCopyUiState()
 void CMainWnd::StopCopyThread(bool wait)
 {
     m_copyCancel.store(true);
-    if (m_copyThread.joinable()) {
-        if (wait)
-            m_copyThread.join();
-        else
-            m_copyThread.detach();
+    for (auto& job : m_fileOpJobs) {
+        if (!job || !job->thread.joinable()) continue;
+        if (wait) job->thread.join();
+        else job->thread.detach();
     }
+    m_fileOpJobs.clear();
     m_copyRunning.store(false);
 }
 
-void CMainWnd::StartCopyJob(std::vector<ClipboardItem> items, std::wstring destDir, bool move)
+bool CMainWnd::StartFileOperation(ShellFileOps::Kind kind, std::vector<std::wstring> sources,
+    std::wstring destination)
 {
-    StopCopyThread(true);
+    if (sources.empty() || !m_hWnd) return false;
+    if (m_fileOpJobs.empty() && !m_closeAfterFileOps) m_copyCancel.store(false);
+    ShellFileOps::Request request;
+    request.kind = kind;
+    request.sources = std::move(sources);
+    request.destination = std::move(destination);
+    request.owner = m_hWnd;               // Explorer's progress / conflict UI is owned by FastFile
+    request.interactive = m_fileOpsInteractive;
+    m_lastFileOpRequestFlags = ShellFileOps::OperationFlags(kind, request.interactive);
 
-    m_copyCancel.store(false);
+    auto job = std::make_unique<FileOperationJob>();
+    job->id = m_nextFileOpId++;
+    const unsigned id = job->id;
+    const HWND notify = m_hWnd;
+    // The worker must live on the window's desktop so the owned Shell dialogs can appear.
+    const HDESK desktop = ::GetThreadDesktop(::GetCurrentThreadId());
+    std::atomic<bool>* cancel = &m_copyCancel;
+    try {
+        job->thread = std::thread([request = std::move(request), id, notify, desktop, cancel]() {
+            if (desktop) ::SetThreadDesktop(desktop);
+            const HRESULT init = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+            auto* result = new (std::nothrow) ShellFileOps::Result(ShellFileOps::Perform(request, cancel));
+            if (SUCCEEDED(init)) ::CoUninitialize();
+            if (result && !::PostMessageW(notify, kMsgFileOpFinished, id, reinterpret_cast<LPARAM>(result)))
+                delete result;
+        });
+    } catch (...) {
+        UpdateStatus(_T("无法启动 Windows 文件操作"));
+        return false;
+    }
+    m_fileOpJobs.push_back(std::move(job));
     m_copyRunning.store(true);
-    m_jobIsMove = move;
-    {
-        std::lock_guard<std::mutex> lock(m_progressMutex);
-        m_progress = CopyProgressSnapshot{};
-        m_progress.state = CopyProgressSnapshot::State::Running;
-        m_progress.filesTotal = static_cast<int>(items.size());
-        m_moveUndoPairs.clear();
-    }
-    m_workerBytesBase = 0;
-    m_workerFileSize = 0;
-
     ApplyCopyUiState();
-    UpdateStatus(move ? _T("正在准备移动…（可继续浏览目录）")
-                      : _T("正在准备复制…（可继续浏览目录）"));
-
-    const bool moveJob = move;
-    m_copyThread = std::thread([this, items = std::move(items), destDir = std::move(destDir), moveJob]() mutable {
-        CopyWorkerMain(this, std::move(items), std::move(destDir), moveJob);
-    });
+    return true;
 }
 
-void CMainWnd::OnCopyProgressMessage()
+void CMainWnd::OnFileOperationFinished(WPARAM id, LPARAM resultPointer)
 {
-    CopyProgressSnapshot snap;
-    {
-        std::lock_guard<std::mutex> lock(m_progressMutex);
-        snap = m_progress;
+    std::unique_ptr<ShellFileOps::Result> result(reinterpret_cast<ShellFileOps::Result*>(resultPointer));
+    for (auto i = m_fileOpJobs.begin(); i != m_fileOpJobs.end(); ++i) {
+        if (!*i || (*i)->id != static_cast<unsigned>(id)) continue;
+        if ((*i)->thread.joinable()) (*i)->thread.join();
+        m_fileOpJobs.erase(i);
+        break;
     }
+    m_copyRunning.store(!m_fileOpJobs.empty());
+    if (result) {
+        m_lastFileOperation = *result;
+        ApplyFileOperationResult(*result);
+    }
+    ApplyCopyUiState();
+    if (m_closeAfterFileOps && m_fileOpJobs.empty() && m_hWnd)
+        ::PostMessageW(m_hWnd, WM_CLOSE, 0, 0);
+}
 
-    const wchar_t* verb = m_jobIsMove ? L"移动" : L"复制";
-    wchar_t buf[512] = {};
-    const wchar_t* name = snap.current[0] ? snap.current : L"…";
-    if (snap.bytesTotal > 0) {
-        const double pct = (100.0 * static_cast<double>(snap.bytesDone))
-            / static_cast<double>(snap.bytesTotal);
-        swprintf_s(buf,
-            L"%s中 %d/%d  ·  %s / %s (%.0f%%)  ·  %s  ·  可继续浏览",
-            verb, snap.filesDone, snap.filesTotal,
-            FormatFileSize(snap.bytesDone).c_str(),
-            FormatFileSize(snap.bytesTotal).c_str(),
-            pct, name);
+void CMainWnd::PushHistoryRecord(UndoRecord record)
+{
+    ClearRedoHistory(); m_historyStarted = true;
+    m_undoStack.push_back(std::move(record));
+    constexpr size_t kMaxUndoRecords = 50;
+    if (m_undoStack.size() > kMaxUndoRecords) {
+        m_undoStack.erase(m_undoStack.begin(),
+            m_undoStack.begin() + (m_undoStack.size() - kMaxUndoRecords));
+    }
+}
+
+void CMainWnd::ApplyFileOperationResult(const ShellFileOps::Result& result)
+{
+    using Kind = ShellFileOps::Kind;
+    if (!result.completed.empty()) {
+        UndoRecord record;
+        switch (result.kind) {
+        case Kind::Copy:
+        case Kind::Move:
+            // One undo step for the whole batch, built from the engine's reported results
+            // (actual names such as "- 副本"), so a single Ctrl+Z puts every item back.
+            record.kind = result.kind == Kind::Move ? UndoRecord::Kind::Move : UndoRecord::Kind::Copy;
+            record.moved = result.completed;
+            PushHistoryRecord(std::move(record));
+            break;
+        case Kind::Recycle:
+            record.kind = UndoRecord::Kind::ShellDelete;
+            record.moved = result.completed;
+            PushHistoryRecord(std::move(record));
+            break;
+        case Kind::Delete:
+            ClearRedoHistory();
+            break;
+        }
+    }
+    UpdateStatus(DescribeFileOperation(result).c_str());
+    // ExplorerBrowser follows change notifications itself; refresh FastFile's own state
+    // (details pane, tree, a deleted current folder) for the affected folders.
+    if (result.kind == Kind::Recycle || result.kind == Kind::Delete) RefreshAfterHistory();
+    else if (result.kind == Kind::Move || PathEquals(m_currentPath, result.destination)) RefreshListing();
+}
+
+std::wstring CMainWnd::DescribeFileOperation(const ShellFileOps::Result& result)
+{
+    using Kind = ShellFileOps::Kind;
+    const int done = static_cast<int>(result.completed.size() + result.notUndoable);
+    const int total = static_cast<int>(result.requested);
+    const wchar_t* verb = result.kind == Kind::Copy ? L"复制" : result.kind == Kind::Move ? L"移动"
+        : result.kind == Kind::Recycle ? L"删除" : L"永久删除";
+    wchar_t text[1024]{};
+    const bool cancelled = result.hr == HRESULT_FROM_WIN32(ERROR_CANCELLED) || result.hr == E_ABORT
+        || result.hr == COPYENGINE_E_USER_CANCELLED || result.aborted;
+    if (SUCCEEDED(result.hr) && !result.aborted && done == total) {
+        switch (result.kind) {
+        case Kind::Copy: swprintf_s(text, L"已复制 %d 项 → %s", done, result.destination.c_str()); break;
+        case Kind::Move: swprintf_s(text, L"已移动 %d 项 → %s", done, result.destination.c_str()); break;
+        case Kind::Recycle: swprintf_s(text, L"已删除到回收站 %d 项", done); break;
+        case Kind::Delete: swprintf_s(text, L"已永久删除 %d 项", done); break;
+        }
+    } else if (cancelled) {
+        swprintf_s(text, L"%s已取消或部分项目已跳过，已处理 %d / %d 项", verb, done, total);
     } else {
-        swprintf_s(buf, L"%s中 %d/%d  ·  %s  ·  可继续浏览",
-            verb, snap.filesDone, snap.filesTotal, name);
+        wchar_t* message = nullptr;
+        FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+            FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, DWORD(result.hr), 0,
+            reinterpret_cast<wchar_t*>(&message), 0, nullptr);
+        std::wstring reason = message ? message : L"Windows 未完成该操作";
+        if (message) LocalFree(message);
+        while (!reason.empty() && (reason.back() == L'\n' || reason.back() == L'\r')) reason.pop_back();
+        swprintf_s(text, L"%s未全部完成，已处理 %d / %d 项：%s (0x%08X)", verb, done, total,
+            reason.c_str(), DWORD(result.hr));
     }
-    UpdateStatus(buf);
-}
-
-void CMainWnd::OnCopyFinishedMessage(WPARAM resultCode)
-{
-    if (m_copyThread.joinable())
-        m_copyThread.join();
-    m_copyRunning.store(false);
-    ApplyCopyUiState();
-
-    CopyProgressSnapshot snap;
-    {
-        std::lock_guard<std::mutex> lock(m_progressMutex);
-        snap = m_progress;
-    }
-
-    const bool wasMove = m_jobIsMove;
-    const wchar_t* verb = wasMove ? _T("移动") : _T("复制");
-
-    {
-        // One undo step for the whole move, so a single Ctrl+Z puts every item back.
-        std::vector<std::pair<std::wstring, std::wstring>> pairs;
-        {
-            std::lock_guard<std::mutex> lock(m_progressMutex);
-            pairs.swap(m_moveUndoPairs);
-        }
-        if (!pairs.empty()) {
-            UndoRecord record;
-            record.kind = wasMove ? UndoRecord::Kind::Move : UndoRecord::Kind::Copy;
-            record.moved = std::move(pairs);
-            ClearRedoHistory(); m_historyStarted = true;
-            m_undoStack.push_back(std::move(record));
-        }
-    }
-
-    CDuiString tip;
-    if (resultCode == 2)
-        tip.Format(_T("%s已取消（完成 %d/%d）"), verb, snap.filesDone, snap.filesTotal);
-    else if (resultCode == 1)
-        tip.Format(_T("%s失败 (错误 %lu)，已完成 %d/%d"),
-            verb, snap.lastError, snap.filesDone, snap.filesTotal);
-    else if (wasMove && !m_undoStack.empty())
-        tip.Format(_T("移动完成：%d 个文件 → %s（Ctrl+Z 可撤销）"),
-            snap.filesDone, m_lastCopyDest.c_str());
-    else
-        tip.Format(_T("复制完成：%d 个文件 → %s"),
-            snap.filesDone, m_lastCopyDest.c_str());
-    UpdateStatus(tip.GetData());
-
-    m_jobIsMove = false;
-
-    // A move empties the source folder too, so refresh whenever the job was a move.
-    if (wasMove || _wcsicmp(m_currentPath.c_str(), m_lastCopyDest.c_str()) == 0)
-        RefreshListing();
+    std::wstring status = text;
+    if (!result.completed.empty() && result.kind != Kind::Delete) status += L"（Ctrl+Z 可撤销）";
+    if (result.notUndoable) status += L"；" + std::to_wstring(result.notUndoable) + L" 项已合并或替换，不能撤销";
+    return status;
 }
 
 std::wstring CMainWnd::JoinPath(const std::wstring& dir, const std::wstring& name)
@@ -930,295 +909,6 @@ std::wstring CMainWnd::UniqueDestPath(const std::wstring& destPath)
     return destPath;
 }
 
-ULONGLONG CMainWnd::CalcPathBytes(const std::wstring& path, bool isDir, std::atomic<bool>& cancel)
-{
-    if (cancel.load()) return 0;
-    if (!isDir) {
-        WIN32_FILE_ATTRIBUTE_DATA fad = {};
-        if (::GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad))
-            return (static_cast<ULONGLONG>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
-        return 0;
-    }
-    ULONGLONG total = 0;
-    std::wstring pattern = JoinPath(path, L"*");
-    WIN32_FIND_DATAW fd = {};
-    HANDLE h = ::FindFirstFileExW(pattern.c_str(), FindExInfoBasic, &fd,
-        FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
-    if (h == INVALID_HANDLE_VALUE) return 0;
-    do {
-        if (cancel.load()) break;
-        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
-        std::wstring child = JoinPath(path, fd.cFileName);
-        const bool childDir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-        if (childDir) total += CalcPathBytes(child, true, cancel);
-        else total += (static_cast<ULONGLONG>(fd.nFileSizeHigh) << 32) | fd.nFileSizeLow;
-    } while (::FindNextFileW(h, &fd));
-    ::FindClose(h);
-    return total;
-}
-
-ULONGLONG CMainWnd::CalcTotalBytes(const std::vector<ClipboardItem>& items, std::atomic<bool>& cancel)
-{
-    ULONGLONG total = 0;
-    for (const auto& it : items) {
-        if (cancel.load()) break;
-        total += CalcPathBytes(it.path, it.isDir, cancel);
-    }
-    return total;
-}
-
-int CMainWnd::CountFilesInPath(const std::wstring& path, bool isDir, std::atomic<bool>& cancel)
-{
-    if (cancel.load()) return 0;
-    if (!isDir) return 1;
-    int n = 0;
-    std::wstring pattern = JoinPath(path, L"*");
-    WIN32_FIND_DATAW fd = {};
-    HANDLE h = ::FindFirstFileExW(pattern.c_str(), FindExInfoBasic, &fd,
-        FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
-    if (h == INVALID_HANDLE_VALUE) return 0;
-    do {
-        if (cancel.load()) break;
-        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
-        std::wstring child = JoinPath(path, fd.cFileName);
-        const bool childDir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-        n += CountFilesInPath(child, childDir, cancel);
-    } while (::FindNextFileW(h, &fd));
-    ::FindClose(h);
-    return n;
-}
-
-int CMainWnd::CountFiles(const std::vector<ClipboardItem>& items, std::atomic<bool>& cancel)
-{
-    int n = 0;
-    for (const auto& it : items) {
-        if (cancel.load()) break;
-        n += CountFilesInPath(it.path, it.isDir, cancel);
-    }
-    return n;
-}
-
-void CMainWnd::PostProgress(CMainWnd* self)
-{
-    if (self && self->m_hWnd)
-        ::PostMessageW(self->m_hWnd, kMsgCopyProgress, 0, 0);
-}
-
-DWORD CALLBACK CMainWnd::CopyProgressRoutine(
-    LARGE_INTEGER TotalFileSize,
-    LARGE_INTEGER TotalBytesTransferred,
-    LARGE_INTEGER /*StreamSize*/,
-    LARGE_INTEGER /*StreamBytesTransferred*/,
-    DWORD /*dwStreamNumber*/,
-    DWORD /*dwCallbackReason*/,
-    HANDLE /*hSourceFile*/,
-    HANDLE /*hDestinationFile*/,
-    LPVOID lpData)
-{
-    auto* self = static_cast<CMainWnd*>(lpData);
-    if (!self) return PROGRESS_CONTINUE;
-    if (self->m_copyCancel.load()) return PROGRESS_CANCEL;
-
-    self->m_workerFileSize = static_cast<ULONGLONG>(TotalFileSize.QuadPart);
-    {
-        std::lock_guard<std::mutex> lock(self->m_progressMutex);
-        self->m_progress.bytesDone = self->m_workerBytesBase
-            + static_cast<ULONGLONG>(TotalBytesTransferred.QuadPart);
-    }
-    PostProgress(self);
-    return PROGRESS_CONTINUE;
-}
-
-bool CMainWnd::CopyOneFile(CMainWnd* self, const std::wstring& src, const std::wstring& dst)
-{
-    if (self->m_copyCancel.load()) return false;
-
-    {
-        std::lock_guard<std::mutex> lock(self->m_progressMutex);
-        size_t slash = src.find_last_of(L"\\/");
-        const wchar_t* leaf = (slash == std::wstring::npos) ? src.c_str() : src.c_str() + slash + 1;
-        wcsncpy_s(self->m_progress.current, leaf, _TRUNCATE);
-    }
-    PostProgress(self);
-
-    self->m_workerFileSize = 0;
-    BOOL ok = ::CopyFileExW(src.c_str(), dst.c_str(), CopyProgressRoutine, self, nullptr, 0);
-    if (!ok) {
-        DWORD err = ::GetLastError();
-        if (err == ERROR_REQUEST_ABORTED || self->m_copyCancel.load())
-            return false;
-        std::lock_guard<std::mutex> lock(self->m_progressMutex);
-        self->m_progress.lastError = err;
-        return false;
-    }
-
-    self->m_workerBytesBase += self->m_workerFileSize;
-    {
-        std::lock_guard<std::mutex> lock(self->m_progressMutex);
-        self->m_progress.filesDone += 1;
-        self->m_progress.bytesDone = self->m_workerBytesBase;
-    }
-    PostProgress(self);
-    return true;
-}
-
-bool CMainWnd::CopyDirectoryRecursive(CMainWnd* self, const std::wstring& src, const std::wstring& dst)
-{
-    if (self->m_copyCancel.load()) return false;
-
-    if (!::CreateDirectoryW(dst.c_str(), nullptr)) {
-        DWORD err = ::GetLastError();
-        if (err != ERROR_ALREADY_EXISTS) {
-            std::lock_guard<std::mutex> lock(self->m_progressMutex);
-            self->m_progress.lastError = err;
-            return false;
-        }
-    }
-
-    std::wstring pattern = JoinPath(src, L"*");
-    WIN32_FIND_DATAW fd = {};
-    HANDLE h = ::FindFirstFileExW(pattern.c_str(), FindExInfoBasic, &fd,
-        FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
-    if (h == INVALID_HANDLE_VALUE) {
-        DWORD err = ::GetLastError();
-        if (err == ERROR_FILE_NOT_FOUND) return true;
-        std::lock_guard<std::mutex> lock(self->m_progressMutex);
-        self->m_progress.lastError = err;
-        return false;
-    }
-
-    bool ok = true;
-    do {
-        if (self->m_copyCancel.load()) { ok = false; break; }
-        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
-        std::wstring childSrc = JoinPath(src, fd.cFileName);
-        std::wstring childDst = JoinPath(dst, fd.cFileName);
-        const bool childDir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-        if (childDir) {
-            if (!CopyDirectoryRecursive(self, childSrc, childDst)) { ok = false; break; }
-        } else {
-            if (!CopyOneFile(self, childSrc, childDst)) { ok = false; break; }
-        }
-    } while (::FindNextFileW(h, &fd));
-    ::FindClose(h);
-    return ok;
-}
-
-void CMainWnd::CopyWorkerMain(CMainWnd* self,
-    std::vector<ClipboardItem> items,
-    std::wstring destDir,
-    bool move)
-{
-    WPARAM result = 0;
-
-    // Measure each item once: the totals feed the progress readout, while the per-item
-    // values let a same-volume rename advance the bar (it emits no byte-level progress).
-    std::vector<ULONGLONG> itemBytes(items.size(), 0);
-    std::vector<int> itemFiles(items.size(), 0);
-    ULONGLONG bytesTotal = 0;
-    int fileTotal = 0;
-    for (size_t i = 0; i < items.size(); ++i) {
-        if (self->m_copyCancel.load()) { result = 2; break; }
-        itemBytes[i] = CalcPathBytes(items[i].path, items[i].isDir, self->m_copyCancel);
-        itemFiles[i] = CountFilesInPath(items[i].path, items[i].isDir, self->m_copyCancel);
-        bytesTotal += itemBytes[i];
-        fileTotal += itemFiles[i];
-    }
-    {
-        std::lock_guard<std::mutex> lock(self->m_progressMutex);
-        self->m_progress.filesTotal = fileTotal;
-        self->m_progress.bytesTotal = bytesTotal;
-        self->m_progress.filesDone = 0;
-        self->m_progress.bytesDone = 0;
-        self->m_progress.state = CopyProgressSnapshot::State::Running;
-    }
-    PostProgress(self);
-
-    self->m_workerBytesBase = 0;
-    self->m_workerFileSize = 0;
-
-    for (size_t i = 0; result != 2 && i < items.size(); ++i) {
-        if (self->m_copyCancel.load()) { result = 2; break; }
-        const ClipboardItem& it = items[i];
-
-        size_t slash = it.path.find_last_of(L"\\/");
-        std::wstring leaf = (slash == std::wstring::npos) ? it.path : it.path.substr(slash + 1);
-        std::wstring dest = UniqueDestPath(JoinPath(destDir, leaf));
-
-        const bool ok = move
-            ? MoveOneItem(self, it, dest, itemFiles[i], itemBytes[i])
-            : (it.isDir ? CopyDirectoryRecursive(self, it.path, dest)
-                        : CopyOneFile(self, it.path, dest));
-        if (!ok) {
-            result = self->m_copyCancel.load() ? 2 : 1;
-            break;
-        }
-        {
-            std::lock_guard<std::mutex> lock(self->m_progressMutex);
-            self->m_moveUndoPairs.emplace_back(it.path, dest);
-        }
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(self->m_progressMutex);
-        if (result == 2)
-            self->m_progress.state = CopyProgressSnapshot::State::Cancelled;
-        else if (result == 1)
-            self->m_progress.state = CopyProgressSnapshot::State::Failed;
-        else
-            self->m_progress.state = CopyProgressSnapshot::State::Done;
-    }
-
-    if (self->m_hWnd)
-        ::PostMessageW(self->m_hWnd, kMsgCopyFinished, result, 0);
-}
-
-// ---- Move --------------------------------------------------------------
-
-bool CMainWnd::MoveOneItem(CMainWnd* self, const ClipboardItem& item, const std::wstring& dest,
-    int itemFiles, ULONGLONG itemBytes)
-{
-    if (self->m_copyCancel.load()) return false;
-
-    {
-        std::lock_guard<std::mutex> lock(self->m_progressMutex);
-        wcsncpy_s(self->m_progress.current, GetLeafName(item.path).c_str(), _TRUNCATE);
-    }
-    PostProgress(self);
-
-    // Fast path: same volume, so this is an atomic rename that moves no data.
-    // MOVEFILE_COPY_ALLOWED is deliberately NOT passed - a cross-volume move must fail
-    // here so our own engine runs it with progress and a working cancel button.
-    if (::MoveFileExW(item.path.c_str(), dest.c_str(), 0)) {
-        self->m_workerBytesBase += itemBytes;
-        {
-            std::lock_guard<std::mutex> lock(self->m_progressMutex);
-            self->m_progress.filesDone += itemFiles;
-            self->m_progress.bytesDone = self->m_workerBytesBase;
-        }
-        PostProgress(self);
-        return true;
-    }
-
-    const DWORD err = ::GetLastError();
-    if (err != ERROR_NOT_SAME_DEVICE) {
-        std::lock_guard<std::mutex> lock(self->m_progressMutex);
-        self->m_progress.lastError = err;
-        return false;
-    }
-
-    // Cross-volume: copy with progress, then drop the source permanently (not to the bin).
-    const bool copied = item.isDir ? CopyDirectoryRecursive(self, item.path, dest)
-                                   : CopyOneFile(self, item.path, dest);
-    if (!copied) return false;
-    if (!DeleteTreePermanent(item.path)) {
-        std::lock_guard<std::mutex> lock(self->m_progressMutex);
-        self->m_progress.lastError = ::GetLastError();
-        return false;
-    }
-    return true;
-}
-
 bool CMainWnd::DeleteTreePermanent(const std::wstring& path)
 {
     std::wstring from = path;
@@ -1236,29 +926,8 @@ bool CMainWnd::DeleteTreePermanent(const std::wstring& path)
 
 void CMainWnd::PushUndo(UndoRecord::Kind kind, std::wstring from, std::wstring to)
 {
-    ClearRedoHistory(); m_historyStarted = true;
-    if (from.empty() && to.empty()) return;
-    m_undoStack.push_back(UndoRecord{ kind, std::move(from), std::move(to) });
-    constexpr size_t kMaxUndoRecords = 50;
-    if (m_undoStack.size() > kMaxUndoRecords) {
-        m_undoStack.erase(m_undoStack.begin(),
-            m_undoStack.begin() + (m_undoStack.size() - kMaxUndoRecords));
-    }
-}
-
-void CMainWnd::PushMoveUndo(std::vector<std::pair<std::wstring, std::wstring>> pairs)
-{
-    if (pairs.empty()) return;
-    ClearRedoHistory(); m_historyStarted = true;
-    UndoRecord rec;
-    rec.kind = UndoRecord::Kind::Move;
-    rec.moved = std::move(pairs);
-    m_undoStack.push_back(std::move(rec));
-    constexpr size_t kMaxUndoRecords = 50;
-    if (m_undoStack.size() > kMaxUndoRecords) {
-        m_undoStack.erase(m_undoStack.begin(),
-            m_undoStack.begin() + (m_undoStack.size() - kMaxUndoRecords));
-    }
+    if (from.empty() && to.empty()) { ClearRedoHistory(); m_historyStarted = true; return; }
+    PushHistoryRecord(UndoRecord{ kind, std::move(from), std::move(to) });
 }
 
 void CMainWnd::TrackShellRename(WPARAM change, LPARAM process)
@@ -1406,7 +1075,7 @@ bool CMainWnd::ReplayHistory(UndoRecord& record, bool redo)
 void CMainWnd::OnUndo()
 {
     if (m_shellHistoryPending) { UpdateStatus(_T("正在完成 Windows 撤销/重做，请稍候")); return; }
-    if (m_copyRunning.load()) { UpdateStatus(_T("有复制/移动任务在进行，完成后再撤销")); return; }
+    if (m_copyRunning.load()) { UpdateStatus(_T("有 Windows 文件操作在进行，完成后再撤销")); return; }
     if (m_undoStack.empty()) {
         if (!m_historyStarted && m_shellBrowser && m_shellBrowser->InvokeHistory(false)) {
             RefreshListing(); UpdateStatus(_T("已撤销 Windows 文件操作"));
@@ -1425,7 +1094,7 @@ void CMainWnd::OnUndo()
 void CMainWnd::OnRedo()
 {
     if (m_shellHistoryPending) { UpdateStatus(_T("正在完成 Windows 撤销/重做，请稍候")); return; }
-    if (m_copyRunning.load()) { UpdateStatus(_T("有复制/移动任务在进行，完成后再重做")); return; }
+    if (m_copyRunning.load()) { UpdateStatus(_T("有 Windows 文件操作在进行，完成后再重做")); return; }
     if (m_redoStack.empty()) {
         if (!m_historyStarted && m_shellBrowser && m_shellBrowser->InvokeHistory(true)) {
             RefreshListing(); UpdateStatus(_T("已重做 Windows 文件操作"));

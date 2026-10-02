@@ -473,6 +473,19 @@ bool ShellBrowserHost::InvokeHistory(bool redo, bool invoke)
     return found;
 }
 
+HRESULT ShellBrowserHost::CreateBackgroundContextMenu(IContextMenu** menu) const
+{
+    if (!menu) return E_POINTER;
+    *menu = nullptr;
+    if (!m_browser) return E_UNEXPECTED;
+    IShellView* view = nullptr;
+    HRESULT hr = m_browser->GetCurrentView(IID_PPV_ARGS(&view));
+    if (FAILED(hr) || !view) return FAILED(hr) ? hr : E_FAIL;
+    hr = view->GetItemObject(SVGIO_BACKGROUND, IID_PPV_ARGS(menu));
+    view->Release();
+    return hr;
+}
+
 bool ShellBrowserHost::SelectAll()
 {
     if (!m_browser) return false;

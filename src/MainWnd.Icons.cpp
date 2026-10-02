@@ -1175,7 +1175,6 @@ void CMainWnd::UpdateCommandBarState()
     CollectSelectedItems(sel);
     const bool hasSel = !sel.empty();
     const bool single = sel.size() == 1;
-    const bool running = m_copyRunning.load();
 
     auto state = [&](LPCTSTR name, int kind, bool enabled) {
         CControlUI* c = m_PaintManager.FindControl(name);
@@ -1183,12 +1182,12 @@ void CMainWnd::UpdateCommandBarState()
         c->SetEnabled(enabled);
         ApplyCommandIcon(c, kind, false);
     };
-    state(_T("btn_cut"), CmdIconCut, hasSel && !running);
-    state(_T("btn_copy"), CmdIconCopy, hasSel && !running);
-    state(_T("btn_paste"), CmdIconPaste, !running && IsClipboardFormatAvailable(CF_HDROP));
-    state(_T("btn_rename"), CmdIconRename, single && !running);
-    state(_T("btn_share"), CmdIconShare, hasSel && !running);
-    state(_T("btn_delete"), CmdIconDelete, hasSel && !running);
+    state(_T("btn_cut"), CmdIconCut, hasSel);
+    state(_T("btn_copy"), CmdIconCopy, hasSel);
+    state(_T("btn_paste"), CmdIconPaste, IsClipboardFormatAvailable(CF_HDROP));
+    state(_T("btn_rename"), CmdIconRename, single);
+    state(_T("btn_share"), CmdIconShare, hasSel);
+    state(_T("btn_delete"), CmdIconDelete, hasSel);
 }
 
 void CMainWnd::ApplyChromeShellIcons()

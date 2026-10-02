@@ -30,6 +30,9 @@ public:
     bool ClearSelection();
     bool Focus();
     bool InvokeHistory(bool redo, bool invoke = true);
+    // The current view's own folder-background menu (IShellView::GetItemObject with
+    // SVGIO_BACKGROUND): Explorer's 查看 / 排序方式 / 分组依据 / 粘贴 / 撤销 ... entries.
+    HRESULT CreateBackgroundContextMenu(IContextMenu** menu) const;
     HRESULT TranslateAccelerator(MSG* message);
     bool OwnsWindow(HWND window) const;
     bool IsAtPath(const std::wstring& path) const;

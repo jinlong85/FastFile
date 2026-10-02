@@ -4,6 +4,7 @@
 
 #include "MainWndInternal.h"
 #include "ShellPresentation.h"
+#include "ShellMenuUtil.h"
 
 void CMainWnd::ShowToolbarPopupMenu(CControlUI* anchor, HMENU hMenu)
 {
@@ -304,29 +305,11 @@ void CMainWnd::AddInternalFolderOpenMenu(IContextMenu* menu,HMENU popup,UINT fir
 
 // Collapse separators left behind by removals / insertions (no leading, trailing or
 // doubled separators) — must run *after* FastFile's own view items are inserted.
+// Shell separators carry ids such as 0, -1, 0x7FFD or 0x7FFE, so detection is by
+// MFT_SEPARATOR (see ShellMenuUtil.h), never by "id == 0".
 void CMainWnd::TidyMenuSeparators(HMENU hMenu)
 {
-    if (!hMenu)
-        return;
-    bool prevSep = true;
-    for (int pos = 0; pos < ::GetMenuItemCount(hMenu); ) {
-        const UINT id = ::GetMenuItemID(hMenu, pos);
-        const bool isSep = (id == 0 && ::GetSubMenu(hMenu, pos) == nullptr);
-        if (isSep && prevSep) {
-            ::DeleteMenu(hMenu, pos, MF_BYPOSITION);
-            continue;
-        }
-        prevSep = isSep;
-        ++pos;
-    }
-    while (::GetMenuItemCount(hMenu) > 0) {
-        const int last = ::GetMenuItemCount(hMenu) - 1;
-        const UINT id = ::GetMenuItemID(hMenu, last);
-        if (id == 0 && ::GetSubMenu(hMenu, last) == nullptr)
-            ::DeleteMenu(hMenu, last, MF_BYPOSITION);
-        else
-            break;
-    }
+    ShellMenuUtil::NormalizeSeparators(hMenu, true);
 }
 
 bool CMainWnd::TrackPopupShellMenu(IContextMenu* pMenu, HMENU hMenu, POINT ptScreen,
@@ -348,6 +331,10 @@ bool CMainWnd::TrackPopupShellMenu(IContextMenu* pMenu, HMENU hMenu, POINT ptScr
         UINT flags = MF_STRING | (m_showHidden ? MF_CHECKED : MF_UNCHECKED);
         ::AppendMenuW(hMenu, flags, kCmdToggleHidden, L"显示隐藏的项目");
     }
+
+    // Every Shell menu FastFile shows is normalized last: no leading / trailing / stacked
+    // separators after pruning and after FastFile's own entries were mixed in.
+    TidyMenuSeparators(hMenu);
 
     // Hold IContextMenu2/3 so owner-draw + cascading submenus work during TrackPopupMenu.
     // Do NOT use TPM_NONOTIFY — Shell needs WM_INITMENUPOPUP / DRAWITEM / MEASUREITEM.
@@ -395,6 +382,8 @@ bool CMainWnd::TrackPopupShellMenu(IContextMenu* pMenu, HMENU hMenu, POINT ptScr
         OnPasteClicked();
         return true;
     }
+    if (cmd == kCmdBgUndo) { OnUndo(); return true; }
+    if (cmd == kCmdBgRedo) { OnRedo(); return true; }
     if (cmd >= kCmdBgViewBase && cmd < kCmdBgViewBase + 8) {
         SetViewMode(static_cast<ViewMode>(cmd - kCmdBgViewBase));
         return true;
@@ -434,6 +423,7 @@ bool CMainWnd::TrackPopupShellMenu(IContextMenu* pMenu, HMENU hMenu, POINT ptScr
             GCS_VERBW, nullptr, reinterpret_cast<LPSTR>(verb), _countof(verb)));
 
         if(hasVerb && HandleInternalFolderOpenVerb(verb,m_shellMenuPaths))return true;
+        if (hasVerb && HandleRoutedShellVerb(verb)) return true;
 
         // "属性" goes through the documented API instead of the menu's offset verb.
         // The offset verb is resolved against whatever folder object the menu was bound to,
@@ -464,6 +454,41 @@ bool CMainWnd::TrackPopupShellMenu(IContextMenu* pMenu, HMENU hMenu, POINT ptScr
         RefreshListing();
     }
     return true;
+}
+
+// Shell verbs FastFile runs itself so its Ctrl+Z history and the Explorer undo stack stay
+// in step, and file operations use the same native-progress engine everywhere:
+//   undo / redo   -> FastFile history (falls back to Explorer's own record when FastFile has none)
+//   refresh       -> FastFile refresh (Shell view, details pane and tree)
+//   paste         -> folder background only, when the clipboard holds real file-system items
+//   delete        -> item menus whose items are all real file-system paths (Shift = permanent)
+// Anything else (virtual items, pastes of non-file data, 粘贴快捷方式 ...) stays with the Shell,
+// which shows Explorer's own progress UI; FastFile adds no status-bar progress to it.
+bool CMainWnd::HandleRoutedShellVerb(const std::wstring& verb)
+{
+    if (_wcsicmp(verb.c_str(), L"undo") == 0) { OnUndo(); return true; }
+    if (_wcsicmp(verb.c_str(), L"redo") == 0) { OnRedo(); return true; }
+    if (m_shellMenuBackground && _wcsicmp(verb.c_str(), L"refresh") == 0) { RefreshListing(); return true; }
+    if (m_shellMenuBackground && _wcsicmp(verb.c_str(), L"paste") == 0) {
+        std::vector<ClipboardItem> items; bool cut = false;
+        const DWORD attributes = GetFileAttributesW(m_currentPath.c_str());
+        if (!PathEquals(m_shellMenuFolder, m_currentPath) || IsThisPcPath(m_currentPath)
+            || attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY)
+            || !ReadFileClipboard(items, cut)) return false;
+        OnPasteClicked();
+        return true;
+    }
+    if (!m_shellMenuBackground && _wcsicmp(verb.c_str(), L"delete") == 0 && !m_shellMenuPaths.empty()) {
+        std::vector<ClipboardItem> items;
+        for (const auto& path : m_shellMenuPaths) {
+            const DWORD attributes = GetFileAttributesW(path.c_str());
+            if (IsThisPcPath(path) || attributes == INVALID_FILE_ATTRIBUTES || ParentPath(path).empty()) return false;
+            items.push_back({path, (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0});
+        }
+        DeletePaths(items, ::GetKeyState(VK_SHIFT) < 0);
+        return true;
+    }
+    return false;
 }
 
 bool CMainWnd::HandleInternalFolderOpenVerb(const std::wstring& verb,const std::vector<std::wstring>& paths)
@@ -507,119 +532,254 @@ void CMainWnd::ShowTreeContextMenu(CTreeNodeUI* node, POINT ptScreen)
     }
 }
 
-bool CMainWnd::ShowShellBackgroundContextMenu(const std::wstring& folderPath, POINT ptScreen)
+static const wchar_t* HistoryKindLabel(int kind)
 {
-    PIDLIST_ABSOLUTE pidlFolder = nullptr;
-    SFGAOF sfgao = 0;
-    HRESULT hr = S_OK;
-    if (folderPath.empty() || IsThisPcPath(folderPath)) {
-        // The Computer folder has its own native background verbs (View, Sort,
-        // Refresh, etc.) and must not fall through to FastFile's custom menu.
-        hr = ::SHGetKnownFolderIDList(FOLDERID_ComputerFolder, 0, nullptr, &pidlFolder);
-    } else {
-        hr = ::SHParseDisplayName(folderPath.c_str(), nullptr, &pidlFolder, 0, &sfgao);
+    switch (kind) {
+    case 0: case 4: return L"重命名";   // Rename, ShellRename
+    case 1: return L"新建";             // CreateFolder
+    case 2: return L"移动";
+    case 3: return L"复制";
+    case 5: return L"删除";             // ShellDelete
     }
-    if (FAILED(hr) || !pidlFolder) return false;
+    return L"";
+}
 
-    // Bind from the desktop shell folder, as Explorer does, so this is the
-    // directory background context rather than a FastFile-owned fallback.
-    IShellFolder* pDesktop = nullptr;
-    IShellFolder* pFolder = nullptr;
-    hr = ::SHGetDesktopFolder(&pDesktop);
-    if (SUCCEEDED(hr) && pDesktop) {
-        hr = pDesktop->BindToObject(pidlFolder, nullptr, IID_IShellFolder,
-            reinterpret_cast<void**>(&pFolder));
-        pDesktop->Release();
-    }
-    ::CoTaskMemFree(pidlFolder);
-    if (FAILED(hr) || !pFolder) return false;
+// FastFile's own 查看 / 排序方式 submenus: they drive FastFile's view state (memorised view
+// modes, 26 px row spacing, details headers, sort indicators), not the Shell view directly.
+HMENU CMainWnd::CreateBackgroundViewSubmenu() const
+{
+    HMENU hView = ::CreatePopupMenu();
+    if (!hView) return nullptr;
+    auto add = [&](ViewMode mode, const wchar_t* text) {
+        MENUITEMINFOW info{};
+        info.cbSize = sizeof(info);
+        info.fMask = MIIM_ID | MIIM_STRING | MIIM_FTYPE | MIIM_STATE;
+        info.fType = MFT_STRING | MFT_RADIOCHECK;
+        info.fState = m_viewMode == mode ? MFS_CHECKED : MFS_UNCHECKED;
+        info.wID = static_cast<UINT>(kCmdBgViewBase + static_cast<int>(mode));
+        info.dwTypeData = const_cast<wchar_t*>(text);
+        ::InsertMenuItemW(hView, ::GetMenuItemCount(hView), TRUE, &info);
+    };
+    add(ViewMode::ExtraLargeIcons, L"超大图标(&X)");
+    add(ViewMode::LargeIcons, L"大图标(&R)");
+    add(ViewMode::MediumIcons, L"中等图标(&M)");
+    add(ViewMode::SmallIcons, L"小图标(&N)");
+    add(ViewMode::List, L"列表(&L)");
+    add(ViewMode::Details, L"详细信息(&D)");
+    add(ViewMode::Tiles, L"平铺(&S)");
+    add(ViewMode::Content, L"内容(&T)");
+    return hView;
+}
+
+HMENU CMainWnd::CreateBackgroundSortSubmenu() const
+{
+    HMENU hSort = ::CreatePopupMenu();
+    if (!hSort) return nullptr;
+    auto add = [&](UINT_PTR id, bool checked, const wchar_t* text) {
+        MENUITEMINFOW info{};
+        info.cbSize = sizeof(info);
+        info.fMask = MIIM_ID | MIIM_STRING | MIIM_FTYPE | MIIM_STATE;
+        info.fType = MFT_STRING | MFT_RADIOCHECK;
+        info.fState = checked ? MFS_CHECKED : MFS_UNCHECKED;
+        info.wID = static_cast<UINT>(id);
+        info.dwTypeData = const_cast<wchar_t*>(text);
+        ::InsertMenuItemW(hSort, ::GetMenuItemCount(hSort), TRUE, &info);
+    };
+    add(kCmdBgSortBase + 0, m_sortColumn == SortColumn::Name, L"名称(&N)");
+    add(kCmdBgSortBase + 1, m_sortColumn == SortColumn::Modified, L"修改日期");
+    add(kCmdBgSortBase + 2, m_sortColumn == SortColumn::Type, L"类型");
+    add(kCmdBgSortBase + 3, m_sortColumn == SortColumn::Size, L"大小");
+    ::AppendMenuW(hSort, MF_SEPARATOR, 0, nullptr);
+    add(kCmdBgSortBase + 4, m_sortAscending, L"递增(&A)");
+    add(kCmdBgSortBase + 5, !m_sortAscending, L"递减(&D)");
+    return hSort;
+}
+
+bool CMainWnd::ShellBrowserShowsFolder(const std::wstring& folderPath) const
+{
+    if (!m_shellBrowser || !m_shellBrowser->IsCreated() || !m_shellBrowser->IsVisible()) return false;
+    const std::wstring current = m_shellBrowser->CurrentPath();
+    if (folderPath.empty() || IsThisPcPath(folderPath)) return IsThisPcPath(current);
+    return !IsThisPcPath(current) && PathEquals(current, folderPath);
+}
+
+// Builds the folder-background menu. Preferred source is the visible ExplorerBrowser view
+// (IShellView::GetItemObject(SVGIO_BACKGROUND)): exactly the menu Explorer shows, including
+// 粘贴 / 粘贴快捷方式 / 撤销 / 分组依据 / 自定义文件夹 as Windows provides them. Folders that
+// are not on screen (the 此电脑 quick row, search results) bind the folder's own
+// IShellFolder::CreateViewObject menu and get FastFile's 查看 / 排序方式 / 刷新 on top.
+bool CMainWnd::BuildShellBackgroundMenu(const std::wstring& folderPath, IContextMenu** outMenu,
+    HMENU* outPopup, UINT* outShellMax, bool* outFromView)
+{
+    if (!outMenu || !outPopup || !outShellMax) return false;
+    *outMenu = nullptr; *outPopup = nullptr; *outShellMax = 0;
+    if (outFromView) *outFromView = false;
 
     IContextMenu* pMenu = nullptr;
-    hr = pFolder->CreateViewObject(m_hWnd, IID_IContextMenu, reinterpret_cast<void**>(&pMenu));
-    pFolder->Release();
-    if (FAILED(hr) || !pMenu) return false;
+    bool fromView = false;
+    if (ShellBrowserShowsFolder(folderPath)
+        && SUCCEEDED(m_shellBrowser->CreateBackgroundContextMenu(&pMenu)) && pMenu)
+        fromView = true;
 
-    HMENU hMenu = ::CreatePopupMenu();
-    if (!hMenu) {
-        pMenu->Release();
-        return false;
+    if (!pMenu) {
+        PIDLIST_ABSOLUTE pidlFolder = nullptr;
+        SFGAOF sfgao = 0;
+        HRESULT hr = (folderPath.empty() || IsThisPcPath(folderPath))
+            ? ::SHGetKnownFolderIDList(FOLDERID_ComputerFolder, 0, nullptr, &pidlFolder)
+            : ::SHParseDisplayName(folderPath.c_str(), nullptr, &pidlFolder, 0, &sfgao);
+        if (FAILED(hr) || !pidlFolder) return false;
+        IShellFolder* pDesktop = nullptr;
+        IShellFolder* pFolder = nullptr;
+        hr = ::SHGetDesktopFolder(&pDesktop);
+        if (SUCCEEDED(hr) && pDesktop) {
+            hr = pDesktop->BindToObject(pidlFolder, nullptr, IID_IShellFolder,
+                reinterpret_cast<void**>(&pFolder));
+            pDesktop->Release();
+        }
+        ::CoTaskMemFree(pidlFolder);
+        if (FAILED(hr) || !pFolder) return false;
+        hr = pFolder->CreateViewObject(m_hWnd, IID_IContextMenu, reinterpret_cast<void**>(&pMenu));
+        pFolder->Release();
+        if (FAILED(hr) || !pMenu) return false;
     }
 
+    HMENU hMenu = ::CreatePopupMenu();
+    if (!hMenu) { pMenu->Release(); return false; }
     const UINT idCmdFirst = 1;
     const UINT idCmdLast = 0x7FFF;
-    hr = pMenu->QueryContextMenu(hMenu, 0, idCmdFirst, idCmdLast,
-        CMF_NORMAL | CMF_EXPLORE | CMF_EXTENDEDVERBS);
+    UINT flags = CMF_NORMAL | CMF_EXPLORE;
+    if (::GetKeyState(VK_SHIFT) < 0) flags |= CMF_EXTENDEDVERBS; // Explorer: Shift+right-click
+    const HRESULT hr = pMenu->QueryContextMenu(hMenu, 0, idCmdFirst, idCmdLast, flags);
     if (FAILED(hr)) {
         ::DestroyMenu(hMenu);
         pMenu->Release();
         return false;
     }
-
     const UINT idShellMax = idCmdFirst + static_cast<UINT>(HRESULT_CODE(hr));
 
     // Drop the entries Windows itself would not show here (legacy PowerShell verb,
-    // third-party "用 X 打开" verbs, empty cascading submenus).
+    // third-party "用 X 打开" verbs, empty cascading submenus such as 授予访问权限).
     PruneShellMenu(pMenu, hMenu, idCmdFirst, idShellMax, true);
 
-    // Explorer's folder-background menu leads with the view items that belong to the *view* -
-    // 查看 / 排序方式 / 刷新 (and 粘贴) - not to IShellFolder. A plain CreateViewObject menu
-    // therefore lacks them, which is why ours looked like a different, shorter menu than the
-    // one Windows shows. Re-create them here, wired to FastFile's own actions.
-    HMENU hView = ::CreatePopupMenu();
-    HMENU hSort = ::CreatePopupMenu();
-    if (hView && hSort) {
-        auto checkView = [&](ViewMode m) -> UINT {
-            return (m_viewMode == m) ? (MF_STRING | MF_CHECKED) : MF_STRING;
-        };
-        ::AppendMenuW(hView, checkView(ViewMode::ExtraLargeIcons), (UINT_PTR)(kCmdBgViewBase + 0), L"超大图标");
-        ::AppendMenuW(hView, checkView(ViewMode::LargeIcons), (UINT_PTR)(kCmdBgViewBase + 1), L"大图标");
-        ::AppendMenuW(hView, checkView(ViewMode::MediumIcons), (UINT_PTR)(kCmdBgViewBase + 2), L"中等图标");
-        ::AppendMenuW(hView, checkView(ViewMode::List), (UINT_PTR)(kCmdBgViewBase + 3), L"列表");
-        ::AppendMenuW(hView, checkView(ViewMode::Details), (UINT_PTR)(kCmdBgViewBase + 4), L"详细信息");
-        ::AppendMenuW(hView, checkView(ViewMode::Tiles), (UINT_PTR)(kCmdBgViewBase + 5), L"平铺");
-        ::AppendMenuW(hView, checkView(ViewMode::SmallIcons), (UINT_PTR)(kCmdBgViewBase + 6), L"小图标");
-        ::AppendMenuW(hView, checkView(ViewMode::Content), (UINT_PTR)(kCmdBgViewBase + 7), L"内容");
-
-        auto checkSort = [&](SortColumn c) -> UINT {
-            return (m_sortColumn == c) ? (MF_STRING | MF_CHECKED) : MF_STRING;
-        };
-        ::AppendMenuW(hSort, checkSort(SortColumn::Name), (UINT_PTR)(kCmdBgSortBase + 0), L"名称");
-        ::AppendMenuW(hSort, checkSort(SortColumn::Modified), (UINT_PTR)(kCmdBgSortBase + 1), L"修改日期");
-        ::AppendMenuW(hSort, checkSort(SortColumn::Type), (UINT_PTR)(kCmdBgSortBase + 2), L"类型");
-        ::AppendMenuW(hSort, checkSort(SortColumn::Size), (UINT_PTR)(kCmdBgSortBase + 3), L"大小");
-        ::AppendMenuW(hSort, MF_SEPARATOR, 0, nullptr);
-        ::AppendMenuW(hSort, m_sortAscending ? (MF_STRING | MF_CHECKED) : MF_STRING,
-            (UINT_PTR)(kCmdBgSortBase + 4), L"升序");
-        ::AppendMenuW(hSort, !m_sortAscending ? (MF_STRING | MF_CHECKED) : MF_STRING,
-            (UINT_PTR)(kCmdBgSortBase + 5), L"降序");
-
-        int pos = 0;
-        ::InsertMenuW(hMenu, pos++, MF_BYPOSITION | MF_POPUP,
-            reinterpret_cast<UINT_PTR>(hView), L"查看");
-        ::InsertMenuW(hMenu, pos++, MF_BYPOSITION | MF_POPUP,
-            reinterpret_cast<UINT_PTR>(hSort), L"排序方式");
-        ::InsertMenuW(hMenu, pos++, MF_BYPOSITION | MF_STRING, (UINT_PTR)kCmdBgRefresh, L"刷新");
+    // 查看 / 排序方式 must keep driving FastFile's view. In the view menu swap the Shell's
+    // submenus for FastFile's (label and position stay native); otherwise insert them.
+    HMENU hView = CreateBackgroundViewSubmenu();
+    HMENU hSort = CreateBackgroundSortSubmenu();
+    auto swapSubmenu = [&](const wchar_t* verb, HMENU& replacement) {
+        const int pos = ShellMenuUtil::FindVerb(pMenu, hMenu, idCmdFirst, idShellMax, verb);
+        if (pos < 0 || !replacement) return false;
+        MENUITEMINFOW info{};
+        info.cbSize = sizeof(info);
+        info.fMask = MIIM_SUBMENU;
+        if (!::GetMenuItemInfoW(hMenu, pos, TRUE, &info) || !info.hSubMenu) return false;
+        HMENU original = info.hSubMenu;
+        info.hSubMenu = replacement;
+        if (!::SetMenuItemInfoW(hMenu, pos, TRUE, &info)) return false;
+        // Keep the detached Shell submenu alive until the menu loop ends, so its handle
+        // value cannot be reused while the Shell still remembers it.
+        m_retiredShellMenus.push_back(original);
+        replacement = nullptr;
+        return true;
+    };
+    const bool viewSwapped = swapSubmenu(L"view", hView);
+    const bool sortSwapped = swapSubmenu(L"arrange", hSort);
+    int pos = 0;
+    if (!viewSwapped && hView) {
+        ::InsertMenuW(hMenu, pos++, MF_BYPOSITION | MF_POPUP, reinterpret_cast<UINT_PTR>(hView), L"查看(&V)");
+        hView = nullptr;
+    }
+    if (!sortSwapped && hSort) {
+        ::InsertMenuW(hMenu, pos++, MF_BYPOSITION | MF_POPUP, reinterpret_cast<UINT_PTR>(hSort), L"排序方式(&O)");
+        hSort = nullptr;
+    }
+    if (hView) ::DestroyMenu(hView);
+    if (hSort) ::DestroyMenu(hSort);
+    if (ShellMenuUtil::FindVerb(pMenu, hMenu, idCmdFirst, idShellMax, L"refresh") < 0)
+        ::InsertMenuW(hMenu, pos++, MF_BYPOSITION | MF_STRING, kCmdBgRefresh, L"刷新(&E)");
+    if (pos > 0) ::InsertMenuW(hMenu, pos++, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
+    // A bare IShellFolder menu has no 粘贴; offer FastFile's when Windows holds files.
+    const DWORD attributes = GetFileAttributesW(folderPath.c_str());
+    if (ShellMenuUtil::FindVerb(pMenu, hMenu, idCmdFirst, idShellMax, L"paste") < 0
+        && !IsThisPcPath(folderPath) && attributes != INVALID_FILE_ATTRIBUTES
+        && (attributes & FILE_ATTRIBUTE_DIRECTORY) && ::IsClipboardFormatAvailable(CF_HDROP)) {
+        ::InsertMenuW(hMenu, pos++, MF_BYPOSITION | MF_STRING, kCmdBgPaste, L"粘贴(&P)");
         ::InsertMenuW(hMenu, pos++, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
-        // The Shell cannot see FastFile's own clipboard, so offer 粘贴 ourselves - but only
-        // when the Shell has nothing of its own to paste, to avoid two identical entries.
-        const bool shellCanPaste = ::IsClipboardFormatAvailable(CF_HDROP) != FALSE;
-        if (!m_clipboard.empty() && !shellCanPaste) {
-            ::InsertMenuW(hMenu, pos++, MF_BYPOSITION | MF_STRING, (UINT_PTR)kCmdBgPaste, L"粘贴");
-            ::InsertMenuW(hMenu, pos++, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
-        }
-    } else {
-        if (hView) ::DestroyMenu(hView);
-        if (hSort) ::DestroyMenu(hSort);
     }
 
-    // Full Shell menu (IContextMenu2/3) plus the FastFile view entries added above.
-    // (Tidy again: inserting 查看/排序方式/刷新/粘贴 above can double up the separators.)
-    TidyMenuSeparators(hMenu);
-    TrackPopupShellMenu(pMenu, hMenu, ptScreen, idCmdFirst, idShellMax, false);
+    // 撤销 / 重做 follow FastFile's history (which itself falls back to Explorer's record
+    // while FastFile has none), so the entry, its label and Ctrl+Z always agree.
+    auto history = [&](bool redo) {
+        const auto& stack = redo ? m_redoStack : m_undoStack;
+        const bool available = !stack.empty() ||
+            (!m_historyStarted && m_shellBrowser && m_shellBrowser->InvokeHistory(redo, false));
+        const int nativePos = ShellMenuUtil::FindVerb(pMenu, hMenu, idCmdFirst, idShellMax, redo ? L"redo" : L"undo");
+        std::wstring label;
+        if (!stack.empty()) {
+            label = std::wstring(redo ? L"重做 " : L"撤销 ") + HistoryKindLabel(static_cast<int>(stack.back().kind))
+                + (redo ? L"(&Y)\tCtrl+Y" : L"(&U)\tCtrl+Z");
+        }
+        if (nativePos >= 0) {
+            if (!available) { ::DeleteMenu(hMenu, nativePos, MF_BYPOSITION); return; }
+            if (!label.empty()) {
+                MENUITEMINFOW info{};
+                info.cbSize = sizeof(info);
+                info.fMask = MIIM_STRING;
+                info.dwTypeData = const_cast<wchar_t*>(label.c_str());
+                ::SetMenuItemInfoW(hMenu, nativePos, TRUE, &info);
+                ::EnableMenuItem(hMenu, nativePos, MF_BYPOSITION | MF_ENABLED);
+            }
+            return;
+        }
+        if (!available) return;
+        if (label.empty()) label = redo ? L"重做(&Y)\tCtrl+Y" : L"撤销(&U)\tCtrl+Z";
+        auto findId = [&](UINT_PTR id) {
+            for (int i = 0; i < ::GetMenuItemCount(hMenu); ++i)
+                if (::GetMenuItemID(hMenu, i) == static_cast<UINT>(id)) return i;
+            return -1;
+        };
+        // Explorer order: 粘贴, 粘贴快捷方式, 撤销, 重做.
+        int anchor = redo ? findId(kCmdBgUndo) : -1;
+        if (anchor < 0 && redo) anchor = ShellMenuUtil::FindVerb(pMenu, hMenu, idCmdFirst, idShellMax, L"undo");
+        for (const wchar_t* verb : {L"pastelink", L"paste", L"refresh"}) {
+            if (anchor >= 0) break;
+            anchor = ShellMenuUtil::FindVerb(pMenu, hMenu, idCmdFirst, idShellMax, verb);
+        }
+        if (anchor < 0) anchor = (std::max)(findId(kCmdBgPaste), findId(kCmdBgRefresh));
+        ::InsertMenuW(hMenu, anchor + 1, MF_BYPOSITION | MF_STRING, redo ? kCmdBgRedo : kCmdBgUndo, label.c_str());
+    };
+    history(false);
+    history(true);
 
+    TidyMenuSeparators(hMenu);
+    *outMenu = pMenu;
+    *outPopup = hMenu;
+    *outShellMax = idShellMax;
+    if (outFromView) *outFromView = fromView;
+    return true;
+}
+
+bool CMainWnd::ShowShellBackgroundContextMenu(const std::wstring& folderPath, POINT ptScreen)
+{
+    IContextMenu* pMenu = nullptr;
+    HMENU hMenu = nullptr;
+    UINT idShellMax = 0;
+    if (!BuildShellBackgroundMenu(folderPath, &pMenu, &hMenu, &idShellMax, nullptr)) return false;
+    // Full Shell menu (IContextMenu2/3) plus the FastFile view entries added above.
+    m_shellMenuBackground = true;
+    m_shellMenuFolder = folderPath;
+    TrackPopupShellMenu(pMenu, hMenu, ptScreen, 1, idShellMax, false);
+    m_shellMenuBackground = false;
+    m_shellMenuFolder.clear();
     ::DestroyMenu(hMenu);
     pMenu->Release();
+    ReleaseRetiredShellMenus();
     return true;
+}
+
+void CMainWnd::ReleaseRetiredShellMenus()
+{
+    for (HMENU menu : m_retiredShellMenus) ::DestroyMenu(menu);
+    m_retiredShellMenus.clear();
 }
 
 // ---- Context menu (IContextMenu + fallback) ------------------------------

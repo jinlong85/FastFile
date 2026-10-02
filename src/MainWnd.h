@@ -4,6 +4,7 @@
 #include "UiTokens.h"
 #include "TabStripUI.h"
 #include "FastFileSettings.h"
+#include "ShellFileOperation.h"
 
 class ShellBrowserHost;
 
@@ -11,6 +12,7 @@ class ShellBrowserHost;
 #include <condition_variable>
 #include <deque>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -106,16 +108,6 @@ private:
         bool isDir = false;
     };
 
-    struct CopyProgressSnapshot {
-        int filesDone = 0;
-        int filesTotal = 0;
-        ULONGLONG bytesDone = 0;
-        ULONGLONG bytesTotal = 0;
-        wchar_t current[MAX_PATH] = {};
-        DWORD lastError = 0;
-        enum class State { Idle, Running, Done, Failed, Cancelled } state = State::Idle;
-    };
-
     struct TabInfo {
         std::wstring path;
         std::wstring searchFilter;
@@ -186,7 +178,7 @@ private:
         std::vector<std::pair<std::wstring, std::wstring>> backups;
     };
     void PushUndo(UndoRecord::Kind kind, std::wstring from, std::wstring to);
-    void PushMoveUndo(std::vector<std::pair<std::wstring, std::wstring>> pairs);
+    void PushHistoryRecord(UndoRecord record);
     void OnUndo();
     void OnRedo();
     bool ReplayHistory(UndoRecord& record, bool redo);
@@ -412,6 +404,13 @@ private:
     void AddInternalFolderOpenMenu(IContextMenu* menu, HMENU popup, UINT first, UINT last,
         const std::vector<std::wstring>& paths);
     static void TidyMenuSeparators(HMENU hMenu);
+    bool HandleRoutedShellVerb(const std::wstring& verb);
+    HMENU CreateBackgroundViewSubmenu() const;
+    HMENU CreateBackgroundSortSubmenu() const;
+    bool ShellBrowserShowsFolder(const std::wstring& folderPath) const;
+    bool BuildShellBackgroundMenu(const std::wstring& folderPath, IContextMenu** menu, HMENU* popup,
+        UINT* shellMax, bool* fromView);
+    void ReleaseRetiredShellMenus();
     void ForwardShellMenuMessage(UINT uMsg, WPARAM wParam, LPARAM lParam, LRESULT* pResult, bool* handled);
     void RebuildBreadcrumb();
     void OnBreadcrumbSegmentClick(CControlUI* btn);
@@ -561,6 +560,7 @@ private:
     bool PublishFileClipboard(const std::vector<ClipboardItem>& items, bool cut);
     bool ReadFileClipboard(std::vector<ClipboardItem>& items, bool& cut) const;
     static DWORD DeleteOperationFlags(bool permanent);
+    void DeletePaths(const std::vector<ClipboardItem>& items, bool permanent);
     bool DeleteItems(const std::vector<ClipboardItem>& items, bool permanent = false,
         std::vector<std::wstring>* completed = nullptr);
     bool RenameItem(const ClipboardItem& item, const std::wstring& newName);
@@ -624,42 +624,20 @@ private:
     CControlUI* HitTestFileItem(POINT ptClient) const;
     CTreeNodeUI* HitTestTreeNode(POINT ptClient) const;
     std::wstring ResolveDropDirectory(POINT ptScreen) const;
-    bool TransferWithShell(const std::vector<std::wstring>& srcPaths, const std::wstring& destDir, bool move);
-    bool TransferWithBackgroundCopy(const std::vector<std::wstring>& srcPaths, const std::wstring& destDir,
+    bool TransferWithFileOperation(const std::vector<std::wstring>& srcPaths, const std::wstring& destDir,
         bool move = false);
 
-    void StartCopyJob(std::vector<ClipboardItem> items, std::wstring destDir, bool move = false);
+    // Windows-native copy / move / recycle / delete (ShellFileOperation.h). Each call runs
+    // IFileOperation on its own STA worker thread with the main window as owner, so the
+    // Explorer progress dialog, conflict dialog and pause/cancel are shown by Windows.
+    bool StartFileOperation(ShellFileOps::Kind kind, std::vector<std::wstring> sources,
+        std::wstring destination = std::wstring());
+    void OnFileOperationFinished(WPARAM id, LPARAM result);
+    void ApplyFileOperationResult(const ShellFileOps::Result& result);
+    static std::wstring DescribeFileOperation(const ShellFileOps::Result& result);
     void StopCopyThread(bool wait);
     void ApplyCopyUiState();
-    void OnCopyProgressMessage();
-    void OnCopyFinishedMessage(WPARAM resultCode);
-
-    static void CopyWorkerMain(CMainWnd* self,
-        std::vector<ClipboardItem> items,
-        std::wstring destDir,
-        bool move);
-    static bool CopyOneFile(CMainWnd* self, const std::wstring& src, const std::wstring& dst);
-    static bool CopyDirectoryRecursive(CMainWnd* self, const std::wstring& src, const std::wstring& dst);
-    // Move: same-volume rename fast path, otherwise copy-with-progress then delete the source.
-    // itemFiles/itemBytes are pre-measured so the rename path can still advance the bar.
-    static bool MoveOneItem(CMainWnd* self, const ClipboardItem& item, const std::wstring& dest,
-        int itemFiles, ULONGLONG itemBytes);
     static bool DeleteTreePermanent(const std::wstring& path);
-    static ULONGLONG CalcTotalBytes(const std::vector<ClipboardItem>& items, std::atomic<bool>& cancel);
-    static ULONGLONG CalcPathBytes(const std::wstring& path, bool isDir, std::atomic<bool>& cancel);
-    static int CountFiles(const std::vector<ClipboardItem>& items, std::atomic<bool>& cancel);
-    static int CountFilesInPath(const std::wstring& path, bool isDir, std::atomic<bool>& cancel);
-    static DWORD CALLBACK CopyProgressRoutine(
-        LARGE_INTEGER TotalFileSize,
-        LARGE_INTEGER TotalBytesTransferred,
-        LARGE_INTEGER StreamSize,
-        LARGE_INTEGER StreamBytesTransferred,
-        DWORD dwStreamNumber,
-        DWORD dwCallbackReason,
-        HANDLE hSourceFile,
-        HANDLE hDestinationFile,
-        LPVOID lpData);
-    static void PostProgress(CMainWnd* self);
     static std::wstring JoinPath(const std::wstring& dir, const std::wstring& name);
     static std::wstring UniqueDestPath(const std::wstring& destPath);
     static std::wstring GetLeafName(const std::wstring& path);
@@ -785,6 +763,9 @@ private:
     bool m_previewVisible = true;
     bool m_favoritesBarVisible = true;
     IContextMenu* m_pCtxMenu = nullptr;
+    bool m_shellMenuBackground = false;       // the tracked Shell menu is a folder background menu
+    std::wstring m_shellMenuFolder;           // ... for this folder
+    std::vector<HMENU> m_retiredShellMenus;   // Shell submenus replaced by FastFile's 查看 / 排序方式
     IContextMenu2* m_pCtxMenu2 = nullptr;
     IContextMenu3* m_pCtxMenu3 = nullptr;
     std::wstring m_previewPath;
@@ -833,10 +814,6 @@ private:
 
     std::vector<ClipboardItem> m_clipboard;
     bool m_clipboardIsCut = false;
-    std::wstring m_lastCopyDest;
-    bool m_jobIsMove = false;
-    // (source, destination) pairs of items moved by the running job; guarded by m_progressMutex.
-    std::vector<std::pair<std::wstring, std::wstring>> m_moveUndoPairs;
     std::vector<UndoRecord> m_undoStack;
     std::vector<UndoRecord> m_redoStack;
     bool m_historyStarted = false;
@@ -870,13 +847,19 @@ private:
     std::atomic<bool> m_thumbStop{false};
     std::atomic<UINT> m_thumbGeneration{1};
 
-    std::thread m_copyThread;
-    std::atomic<bool> m_copyCancel{false};
-    std::atomic<bool> m_copyRunning{false};
-    std::mutex m_progressMutex;
-    CopyProgressSnapshot m_progress;
-    ULONGLONG m_workerBytesBase = 0;
-    ULONGLONG m_workerFileSize = 0;
+    struct FileOperationJob {
+        unsigned id = 0;
+        std::thread thread;
+    };
+    std::vector<std::unique_ptr<FileOperationJob>> m_fileOpJobs;
+    unsigned m_nextFileOpId = 1;
+    std::atomic<bool> m_copyCancel{false};    // aborts pending items of running operations
+    std::atomic<bool> m_copyRunning{false};   // at least one Windows file operation is running
+    bool m_closeAfterFileOps = false;         // WM_CLOSE deferred until the workers finish
+    // Production always shows the Windows UI; only automated tests turn this off.
+    bool m_fileOpsInteractive = true;
+    DWORD m_lastFileOpRequestFlags = 0;
+    ShellFileOps::Result m_lastFileOperation;
 
     static constexpr const wchar_t* kThisPcPath = L"::ThisPC";
     static constexpr const wchar_t* kPendingMarker = L"::pending";
@@ -892,8 +875,7 @@ private:
     static constexpr int kMaxRecursiveItems = 4000;
     static constexpr int kPumpEvery = 200;
     static constexpr UINT kMsgReactivate = WM_USER + 100;
-    static constexpr UINT kMsgCopyProgress = WM_USER + 101;
-    static constexpr UINT kMsgCopyFinished = WM_USER + 102;
+    static constexpr UINT kMsgFileOpFinished = WM_USER + 102;   // wParam job id, lParam Result*
     static constexpr UINT kMsgThumbReady = WM_USER + 103;
     static constexpr UINT kMsgVirtSync = WM_USER + 104;
     static constexpr UINT kMsgDetailsFill = WM_USER + 105;
@@ -918,14 +900,17 @@ private:
     static constexpr UINT_PTR kCmdCtxRefresh = 9005;
     static constexpr UINT_PTR kCmdShellRename = 0xFFF0; // outside the Shell command range (0x0001..0x7FFF)
     static constexpr UINT_PTR kCmdShellNewTab = 0xFFF1;
-    static constexpr UINT_PTR kCmdToggleHidden = 9201;
-    // Commands FastFile adds to the Shell *folder background* menu (Explorer's own view menu),
-    // kept well clear of the Shell's idCmdFirst..idCmdLast range.
-    static constexpr UINT_PTR kCmdBgRefresh = 9300;
-    static constexpr UINT_PTR kCmdBgPaste = 9301;
-    static constexpr UINT_PTR kCmdBgViewBase = 9310;   // +0..5 -> ViewMode
-    static constexpr UINT_PTR kCmdBgSortBase = 9320;   // +0..3 -> SortColumn, +4 asc, +5 desc
+    // Commands FastFile mixes into Shell context menus live above the Shell's command range
+    // (idCmdFirst 1 .. idCmdLast 0x7FFF; the view background menu really uses ids up to
+    // 0x7FFE), so a Shell verb can never be mistaken for a FastFile command.
+    static constexpr UINT_PTR kCmdToggleHidden = 0xFE50;
+    static constexpr UINT_PTR kCmdBgRefresh = 0xFE00;
+    static constexpr UINT_PTR kCmdBgPaste = 0xFE01;
+    static constexpr UINT_PTR kCmdBgUndo = 0xFE02;
+    static constexpr UINT_PTR kCmdBgRedo = 0xFE03;
+    static constexpr UINT_PTR kCmdBgViewBase = 0xFE10;   // +0..7 -> ViewMode
+    static constexpr UINT_PTR kCmdBgSortBase = 0xFE20;   // +0..3 -> SortColumn, +4 asc, +5 desc
     // FastFile entries appended below a shell context menu opened from a quick-access row.
-    static constexpr UINT_PTR kCmdQuickOpen = 9340;
-    static constexpr UINT_PTR kCmdQuickUnpin = 9341;
+    static constexpr UINT_PTR kCmdQuickOpen = 0xFE40;
+    static constexpr UINT_PTR kCmdQuickUnpin = 0xFE41;
 };

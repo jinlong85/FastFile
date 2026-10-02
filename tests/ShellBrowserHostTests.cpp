@@ -1,5 +1,6 @@
 ﻿#include "ShellBrowserHost.h"
 #include "ShellPresentation.h"
+#include "ShellMenuUtil.h"
 
 #include <Windows.h>
 #include <objbase.h>
@@ -253,6 +254,52 @@ int Fail(const char* message, ShellBrowserHost* host = nullptr, HWND parent = nu
 
 } // namespace
 
+// Shell menus mark separators with id 0, -1 or private ids (0x7FFD / 0x7FFE ...).
+// Normalization must look at MFT_SEPARATOR, never at the id, and must recurse.
+static bool MenuHasStackedSeparators(HMENU menu, bool recursive = true)
+{
+    const int count = ::GetMenuItemCount(menu);
+    for (int i = 0; i < count; ++i) {
+        const bool separator = ShellMenuUtil::IsSeparatorAt(menu, i);
+        if (separator && (i == 0 || i == count - 1 || ShellMenuUtil::IsSeparatorAt(menu, i - 1))) return true;
+        HMENU sub = ::GetSubMenu(menu, i);
+        if (recursive && sub && MenuHasStackedSeparators(sub)) return true;
+    }
+    return false;
+}
+static bool SeparatorNormalizationRegression()
+{
+    HMENU menu = ::CreatePopupMenu();
+    HMENU sub = ::CreatePopupMenu();
+    auto separator = [](HMENU target, UINT id) {
+        MENUITEMINFOW info{}; info.cbSize = sizeof(info);
+        info.fMask = MIIM_FTYPE | MIIM_ID; info.fType = MFT_SEPARATOR; info.wID = id;
+        ::InsertMenuItemW(target, ::GetMenuItemCount(target), TRUE, &info);
+    };
+    separator(menu, 0x7FFC);                       // leading
+    ::AppendMenuW(menu, MF_STRING, 1, L"刷新");
+    separator(menu, 0xFFFFFFFF); separator(menu, 0x7FFD); separator(menu, 0);  // stacked, mixed ids
+    ::AppendMenuW(sub, MF_STRING, 3, L"文件夹");
+    separator(sub, 0x7FFE); separator(sub, 0);
+    ::AppendMenuW(sub, MF_STRING, 4, L"快捷方式");
+    ::AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(sub), L"新建");
+    separator(menu, 0x7FFE);
+    {   // an empty text item (pruned Shell placeholder) also draws as a line
+        MENUITEMINFOW info{}; info.cbSize = sizeof(info);
+        info.fMask = MIIM_ID | MIIM_STRING | MIIM_FTYPE; info.fType = MFT_STRING;
+        info.wID = 5; info.dwTypeData = const_cast<wchar_t*>(L"");
+        ::InsertMenuItemW(menu, ::GetMenuItemCount(menu), TRUE, &info);
+    }
+    ::AppendMenuW(menu, MF_STRING, 2, L"属性");
+    separator(menu, 0x7FFC);                       // trailing
+    const bool before = MenuHasStackedSeparators(menu);
+    ShellMenuUtil::NormalizeSeparators(menu, true);
+    const bool ok = before && !MenuHasStackedSeparators(menu) && ::GetMenuItemCount(menu) == 5
+        && ::GetMenuItemCount(sub) == 3 && ::GetMenuItemID(menu, 0) == 1 && ::GetMenuItemID(menu, 4) == 2;
+    ::DestroyMenu(menu);
+    return ok;
+}
+
 int main()
 {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -284,6 +331,7 @@ int main()
         }
         if(factory)factory->Release();
     }
+    if (!SeparatorNormalizationRegression()) return Fail("Shell menu separators with any id are normalized (no leading, trailing or stacked lines)");
     if (!TestLocalizedAssociations()) return Fail("Shell MUI friendly type must take precedence over an English association label");
 
     wchar_t temp[MAX_PATH] = {};
@@ -535,6 +583,36 @@ int main()
     const bool archiveHandled=archiveSelected && ShellBrowserHostTestAccess::DefaultOpen(host,archiveIsFolder?L"":archive);
     DeleteFileW(archive.c_str());
     if(!archiveHandled)return Fail("archive folders retain native browsing and ordinary archive files retain default application opening",&host,parent,folder,file);
+    {
+        // Folder background menu comes from the live view (SVGIO_BACKGROUND), so it carries
+        // Explorer's own 粘贴 / 撤销 / 分组依据 entries, unlike IShellFolder::CreateViewObject.
+        host.Navigate(folder);
+        const DWORD menuDeadline=GetTickCount()+3000;
+        IContextMenu* background=nullptr;HMENU popup=nullptr;bool paste=false,properties=false,group=false;UINT max=0;
+        while(GetTickCount()<menuDeadline && !paste) {
+            MSG message;while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)) {
+                if(message.message==WM_APP+1){delete reinterpret_cast<std::wstring*>(message.lParam);continue;}
+                TranslateMessage(&message);DispatchMessageW(&message);
+            }
+            if(SUCCEEDED(host.CreateBackgroundContextMenu(&background)) && background) {
+                popup=CreatePopupMenu();
+                const HRESULT q=background->QueryContextMenu(popup,0,1,0x7FFF,CMF_NORMAL|CMF_EXPLORE);
+                if(SUCCEEDED(q)) {
+                    max=1+HRESULT_CODE(q);
+                    paste=ShellMenuUtil::FindVerb(background,popup,1,max,L"paste")>=0;
+                    properties=ShellMenuUtil::FindVerb(background,popup,1,max,L"properties")>=0;
+                    group=ShellMenuUtil::FindVerb(background,popup,1,max,L"groupby")>=0;
+                }
+                if(!paste){DestroyMenu(popup);popup=nullptr;background->Release();background=nullptr;}
+            }
+            if(!paste)Sleep(20);
+        }
+        bool tidy=false;
+        if(popup) {ShellMenuUtil::NormalizeSeparators(popup,false);tidy=!MenuHasStackedSeparators(popup,false);DestroyMenu(popup);}
+        if(background)background->Release();
+        if(!paste || !properties || !group || !tidy)
+            return Fail("view background menu exposes native paste, groupby and properties verbs without stacked separators",&host,parent,folder,file);
+    }
     host.Destroy();
     ::DestroyWindow(parent);
     ::DeleteFileW(file.c_str());

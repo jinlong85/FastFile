@@ -73,6 +73,9 @@ add_executable(FastFile WIN32
   src/MainWnd.DragDrop.cpp
   src/ShellBrowserHost.cpp
   src/ShellBrowserHost.h
+  src/ShellFileOperation.cpp
+  src/ShellFileOperation.h
+  src/ShellMenuUtil.h
   src/MainWnd.h
   src/MainWndInternal.h
   src/FastFileCore.h

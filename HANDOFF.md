@@ -9,7 +9,8 @@
 - 技术栈仍为 C++ / Win32 / DuiLib，普通文件区由 Windows ExplorerBrowser 承载。不要改换 UI 框架。
 - 本地工作区包含大量未提交修改及未跟踪的源码、测试；接手先检查工作区，不要用 reset / clean 或只复制 Git 已跟踪文件的方式丢弃当前实现。本次未提交或推送代码。
 - [VERSION](VERSION) 仍为 **1.0.9**。安装包已于 2026-10-02 16:44 重新生成（`dist/FastFile-Setup-1.0.9.exe`，1,444,864 字节，SHA-256 `4002CEDD2A8B97E71031C59530925B216A2B5E0A7920154DA2301079A3D9FC9A`），包含 2026-10-02 全部设置、视图和打开行为修复。打包前核对常用 exe 哈希等于下述已验证快照且其后无产品源码修改，故未重新构建；用反射读取安装包内嵌资源，FastFile.exe 与 skin/main.xml 哈希与常用产物一致。旧包备份为 `dist/FastFile-Setup-1.0.9.before-20261002.exe`。下方各节「未重建安装包」的说明由此取代。
-- 最新完整验证：Release x64 构建成功，CTest **7/7 通过，106.94 秒**。构建日志为 `build-ui/shell-activation-final-build.log`，测试日志为 `build-ui/shell-activation-final-tests.log`。这些日志和二进制属于本地忽略产物，换机器后需重新生成。
+- **2026-10-02 晚：原生文件操作进度与原生背景菜单（见下一节）已提交源码，但尚未部署到 build/Release。** 候选 `build-ui/Release/FastFile.exe`（1,284,096 字节，SHA-256 `B57D75E406E8B3385451B5D9E3C8E7A94887D4B6C21F2734B5FC13CFF59CF1D0`）已用最终源码构建（日志 `build-ui/nativeops-build.log`）。最终源码的各项 CTest 均已分别通过（主窗口回归 88.40 秒、Shell 浏览器 1.74 秒、其余 5 项见 `build-ui/nativeops-tests.log`），但最后一次 7 项完整运行时，主窗口回归里依赖资源管理器会话撤销服务的检查（第一项为「native Shell undo restores original name」）连锁失败 17 项。用 `git archive HEAD` 在 `%TEMP%\ffhead` 构建的**未修改基线也以同样方式失败 14 项**，说明是环境问题而非本次改动：explorer.exe（PID 9664）留有一个隐藏的「已完成 95%」OperationStatusWindow，此后即使新做一次 FOFX_ADDUNDORECORD 重命名，背景菜单也不再出现「撤销」。按交付规则，在 7 项完整运行通过之前不覆盖常用 exe。接手步骤：先让用户结束该卡住的资源管理器操作或重启资源管理器 / 重新登录，再运行完整 ctest，通过后将 exe / map / skin 复制到 build/Release（运行中的旧窗口先改名为 `FastFile.before-native-fileops.exe` 再复制），核对 SHA-256，并更新本节。
+- 上一次完整验证（shell-activation）：Release x64 构建成功，CTest **7/7 通过，106.94 秒**。构建日志为 `build-ui/shell-activation-final-build.log`，测试日志为 `build-ui/shell-activation-final-tests.log`。这些日志和二进制属于本地忽略产物，换机器后需重新生成。
 - 测试通过后才将 `build-ui/Release` 的 exe、map 和 skin 更新到常用 `build/Release`。两处 exe 的 SHA-256 已核对一致：`737DD15580C453F8BBE0911FFB701968B149D914A9E8214A03D37789937176AB`。这是本次交付快照，后续重构建应重新核对。
 - 交付时保留用户正在运行的旧窗口；旧进程不能热更新。常用路径已有新版文件，但用户需要退出旧窗口并重新启动。旧文件备份为 `build/Release/FastFile.before-shell-activation.exe`，它不是新版启动入口。
 
@@ -23,6 +24,9 @@
 | [src/ShellBrowserHost.cpp](src/ShellBrowserHost.cpp)、[src/ShellBrowserHost.h](src/ShellBrowserHost.h) | 显示前初始化目标视图，列表 / 详细信息统一为 26 逻辑像素行高；处理原生视图导航、激活与右键入口。 |
 | [src/MainWnd.Menus.cpp](src/MainWnd.Menus.cpp) | 保留原生 Shell 菜单；文件夹 / 磁盘的新窗口、新标签命令转为 FastFile 新标签，缺少入口时补充中文命令。 |
 | [src/MainWnd.Nav.cpp](src/MainWnd.Nav.cpp)、[src/MainWnd.Tabs.cpp](src/MainWnd.Tabs.cpp) | 目标目录视图状态、标签导航与复用；显式新标签强制新建并保留原标签，过期完成通知不能改写当前标签。 |
+| [src/ShellFileOperation.cpp](src/ShellFileOperation.cpp)、[src/ShellFileOperation.h](src/ShellFileOperation.h) | 复制 / 移动 / 回收 / 永久删除的 IFileOperation 引擎（含 SHFileOperation 回退）、操作标志生成与进度接收器结果核对。生产标志不得加入 FOF_SILENT / FOF_NOERRORUI / FOFX_NOMINIMIZEBOX；复制 / 移动不得加 FOFX_ADDUNDORECORD。 |
+| [src/ShellMenuUtil.h](src/ShellMenuUtil.h) | Shell 菜单分隔线规范化（按 MFT_SEPARATOR / 空文本判断，不按 id）与按 verb 查找菜单项。 |
+| [src/MainWnd.FileOps.cpp](src/MainWnd.FileOps.cpp) | StartFileOperation：每项操作一个 STA 后台线程（附着主窗口桌面），完成后 kMsgFileOpFinished 回到 UI 线程写入历史；状态栏只显示结果摘要。 |
 | [tests/MainWndRegressionTests.cpp](tests/MainWndRegressionTests.cpp)、[tests/ShellBrowserHostTests.cpp](tests/ShellBrowserHostTests.cpp) | 本轮回归、真实 Shell 视图与菜单、隔离桌面及生产入口多进程启动测试。测试登记见 [CMakeLists.txt](CMakeLists.txt)。 |
 
 ### 构建、验证与更新常用程序
@@ -44,9 +48,25 @@ if ($LASTEXITCODE -ne 0) { throw "回归失败" }
 
 ### 尚未完成的本轮验收
 
+- 原生文件操作：在正常桌面复制一个大文件，确认出现资源管理器原生进度窗口（暂停 / 取消 / 剩余时间），同名冲突时出现替换 / 跳过对话框，操作期间 FastFile 窗口可继续浏览；剪切粘贴、拖放、Delete / Shift+Delete 同样检查。自动测试只能在隔离桌面验证调用路径与标志，无法目视确认进度窗口。
+- 原生背景菜单：在正常桌面右键文件区空白处，确认 粘贴 / 粘贴快捷方式 / 撤销 / 分组依据 等出现、没有叠在一起的分隔线、查看 / 排序方式 作用于 FastFile 视图；Shift+右键显示扩展项。
 - 用户正常桌面上逐项点击系统右键「使用 FastFile 打开」，分别检查已有窗口和完全退出后的首次启动，覆盖文件夹与磁盘。自动测试已覆盖真实注册命令、进程启动与转发；尚未收到用户重启新版后的实际使用确认。
 - 正常界面中检查鼠标 / 键盘右键的新标签入口、重复目录和子目录保留原标签，以及列表 / 详细信息往返时首帧间距。相关自动运行回归已通过，本轮未人工逐项点选菜单验收。
 - 安装包已重新打包，但未实际安装 / 卸载验证：setup.cs 的安装流程（含 `--quiet --dir`）会结束正在运行的 FastFile 并写入开始菜单快捷方式与当前用户卸载项，不适合在用户正在使用的开发机上测试。仍需在合适时机验证安装路径、注册命令、卸载恢复及安装后运行。
+
+## 原生文件操作进度与原生背景菜单（2026-10-02）
+
+- 需求：复制、移动（剪切 + 粘贴）、粘贴、删除（回收站）及拖放复制 / 移动不再用 FastFile 自己的引擎和状态栏进度文字，改用 Windows 原生进度窗口；文件区空白处右键改用资源管理器原生背景菜单；修复菜单中叠在一起的两条分隔线。
+- 引擎：新文件 `src/ShellFileOperation.{h,cpp}`（命名空间 ShellFileOps）。`Perform` 在调用线程（必须是 STA）上同步执行 IFileOperation，失败时回退 SHFileOperationW（同样的低 16 位标志）。进度接收器在 Pre* 回调中响应取消，在 PostCopyItem / PostMoveItem / PostDeleteItem 中记录结果；`Verify` 只把与顶层源匹配且经文件系统确认的结果记入 completed，落到原本已存在的同名目标（替换 / 合并）计入 notUndoable，不进入撤销，避免撤销时删掉原有内容。旧的 CopyProgressSnapshot、后台复制线程、状态栏进度和取消按钮逻辑已删除（取消按钮保持隐藏）。
+- 标志（`OperationFlags`）：复制 / 移动为 FOF_NOCONFIRMMKDIR | FOFX_SHOWELEVATIONPROMPT（保留冲突对话框、错误界面和原生进度）；回收为 FOF_NOCONFIRMATION | FOFX_SHOWELEVATIONPROMPT | FOF_ALLOWUNDO | FOFX_ADDUNDORECORD | FOFX_RECYCLEONDELETE | FOF_WANTNUKEWARNING；永久删除为 FOF_NOCONFIRMATION | FOFX_SHOWELEVATIONPROMPT（FastFile 先自行确认）。`interactive=false` 只供测试（加 SILENT / NOERRORUI / NOCONFIRMATION / RENAMEONCOLLISION，去掉提权与 nuke 提示）；生产路径 `m_fileOpsInteractive` 恒为 true。
+- 撤销决策：复制 / 移动**不**加 FOFX_ADDUNDORECORD。资源管理器的「撤销复制」在 Win10/11 上直接永久删除副本（不进回收站，也不询问），并且会与 FastFile 自己的复制撤销（把副本移入隐藏的 `.FastFileUndo-{guid}` 供重做）重复；若写入该记录，后续 Ctrl+Z 撤销回收站删除时会先撤销到这条复制记录，两个历史错位。回收站删除保留 FOFX_ADDUNDORECORD，FastFile 的 ShellDelete 记录通过 InvokeHistory 调用原生撤销，因此 FastFile 历史与资源管理器撤销栈的顺序保持一致。临时给复制加上该标志后，对齐回归按预期失败（见下）；该模拟运行中真实触发了资源管理器的原生撤销，随后资源管理器留下一个卡住的隐藏操作窗口，正是该决策要避免的风险。
+- 线程：`StartFileOperation` 为每项操作创建工作线程，SetThreadDesktop 到 UI 线程的桌面，CoInitializeEx(STA)，以主窗口为 owner 调用 Perform，结束后 PostMessage(kMsgFileOpFinished) 携带堆上的 Result。`OnFileOperationFinished` 在 UI 线程 join 线程、更新 m_copyRunning、写历史（复制 / 移动记录、回收为 ShellDelete、永久删除清空重做）、刷新 FastFile 自己的状态（ExplorerBrowser 依靠变更通知自动刷新）。允许多项操作并行；有操作进行时 Ctrl+Z / Ctrl+Y 提示稍后再试。关闭窗口时若仍有操作，询问是否取消剩余操作，确认后在全部结束后再关闭。
+- 入口：OnPasteClicked（含 Shift+Insert、背景菜单 FastFile 粘贴）、OnDeleteClicked → DeletePaths、拖放 PerformDropTransfer → TransferWithFileOperation 均走 StartFileOperation。DeleteItems 仍为同步 Perform（供权限测试）。拖到 Shell 文件区本身、Shell 菜单中的其他命令（如粘贴快捷方式、虚拟项目上的粘贴 / 删除）仍由 Windows 自己执行并显示原生进度，FastFile 不再拦截或附加状态栏进度。
+- 背景菜单：`BuildShellBackgroundMenu` 优先取当前 ExplorerBrowser 视图的 `GetItemObject(SVGIO_BACKGROUND)`（ShellBrowserHost::CreateBackgroundContextMenu），得到与资源管理器相同的 查看 / 排序方式 / 分组依据 / 刷新 / 粘贴 / 粘贴快捷方式 / 撤销 / 终端 / 新建 / 属性；只有该文件夹未显示在 Shell 视图时（此电脑快速行、搜索结果）才回退 CreateViewObject，并补上 查看 / 排序方式 / 刷新 / 粘贴。原生 view / arrange 子菜单替换为 FastFile 的子菜单（标签与位置不变，被替换的 Shell 子菜单在菜单结束后才销毁，避免句柄复用），以保持记忆视图、26 像素行距和表头逻辑。撤销 / 重做项的可用状态和标签跟随 FastFile 历史；verb undo / redo / refresh / paste（剪贴板含文件系统项目且为当前文件夹时）以及项目菜单的 delete（全部为文件系统路径时，Shift 为永久删除）由 `HandleRoutedShellVerb` 交给 FastFile，其他 verb 原样交给 Windows。CMF_EXTENDEDVERBS 只在按住 Shift 时加入。原有 FastFile 背景菜单命令 id 移到 0xFE00 起，避开 Shell 的 1..0x7FFF 范围。
+- 分隔线根因：旧 TidyMenuSeparators 只把 id==0 视为分隔线；Win11 背景菜单使用 0、-1、0x7FFD、0x7FFE、0x7FFC 等 id，「授予访问权限」空子菜单被剪除后 0 与 0x7FFD 两条分隔线相邻，即截图里的双线。`ShellMenuUtil::NormalizeSeparators` 按 MFT_SEPARATOR（及无文本、非子菜单、非自绘项）判断，去掉开头、结尾和连续分隔线并递归子菜单；背景菜单与项目菜单显示前统一调用。
+- 回归：ShellBrowserHostTests 新增混合 id 分隔线规范化单元测试，以及真实视图背景菜单含 paste / groupby / properties verb、规范化后无叠线。主窗口回归新增 CheckShellMenus（TidyMenuSeparators 合成菜单；BuildShellBackgroundMenu 来自视图、含原生 paste / properties / groupby、FastFile 查看 / 排序子菜单仍在、无叠线；refresh 路由、pastelink / properties 不拦截）、CheckFileOperationEngine（四种操作的生产 / 测试标志；临时目录内的复制、同目录复制重命名、移动、取消、回收、永久删除及 SHFileOperation 回退结果），并在快捷键测试中确认 Ctrl+V / Shift+Insert / Ctrl+X→V / Delete / Shift+Delete / 批量粘贴都经 IFileOperation、标志不含 SILENT / NOERRORUI / NOMINIMIZEBOX、状态栏无百分比；新增「回收后 FastFile 复制，先撤销复制、再撤销回收能还原」的对齐检查。删除和拖放改为异步后，测试改为等待操作结束。
+- 修复前复现：临时恢复按 id==0 判断分隔线、背景菜单只用 CreateViewObject、复制标志加 FOF_SILENT | FOF_ALLOWUNDO | FOFX_ADDUNDORECORD 后，Shell 浏览器测试 1 项失败，主窗口回归 23 项失败（分隔线、背景菜单来源 / paste / groupby、生产标志、对齐撤销等），日志 `build-ui/nativeops-before-tests.log`、`build-ui/nativeops-before-build.log`。恢复最终源码并刷新修改时间后重新构建（源码中无 BEFORE-FIX 残留）。
+- 验证状态：最终源码 Release x64 构建成功（`build-ui/nativeops-build.log`）。最终源码的主窗口回归单独运行通过（88.40 秒），Shell 浏览器测试及其余 5 项在 `build-ui/nativeops-tests.log` 中通过；该日志中的主窗口回归失败为上面所述资源管理器撤销服务卡住引起，未修改的 HEAD 基线同样失败。因此**本次没有更新 build/Release**（常用 exe 仍为 `737DD155…176AB`），也未在正常桌面启动新版截图（启动链路由 FastFileShellActivationTests 在隔离桌面覆盖；直接启动候选 exe 会通过单实例转发到用户已打开的窗口，所以没有这样做）。未重建安装包。
 
 ## 系统右键「使用 FastFile 打开」转发修复（2026-10-02）
 
