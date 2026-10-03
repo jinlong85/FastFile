@@ -47,6 +47,10 @@ public:
     HRESULT TranslateAccelerator(MSG* message);
     bool OwnsWindow(HWND window) const;
     bool IsAtPath(const std::wstring& path) const;
+    bool IsNavigationCompleteAt(const std::wstring& path) const;
+    // Selects an item of the current folder given its absolute id list (Shell
+    // "show in folder" requests). S_FALSE while the view has not listed it yet.
+    HRESULT SelectAbsoluteItem(PCIDLIST_ABSOLUTE item, UINT flags);
     std::wstring CurrentPath() const { return m_lastNavigation; }
     bool SetVisible(bool visible);
     bool IsVisible() const { return m_visible; }

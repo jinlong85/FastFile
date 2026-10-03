@@ -595,6 +595,19 @@ bool ShellBrowserHost::IsAtPath(const std::wstring& path) const
 {
     return !path.empty() && _wcsicmp(path.c_str(), m_lastNavigation.c_str()) == 0;
 }
+bool ShellBrowserHost::IsNavigationCompleteAt(const std::wstring& path) const
+{
+    if(!m_browser || path.empty())return false;
+    IFolderView* view=nullptr;IPersistFolder2* folder=nullptr;PIDLIST_ABSOLUTE location=nullptr;
+    wchar_t actual[32768]{};bool complete=false;
+    if(SUCCEEDED(m_browser->GetCurrentView(IID_PPV_ARGS(&view)))
+        && SUCCEEDED(view->GetFolder(IID_PPV_ARGS(&folder)))
+        && SUCCEEDED(folder->GetCurFolder(&location)))
+        complete=SHGetPathFromIDListEx(location,actual,_countof(actual),GPFIDL_DEFAULT)
+            && _wcsicmp(actual,path.c_str())==0;
+    if(location)CoTaskMemFree(location);if(folder)folder->Release();if(view)view->Release();
+    return complete;
+}
 
 bool ShellBrowserHost::SetVisible(bool visible)
 {
@@ -1631,6 +1644,44 @@ bool ShellBrowserHost::SetGrouping(int mode) {
     if(!m_browser)return false;
     IFolderView2* view=nullptr;if(FAILED(m_browser->GetCurrentView(IID_PPV_ARGS(&view))))return false;
     const bool result=ApplyGrouping(view,mode<0 && previous>=0);view->Release();return result;
+}
+
+HRESULT ShellBrowserHost::SelectAbsoluteItem(PCIDLIST_ABSOLUTE item, UINT flags)
+{
+    if (!m_browser || !item) return E_UNEXPECTED;
+    wchar_t target[MAX_PATH * 4]{};
+    if (!SHGetPathFromIDListEx(item, target, _countof(target), GPFIDL_DEFAULT)) return E_INVALIDARG;
+    std::wstring parent(target);
+    const size_t slash = parent.find_last_of(L'\\');
+    if (slash == std::wstring::npos) return E_INVALIDARG;
+    parent.resize(slash == 2 ? 3 : slash); // keep "C:\" for drive-root children
+    if (!IsAtPath(parent)) return S_FALSE;  // navigation still pending
+
+    IFolderView2* view = nullptr;
+    if (FAILED(m_browser->GetCurrentView(IID_PPV_ARGS(&view))) || !view) return S_FALSE;
+    // Locate the row by path: the caller's child id may carry different hidden data
+    // than the id the view enumerated, and an unlisted item must be retried later.
+    int count = 0, index = -1;
+    view->ItemCount(SVGIO_ALLVIEW, &count);
+    for (int i = 0; i < count && index < 0; ++i) {
+        IShellItem* candidate = nullptr;
+        if (FAILED(view->GetItem(i, IID_PPV_ARGS(&candidate))) || !candidate) continue;
+        PWSTR path = nullptr;
+        if (SUCCEEDED(candidate->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) {
+            if (CompareStringOrdinal(path, -1, target, -1, TRUE) == CSTR_EQUAL) index = i;
+            CoTaskMemFree(path);
+        }
+        candidate->Release();
+    }
+    HRESULT hr = S_FALSE;
+    if (index >= 0) {
+        UINT select = flags ? flags : (SVSI_SELECT | SVSI_DESELECTOTHERS | SVSI_ENSUREVISIBLE | SVSI_FOCUSED);
+        // SVSI_EDIT is honoured when the caller asked for a rename (OFASI_EDIT).
+        hr = view->SelectItem(index, select);
+        if (SUCCEEDED(hr)) hr = S_OK;
+    }
+    view->Release();
+    return hr;
 }
 
 bool ShellBrowserHost::GetSelection(std::vector<std::pair<std::wstring, bool>>& paths) const

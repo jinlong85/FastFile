@@ -1,10 +1,53 @@
 ﻿# FastFile — 交接说明（给后续 AI / 开发者）
 
-更新日期：2026-10-02（Asia/Shanghai）
+更新日期：2026-10-03（Asia/Shanghai）
 
-## 接手先读：当前状态与验证入口（2026-10-02）
+## 当前源码与候选安装包：1.0.12 系统集成重构
 
-本节是最新状态入口。下方按日期保留开发历史；旧章节中的「当前」、测试数量、默认打开行为和待办仅代表当时状态，冲突时以本节及随后两节修复记录为准，再核对实际源码。协作要求见 [AGENTS.md](AGENTS.md)，功能说明见 [README.md](README.md)，面向用户的变更见 [CHANGELOG.md](CHANGELOG.md)。
+- 本节是当前状态；下方 1.0.11 和显式目录动作记录属于此前快照。新增只读 `DetectSystemIntegration`，读取实际 HKCR 生效入口，区别 Windows Explorer、其他管理程序、另一处 FastFile、错误参数和被委托覆盖的动作。设置增加“检测接管状态”“修复并应用接管”和独立的可选新 Explorer 窗口转交；修复只应用系统集成选择，不被未保存的启动路径等无关偏好阻断。
+- 仅更改默认关联无法覆盖直接启动 explorer.exe 的程序。新增 `MainWnd.ExplorerIntegration.cpp` 后台 STA 检测与关闭验证，已登记 CMake 和 VS 工程。`IntegrationExplorerWindows` 默认关闭，启动从 HKCU 读取，必须保持 FastFile 运行。先确认真实 Shell 目录和选中文件到达 FastFile，再请求关闭对应新窗口；不结束 Explorer 进程。资源管理器可能短暂出现。
+- 已有窗口在启动检测时建立基线，即使暂时缺席 Shell 枚举也持续保护。其他管理器窗口、虚拟目录、多标签、忙碌窗口、超过 256 项选择、解析失败或关闭前状态变化的源窗口会保留。其他管理器的默认关联可检测并显式重新应用，新窗口转交只针对 Windows Explorer，不保证接管所有第三方窗口或已存在窗口的导航。
+- 回归覆盖实际处理程序识别、修复与无关设置隔离、四个集成开关、设置原生控件和布局、已有窗口保护、目录解析失败、忙碌源窗口、选择传递、超时和关闭拒绝。已有窗口暂时缺席和旧缓存视图掩盖解析失败两项分别在修复前失败一次，日志为 `build-ui/integration-baseline-before-tests.log`、`build-ui/integration-resolve-before-tests.log`；修复后专项通过。
+- 最终 Release x64 构建成功，完整 CTest **13/13 通过，239.66 秒**（`build-ui/integration-1.0.12-delivery-build.log`、`build-ui/integration-1.0.12-delivery-tests.log`）。集成专项 6.28 秒，真实 Explorer 新目录及 `/select` 定位转交 12.41 秒，Shell 启动 39.16 秒，跨进程 Shell 窗口 26.37 秒。最终主窗口回归 106.33 秒通过；前序多轮因 OpenClipboard 错误 5 为 12/13，保留失败日志及 `integration-clipboard-probe.log`，不能将此前失败归因于 Job UI 限制（探测值为零）。当前结果未跳过剪贴板断言。
+- 已生成 `dist/FastFile-Setup-1.0.12.exe`（1,626,112 字节），SHA-256 `BB698D76A0B5363E1D7555D68A9AB183D7E7612C8D6449548C2DE902312554A1`。只读内嵌版本及全部文件哈希验证通过（`build-ui/integration-1.0.12-payload.log`）；程序 SHA-256 `5172CB841713F1695E641A54D3D2187ADA59F76974C3104B05A2761B0EB8EBF1`，皮肤 SHA-256 `3C336D2915B20056EE1837FBAD05518562AD6FAE177344E8E9486FC4DD2ADE68`，与 `build-ui/Release` 一致。
+- 未替换 build/Release 或已安装程序，未强制关闭用户窗口，也未启用真实用户的窗口转交开关。安装／卸载和 IDM 本体菜单尚未人工验收，所以保留候选标记。使用步骤：关闭旧 FastFile，安装候选，启动新版，在系统集成中勾选默认目录接管及可选窗口转交，点击“修复并应用接管”，再检测状态。测试真实 Explorer 仅处理测试自建目录，保护用户窗口；设置测试隔离注册表。
+
+## 后续源码修改：显式目录动作（尚未正式交付）
+
+- 用户要求改善第三方程序“打开文件夹”的接管。新增仅限 Directory / Drive 的 `open`、`explore`、`opennewwindow` 当前用户覆盖；命令使用引号及 `--shell-folder`，空 `DelegateExecute` 屏蔽继承的 Explorer 委托。不改通用 Folder 的虚拟对象或直接启动 explorer.exe 的调用。
+- `IntegrationBackupV1\Actions` 保存整个原始 HKCU 动作树及存在标志，保留值类型、子项与 DDE 配置。重复保存不覆盖最初备份，关闭或 `--restore-integration` 时恢复；其他程序后来替换的命令不回滚。全部新增动作与备份纳入事务回滚，开关丢失时也能恢复。
+- 修复前新增回归 12 项断言失败（`build-ui/explicit-verbs-before-tests.log`）；修复后隔离集成专项零失败（`build-ui/explicit-verbs-verified-integration.log`）。Release x64 构建成功（`build-ui/explicit-verbs-verified-build.log`）。真实 Windows Shell 在隔离桌面／注册表执行六种显式动作，转发至 FastFile；冷启动通过 opennewwindow 进入；目录请求后观察 25 秒无 Explorer 重复窗口。ShellActivation 38.95 秒通过，ShellWindow 26.57 秒通过。
+- 最终完整 CTest **10/11 通过，172.19 秒**（`build-ui/explicit-verbs-verified-tests.log`）；主窗口两项剪贴板断言失败，系统 OpenClipboard 返回访问拒绝 5，重跑仍复现；不能声称全部通过或正式完成验收。第一次完整运行同样 10/11，日志为 explicit-verbs-final-tests.log。没有为通过测试而跳过剪贴板断言。
+- 候选为 `build-ui/Release/FastFile.exe`，SHA-256 `E4C4BD8FC91E3735D3EA0DDE2AF08479255B157F1E87E20D14281885FC05697B`。未替换 build/Release、已安装程序或安装包，未变更用户真实集成配置。使用候选需关闭旧版、启动候选并在系统集成中保存开启的设置，才会写入新增动作。IDM 本体菜单、安装／卸载尚未直接验收。下方 1.0.11 的全通过结果属于此前交付，不能用于本次源码。
+
+## 接手先读：当前状态与验证入口（2026-10-03）
+
+- **当前交付为 1.0.11。** 本轮处理的是默认系统集成开启后，系统“打开文件夹”请求应由 FastFile 确认，避免调用方再打开 Explorer。此前仅凭旧 exe 判断 IDM 根因不充分；后续发现实际关联命令／状态不一致和注册刷新使在途接口失效，应以以下源码与验证为准。
+- Shell 注册重新发布位置时保留共享浏览器状态，旧 `IShellView` 引用仍可完成 `SelectItem`；只在窗口关闭时清除回调。浏览器补齐 `IWebBrowser2::Navigate2`，支持字符串、二进制 PIDL 和间接参数，并拒绝畸形输入；导航先确认精确 Shell 位置，实际目录解析和选中继续异步排队。
+- `ApplySystemIntegration` 不再仅凭三个勾选标志跳过已启用设置的写入。`RepairOwnedSystemIntegration` 启动时只修复默认项为空、私有命令所有权及原值备份俱全的注册；不替换非空的第三方默认项。`--repair-integration` 显式重新应用现有勾选状态，可用于修复或更新本程序的实际命令路径。
+- 修复 `CheckPreferences` 设置对话框测试的 HKCU 隔离遗漏。此前测试可能把实际 Shell 命令写成回归测试 exe；现已恢复为 FastFile，并在完整回归前后核对真实命令保持一致。隔离注册表检查缺失默认项与相同勾选状态重存，以及启动修复不替换其他程序的默认项；不能再允许测试污染真实系统集成。
+- 当前产品源码 Release x64 构建成功，完整 CTest **11/11 通过，194.49 秒**（`build-ui/idm-state-final-all-tests.log`，主窗口 105.62 秒、Shell 窗口 26.48 秒）。前序快照曾再次遇到剪贴板错误 5，随后完整运行已通过；保留失败日志，不将它作为当前交付结果。1.0.11 更新版本后的构建与补充检查日志为 `build-ui/idm-1.0.11-*.log`。
+- 真实 Windows 默认入口运行检查：32 位调用方的首次请求 **219 毫秒**，重复请求 **16 毫秒**，均返回 S_OK；两次各持续观察 25 秒，同目录 Explorer 窗口数均为零（`build-ui/idm-state-live-first.log`、`build-ui/idm-state-live-repeat.log`）。只读观察失败会明确报错，不计作零窗口。未执行 IDM 本体菜单或安装／卸载，不能声称已完成人工验收。
+- 1.0.11 已同步到 `build/Release`，exe SHA-256 为 `A752BDB1644A1EC0CAA1C59273CE839406EB9B6CB8DFD56985AECD8E93D2BBBB`，与验证候选及安装包内嵌程序一致。旧 exe / map 备份为 `FastFile.before-idm-confirmation-20261003-160823.exe` / `.map`。实际 Directory / Drive / Computer 命令重新应用为常用程序路径，未强制关闭用户窗口。
+- `dist/FastFile-Setup-1.0.11.exe` 为 **1,568,256 字节**，SHA-256 `E7D18BCE7005ADE5BC9BE0A7C0C820ED21411A771907F1B94596648E32C4B5D3`；内嵌版本、资源清单、exe 和 skin 哈希均通过只读检查。版本更新后追加导航输入检查、Shell 窗口、工程一致性与版本来源 **3/3 通过，26.37 秒**（`build-ui/idm-1.0.11-tests.log`）。
+
+### 早先 1.0.10 快照（历史记录）
+
+- **交付状态：1.0.10 安装包及常用程序已更新，完整自动测试通过。** `VERSION` 为 1.0.10；`dist/FastFile-Setup-1.0.10.exe` 与 `build/Release/FastFile.exe` 包含当前修复。旧 1.0.9 安装包保留。当前工作区包含未提交及未跟踪的生产源码、测试和工程登记；不要清理或覆盖。
+- **IDM 重复打开的实际运行版本核对与部署**：用户报告 IDM 历史记录“打开文件夹”后延迟弹出 Explorer；检查运行进程 29452 的路径为 `build/Release/FastFile.exe`，部署前该文件哈希为旧 `8E675E80…6E145EFD48E`，未加载当前 Shell 修复。重新 Release x64 构建后完整 CTest **11/11 通过，168.16 秒**（`build-ui/idm-current-build.log`、`build-ui/idm-current-tests.log`）；主窗口 104.78 秒，跨进程 Shell 窗口专项 0.54 秒。随后同步 exe / map / skin，常用 exe 哈希为 `045FB6A4793812519BF56BEA93AD5681A5D3F1117B55A687254B584CDF87FB25`，与候选和安装包一致。旧 exe / map 备份为 `build/Release/FastFile.before-idm-shell-fix-20261003-150439.exe` / `.map`。未强制结束用户进程；须关闭所有旧窗口后重启生效。IDM 本体的菜单操作尚未人工复测。
+- 1.0.10 安装包为 1,560,064 字节，SHA-256 `ABC72F7F97E5EFEAE4D578158128DC59134777D025B488052BC963B436A83CC1`。`tests/CheckInstallerPayload.ps1` 只读核对内嵌 `BuildInfo.Version`、文件清单及全部资源哈希；内嵌程序和皮肤与候选构建一致。版本重新配置后 Release x64 构建成功，版本来源和工程一致性专项通过（`build-ui/version-1.0.10-tests.log`）。打包脚本新增 `-BuildDirectory`，修复原生编译器参数引号；PowerShell 7、Windows PowerShell 5 及含空格路径打包验证通过，日志为 `build-ui/version-1.0.10-installer-*.log`。
+- Shell 窗口注册对象补齐 `IServiceProvider` / `SID_STopLevelBrowser` / `IShellBrowser::QueryActiveShellView`。真实跨进程“打开所在文件夹”调用可以找到窗口并调用选中回调；主窗口启动专项还检查导航未完成时缓存选中请求，导航完成后在真实 Shell 视图中选中文件。
+- 外部目录解析移到工作线程，窗口忙时以 `OpenQueue` 转交请求；专项覆盖模拟慢磁盘、忙窗口、多进程转发与首次启动。注册仅随默认文件夹接管启用；窗口销毁时撤销，析构时释放注册对象和待选 PIDL，失效接口不得再回调关闭窗口。
+- 新测试保留真正的 COM 注册信息。启动专项只在执行隔离的注册命令时使用替代 HKCR，文件枚举及选中检查前恢复；Shell 窗口专项不覆盖 HKCR。空 HKCR 同时移除 COM 接口与文件类型提供者，不能拿这种环境下的选中失败判断产品实现。
+- 快捷键回归等待实际 Shell 撤销／重做完成，最长 8 秒，并断言下一操作前已经完成；使用隔离桌面上的可见窗口及真实原生焦点，等待枚举／重命名通知后再操作。剪贴板不可访问时明确报前置条件失败，保留失败状态，不产生依赖此条件的无意义连锁结果。
+- Visual Studio 回退工程补齐 Shell 注册、标签栏、滚动条、图标和 DPI manifest；DuiLib 编码与 CMake 一致为 936，移除同样未启用的 Flash / WebBrowser 组件。两条构建入口的 Release x64 均已构建成功。旧工程实测曾因 ATL 头文件缺失及错误编码失败，修复后的日志在 `build-ui/shellintegration-vs-build.log`。
+- CTest 现有 **11 项**：此前 9 项，加 `FastFileShellWindowTests` 和 `FastFileBuildSourceParity`。接口修复前对照日志 `build-ui/shellwindow-before-service-tests.log` 有 3 项断言失败；恢复最终实现后专项通过。新增源码／资源登记由 `tests/CheckBuildSources.cmake` 检查。
+- **此前验证阻塞记录（后续完整 11/11 回归已通过）：系统剪贴板访问拒绝。** 此前会话的独立只读 `OpenClipboard(NULL)` 探针返回 Win32 错误 5，`GetOpenClipboardWindow()` 为 NULL；无法从该结果确定具体占用进程。最终候选的其余 **10/10 专项通过，64.07 秒**（`build-ui/shellintegration-independent-tests.log`）；主窗口回归 **失败，56.52 秒**，两项均与不可访问的系统剪贴板有关：原生 Ctrl+C 发布与键盘／文件操作前置条件（`build-ui/shellintegration-main-final-tests.log`）。候选修复的中间快照曾完整 10/10 通过（168.95 秒），但此后追加真实文件选中和工程一致性测试，不能把中间快照当作最终 11/11 验证。此失败记录保留供环境问题复查；后续 IDM 修复验收中完整 CTest 已通过并同步常用程序（见上方部署记录）。安装／卸载仍需人工验收；不要重启或结束用户程序来掩盖测试问题。
+- 正常桌面人工验收、冷缓存视频缩略图、安装／卸载仍未验证；当前工具没有可控制的 Windows 原生 UI，且安装器会结束全部 FastFile 进程并写用户快捷方式／卸载项，不应在正在使用的开发会话中做无隔离安装测试。保留下节验收清单，交付时明确未验证范围。
+
+## 历史交付：状态与验证入口（2026-10-02）
+
+本节记录 2026-10-02 的交付快照。下方按日期保留开发历史；旧章节中的「当前」、测试数量、默认打开行为和待办仅代表当时状态，冲突时以上方 2026-10-03 状态及实际源码为准。协作要求见 [AGENTS.md](AGENTS.md)，功能说明见 [README.md](README.md)，面向用户的变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 - 技术栈仍为 C++ / Win32 / DuiLib，普通文件区由 Windows ExplorerBrowser 承载。不要改换 UI 框架。
 - 本地工作区包含大量未提交修改及未跟踪的源码、测试；接手先检查工作区，不要用 reset / clean 或只复制 Git 已跟踪文件的方式丢弃当前实现。本次改动已在本地提交，未推送。

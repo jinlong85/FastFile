@@ -343,6 +343,9 @@ void CMainWnd::RefreshListing()
             UpdateStatus(_T("Windows 文件视图无法打开此位置"));
             return;
         }
+        // Report the new folder to the Shell window list right away, so a pending
+        // "show in folder" request finds this window without waiting for enumeration.
+        NotifyShellWindowLocation();
         // IFolderFilterSite support varies by Shell provider; S_OK does not guarantee
         // that a running view re-enumerates. Use our existing search results renderer
         // for all non-empty searches, and keep normal browsing in the Shell view.

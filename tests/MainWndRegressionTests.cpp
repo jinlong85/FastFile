@@ -18,6 +18,11 @@ public:
 #undef wWinMain
 #include <iostream>
 #include <functional>
+#include <atomic>
+#include <thread>
+#include <exdisp.h>
+#include <shlguid.h>
+#include "ShellWindowRegistration.h"
 #include <sddl.h>
 #pragma comment(lib, "advapi32.lib")
 
@@ -460,23 +465,33 @@ struct MainWndRegressionAccess {
         if(RegOverridePredefKey(HKEY_CURRENT_USER,user)!=ERROR_SUCCESS) {
             RegCloseKey(classes);RegCloseKey(user);return failures+1;
         }
-        FastFileSettings prefs=window.m_settings;prefs.contextMenu=true;prefs.confirmClose=false;prefs.externalNewWindow=false;
+        FastFileSettings prefs=window.m_settings;prefs.contextMenu=true;prefs.defaultFolders=true;prefs.confirmClose=false;prefs.externalNewWindow=false;
         check(CMainWnd::ApplySystemIntegration(prefs),"production integration registers the explicit FastFile verb");
+        // FastFile is the default folder handler in this isolated hive, so the window
+        // registers itself in the (real) Shell window list; revoked when it closes.
+        CMainWnd::s_shellWindowRegistrationAllowed=true;
+        window.UpdateShellWindowRegistration();
+        check(window.m_shellWindow && window.m_shellWindow->IsRegistered(),"default folder handler window registers as a Shell window");
         window.m_settings=prefs;prefs.Save(FastFileSettings::FilePath());
         DWORD disabled=0;HKEY state=nullptr;
         RegCreateKeyExW(user,L"Software\\FastFile",0,nullptr,0,KEY_ALL_ACCESS,nullptr,&state,nullptr);
         RegSetValueExW(state,L"FolderHandlerEnabled",0,REG_DWORD,reinterpret_cast<const BYTE*>(&disabled),sizeof(disabled));RegCloseKey(state);
         // Resolve the real production registration; only add the test harness
         // switch so the subprocess isolates its desktop/registry before entry.
-        for(const auto* cls:{L"Directory",L"Drive"}) {
-            const auto key=std::wstring(cls)+L"\\shell\\FastFile.SettingsOpen";
+        for(const auto* cls:{L"Directory",L"Drive"})for(const auto* action:{L"FastFile.SettingsOpen",L"open",L"explore",L"opennewwindow"}) {
+            const auto key=std::wstring(cls)+L"\\shell\\"+action;
             wchar_t command[32768]{};DWORD bytes=sizeof(command);
             check(RegGetValueW(user,(L"Software\\Classes\\"+key+L"\\command").c_str(),nullptr,RRF_RT_REG_SZ,nullptr,command,&bytes)==ERROR_SUCCESS,
                 "explicit verb has a registered launch command");
             std::wstring launch=command;const auto quote=launch.find(L'"',1);
             if(quote!=std::wstring::npos)launch.insert(quote+1,L" --shell-activation-launcher");
             HKEY verb=nullptr;RegCreateKeyExW(classes,(key+L"\\command").c_str(),0,nullptr,0,KEY_ALL_ACCESS,nullptr,&verb,nullptr);
-            RegSetValueExW(verb,nullptr,0,REG_SZ,reinterpret_cast<const BYTE*>(launch.c_str()),DWORD((launch.size()+1)*sizeof(wchar_t)));RegCloseKey(verb);
+            RegSetValueExW(verb,nullptr,0,REG_SZ,reinterpret_cast<const BYTE*>(launch.c_str()),DWORD((launch.size()+1)*sizeof(wchar_t)));
+            const wchar_t empty[]=L"";RegSetValueExW(verb,L"DelegateExecute",0,REG_SZ,reinterpret_cast<const BYTE*>(empty),sizeof(empty));RegCloseKey(verb);
+            // Same default verb as the production registration (FastFile opens folders).
+            const std::wstring defaultVerb=L"FastFile.SettingsOpen";HKEY shell=nullptr;
+            RegCreateKeyExW(classes,(std::wstring(cls)+L"\\shell").c_str(),0,nullptr,0,KEY_ALL_ACCESS,nullptr,&shell,nullptr);
+            RegSetValueExW(shell,nullptr,0,REG_SZ,reinterpret_cast<const BYTE*>(defaultVerb.c_str()),DWORD((defaultVerb.size()+1)*sizeof(wchar_t)));RegCloseKey(shell);
         }
         if(RegOverridePredefKey(HKEY_CLASSES_ROOT,classes)!=ERROR_SUCCESS) {
             RegOverridePredefKey(HKEY_CURRENT_USER,nullptr);RegCloseKey(classes);RegCloseKey(user);return failures+1;
@@ -484,12 +499,32 @@ struct MainWndRegressionAccess {
         auto pump=[](){MSG message{};while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)) {
             if(message.message!=WM_QUIT){TranslateMessage(&message);DispatchMessageW(&message);}
         }};
-        auto invoke=[&](const std::wstring& path,const wchar_t* cls) {
+        auto invokeAction=[&](const std::wstring& path,const wchar_t* cls,const wchar_t* action) {
             SHELLEXECUTEINFOW call{};call.cbSize=sizeof(call);call.fMask=SEE_MASK_CLASSNAME|SEE_MASK_NOASYNC|SEE_MASK_NOCLOSEPROCESS;
-            call.lpClass=cls;call.lpVerb=L"FastFile.SettingsOpen";call.lpFile=path.c_str();call.nShow=SW_HIDE;
+            call.lpClass=cls;call.lpVerb=action;call.lpFile=path.c_str();call.nShow=SW_HIDE;
             check(ShellExecuteExW(&call)!=FALSE && call.hProcess,"Windows executes the registered FastFile context-menu verb");
             return call.hProcess;
         };
+        auto invoke=[&](const std::wstring& path,const wchar_t* cls) {
+            return invokeAction(path,cls,L"FastFile.SettingsOpen");
+        };
+        for(const auto* cls:{L"Directory",L"Drive"})for(const auto* action:{L"open",L"explore",L"opennewwindow"}) {
+            const auto target=wcscmp(cls,L"Drive")==0?fixture.substr(0,3):fixture;
+            HANDLE child=invokeAction(target,cls,action);if(!child)continue;
+            const DWORD deadline=GetTickCount()+6000;
+            while(GetTickCount()<deadline && (WaitForSingleObject(child,0)==WAIT_TIMEOUT || !CMainWnd::PathEquals(window.m_currentPath,target))) {pump();Sleep(5);}
+            DWORD result=STILL_ACTIVE;GetExitCodeProcess(child,&result);
+            check(result==0 && CMainWnd::PathEquals(window.m_currentPath,target),"explicit Windows open/explore/opennewwindow reaches the FastFile instance");
+            if(result==STILL_ACTIVE)TerminateProcess(child,3);CloseHandle(child);
+        }
+        const DWORD observeUntil=GetTickCount()+25000;
+        int duplicateWindows=0;
+        do {
+            pump();const int observed=ExplorerWindowsUnder(fixture,window.m_hWnd);
+            if(observed<0){duplicateWindows=-1;break;}
+            duplicateWindows+=observed;Sleep(250);
+        }while(GetTickCount()<observeUntil);
+        check(duplicateWindows==0,"explicit standard actions do not open a delayed Explorer window during 25 seconds");
         for(const auto& sample:{std::pair<std::wstring,const wchar_t*>{fixture,L"Directory"},
             {fixture.substr(0,3),L"Drive"},{fixture+L"\\Battle.net",L"Directory"}}) {
             HANDLE child=invoke(sample.first,sample.second);if(!child)continue;
@@ -500,20 +535,23 @@ struct MainWndRegressionAccess {
             check(CMainWnd::PathEquals(window.m_currentPath,sample.first),"explicit FastFile menu reaches FastFile with the legacy disable flag set");
             if(result==STILL_ACTIVE)TerminateProcess(child,3);CloseHandle(child);
         }
+        failures+=CheckBusyAndSlowActivation(window,fixture,invoke,pump);
         // Cold start: no receiver exists. Verify the production entry creates a
         // window for exactly the requested folder and saves that tab on close.
         RegOverridePredefKey(HKEY_CLASSES_ROOT,nullptr);
         DestroyWindow(window.m_hWnd);
         pump(); // Consume the closed host's WM_QUIT before ShellExecuteEx waits.
         RegOverridePredefKey(HKEY_CLASSES_ROOT,classes);
-        HANDLE cold=invoke(fixture+L"\\115Chrome",L"Directory");
+        HANDLE cold=invokeAction(fixture+L"\\115Chrome",L"Directory",L"opennewwindow");
         if(cold) {
             HWND opened=nullptr;const DWORD deadline=GetTickCount()+6000;
             while(GetTickCount()<deadline && !opened){
                 pump();HWND candidate=FindWindowW(L"FastFile_MainWnd",nullptr);DWORD pid=0;
                 if(candidate)GetWindowThreadProcessId(candidate,&pid);
+                // The startup folder resolves off the UI thread; close only after it opened.
                 if(candidate && pid==GetProcessId(cold) && IsWindowVisible(candidate)
-                    && GetPropW(candidate,L"FastFile.Test.Initialized"))opened=candidate;
+                    && GetPropW(candidate,L"FastFile.Test.Initialized")
+                    && !GetPropW(candidate,L"FastFile.ExternalOpenPending"))opened=candidate;
                 Sleep(5);
             }
             check(opened!=nullptr,"explicit menu cold-starts a FastFile window");
@@ -528,6 +566,128 @@ struct MainWndRegressionAccess {
         }
         RegOverridePredefKey(HKEY_CLASSES_ROOT,nullptr);RegOverridePredefKey(HKEY_CURRENT_USER,nullptr);
         RegCloseKey(classes);RegCloseKey(user);RegDeleteTreeW(HKEY_CURRENT_USER,hiveName);
+        return failures;
+    }
+    // Counts Explorer windows (other than FastFile's own registration) showing a folder
+    // below root. Read-only enumeration of the Shell window list.
+    static int ExplorerWindowsUnder(const std::wstring& root,HWND own) {
+        IShellWindows* windows=nullptr;int found=0;
+        if(FAILED(CoCreateInstance(CLSID_ShellWindows,nullptr,CLSCTX_ALL,IID_PPV_ARGS(&windows))))return -1;
+        long count=0;if(FAILED(windows->get_Count(&count))){windows->Release();return -1;}
+        for(long i=0;i<count;++i) {
+            VARIANT index{};index.vt=VT_I4;index.lVal=i;IDispatch* item=nullptr;
+            if(FAILED(windows->Item(index,&item)) || !item)continue;
+            IWebBrowserApp* app=nullptr;SHANDLE_PTR hwnd=0;
+            if(SUCCEEDED(item->QueryInterface(IID_PPV_ARGS(&app)))){app->get_HWND(&hwnd);app->Release();}
+            IServiceProvider* provider=nullptr;IShellBrowser* browser=nullptr;IShellView* view=nullptr;
+            IFolderView* folderView=nullptr;IPersistFolder2* folder=nullptr;PIDLIST_ABSOLUTE pidl=nullptr;
+            if(reinterpret_cast<HWND>(hwnd)!=own && SUCCEEDED(item->QueryInterface(IID_PPV_ARGS(&provider)))
+                && SUCCEEDED(provider->QueryService(SID_STopLevelBrowser,IID_PPV_ARGS(&browser)))
+                && SUCCEEDED(browser->QueryActiveShellView(&view))
+                && SUCCEEDED(view->QueryInterface(IID_PPV_ARGS(&folderView)))
+                && SUCCEEDED(folderView->GetFolder(IID_PPV_ARGS(&folder)))
+                && SUCCEEDED(folder->GetCurFolder(&pidl))) {
+                wchar_t path[MAX_PATH*4]{};
+                if(SHGetPathFromIDListEx(pidl,path,_countof(path),GPFIDL_DEFAULT)
+                    && _wcsnicmp(path,root.c_str(),root.size())==0)++found;
+            }
+            if(pidl)CoTaskMemFree(pidl);if(folder)folder->Release();if(folderView)folderView->Release();
+            if(view)view->Release();if(browser)browser->Release();if(provider)provider->Release();item->Release();
+        }
+        windows->Release();return found;
+    }
+    static std::atomic<int> slowProbeCalls;
+    static std::wstring slowRoot;
+    // Simulated spun-down disk: the first probe below slowRoot waits like a disk spin-up.
+    static DWORD SlowProbe(const std::wstring& path) {
+        if(!slowRoot.empty() && _wcsnicmp(path.c_str(),slowRoot.c_str(),slowRoot.size())==0 && slowProbeCalls++==0)
+            Sleep(2500);
+        return GetFileAttributesW(path.c_str());
+    }
+    template<typename Invoke,typename Pump>
+    static int CheckBusyAndSlowActivation(CMainWnd& window,const std::wstring& fixture,Invoke& invoke,Pump& pump) {
+        int failures=0;
+        auto check=[&](bool value,const char* name){if(!value){++failures;std::cerr<<"FAIL "<<name<<"\n";}};
+        auto settle=[&](const std::wstring& path,DWORD ms,DWORD* longest=nullptr) {
+            const DWORD deadline=GetTickCount()+ms;
+            while(GetTickCount()<deadline && (!CMainWnd::PathEquals(window.m_currentPath,path)
+                || GetPropW(window.m_hWnd,L"FastFile.ExternalOpenPending"))) {
+                MSG message{};
+                while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)) {
+                    if(message.message==WM_QUIT)continue;
+                    const DWORD start=GetTickCount();
+                    TranslateMessage(&message);DispatchMessageW(&message);
+                    if(longest)*longest=(std::max)(*longest,GetTickCount()-start);
+                }
+                Sleep(5);
+            }
+            return CMainWnd::PathEquals(window.m_currentPath,path);
+        };
+        const HWND own=window.m_hWnd;
+        // 1. Busy receiver: the UI thread does not pump while the launcher forwards.
+        // The launcher must exit successfully without starting Explorer, and the folder
+        // must open once the window is free again.
+        window.NavigateToNow(fixture,true);settle(fixture,3000);
+        const std::wstring busyTarget=fixture+L"\\115Chrome";
+        HANDLE child=invoke(busyTarget,L"Directory");
+        if(child) {
+            Sleep(4000); // busy: no messages are processed
+            const bool exited=WaitForSingleObject(child,4000)==WAIT_OBJECT_0;
+            DWORD code=STILL_ACTIVE;GetExitCodeProcess(child,&code);
+            check(exited && code==0,"launcher hands off to a busy FastFile window and exits");
+            check(!CMainWnd::PathEquals(window.m_currentPath,busyTarget),"busy window did not process the request yet");
+            check(settle(busyTarget,6000),"busy window opens the forwarded folder once it is free");
+            check(ExplorerWindowsUnder(fixture,own)==0,"busy forwarding never opens an Explorer window");
+            // A waiting show-in-folder request looks for a registered window at the folder.
+            check(window.m_shellWindow && window.m_shellWindow->IsRegistered()
+                && CMainWnd::PathEquals(window.m_shellWindowPath,busyTarget),"forwarded folder is announced as the Shell window location");
+            if(code==STILL_ACTIVE)TerminateProcess(child,3);CloseHandle(child);
+        }
+        // 2. Slow folder: the first touch of the target volume takes 2.5 s. The window must
+        // keep processing messages (no single message handler blocks) and still open it.
+        const std::wstring slow=fixture+L"\\Slow";CreateDirectoryW(slow.c_str(),nullptr);
+        const std::wstring selectedPath=slow+L"\\select-me.txt";
+        HANDLE selectedFile=CreateFileW(selectedPath.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,0,nullptr);
+        check(selectedFile!=INVALID_HANDLE_VALUE,"selection fixture is created");
+        if(selectedFile!=INVALID_HANDLE_VALUE)CloseHandle(selectedFile);
+        slowRoot=slow;slowProbeCalls=0;CMainWnd::s_folderProbe=&SlowProbe;
+        window.NavigateToNow(fixture,true);settle(fixture,3000);
+        PIDLIST_ABSOLUTE selectedItem=nullptr;
+        SHParseDisplayName(selectedPath.c_str(),nullptr,&selectedItem,0,nullptr);
+        check(selectedItem && SUCCEEDED(window.OnShellWindowSelect(selectedItem,
+            SVSI_SELECT|SVSI_DESELECTOTHERS|SVSI_ENSUREVISIBLE|SVSI_FOCUSED)),
+            "show-in-folder selection is accepted before navigation completes");
+        if(selectedItem)CoTaskMemFree(selectedItem);
+        check(window.m_pendingShellSelect!=nullptr,"selection waits while the wrong folder is displayed");
+        child=invoke(slow,L"Directory");
+        // The launcher has resolved the isolated verb. Restore COM registration before
+        // the real Shell view enumerates and selects the file (HKCR also contains its
+        // interfaces and file-type providers). The caller restores its own test hive
+        // before the subsequent cold-start launch.
+        RegOverridePredefKey(HKEY_CLASSES_ROOT,nullptr);
+        if(child) {
+            DWORD longest=0;
+            const bool opened=settle(slow,10000,&longest);
+            check(opened,"slow folder opens after the simulated spin-up");
+            check(slowProbeCalls>=1,"slow folder probe ran");
+            check(longest<700,"slow folder activation never blocks the UI thread");
+            if(longest>=700)std::cerr<<"  longest message "<<longest<<" ms\n";
+            DWORD code=STILL_ACTIVE;WaitForSingleObject(child,3000);GetExitCodeProcess(child,&code);
+            check(code==0,"slow folder launcher exits after forwarding");
+            if(code==STILL_ACTIVE)TerminateProcess(child,3);CloseHandle(child);
+            const DWORD selectedDeadline=GetTickCount()+3000;
+            while(window.m_pendingShellSelect && GetTickCount()<selectedDeadline){pump();Sleep(5);}
+            std::vector<std::pair<std::wstring,bool>> selection;
+            check(window.m_shellBrowser->GetSelection(selection) && selection.size()==1
+                && CMainWnd::PathEquals(selection[0].first,selectedPath),
+                "forwarded folder selects and reveals the requested file in the real Shell view");
+            check(window.m_pendingShellSelect==nullptr,"successful selection clears its pending request");
+        }
+        CMainWnd::s_folderProbe=nullptr;slowRoot.clear();
+        // 3. "Show in folder" (SHOpenFolderAndSelectItems) needs the Shell to find this
+        //    window, and the Shell ignores windows on other desktops such as this
+        //    harness's isolated one; FastFileShellWindowTests covers it on the normal
+        //    desktop. Here only the registration itself is checked (see CheckShellActivation).
         return failures;
     }
     // Interactive runtime check: a disposable ACL-protected file reproduces
@@ -582,6 +742,16 @@ struct MainWndRegressionAccess {
     static int CheckShortcuts(CMainWnd& window, const std::wstring& root) {
         int failures = 0;
         auto check = [&](bool ok, const char* name) { if (!ok) { ++failures; std::cerr << "FAIL " << name << '\n'; } };
+        // A hidden parent cannot give its native child keyboard focus. Show the window
+        // on this harness's isolated desktop so shortcuts target the file view, rather
+        // than the stale DuiLib tree focus retained by an earlier check.
+        ShowWindow(window.m_hWnd, SW_SHOW);
+        if (!OpenClipboard(window.m_hWnd)) {
+            std::cerr << "FAIL keyboard/file-operation prerequisite: system clipboard is inaccessible (Win32 error "
+                << GetLastError() << ", open window " << GetOpenClipboardWindow() << ")\n";
+            return failures + 1;
+        }
+        CloseClipboard();
         const DWORD recycleFlags = window.DeleteOperationFlags(false);
         const DWORD permanentFlags = window.DeleteOperationFlags(true);
         check((recycleFlags & (FOF_NOERRORUI | FOF_SILENT | FOFX_REQUIREELEVATION)) == 0,
@@ -596,6 +766,7 @@ struct MainWndRegressionAccess {
             "permanent Delete cannot accidentally recycle");
         auto pump = [&]() {
             const DWORD until = GetTickCount() + 700;
+            const DWORD historyDeadline = GetTickCount() + 8000;
             do {
                 MSG message;
                 while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
@@ -604,7 +775,9 @@ struct MainWndRegressionAccess {
                     }
                 }
                 Sleep(5);
-            } while (GetTickCount() < until);
+            } while (GetTickCount() < until ||
+                (window.m_shellHistoryPending && GetTickCount() < historyDeadline));
+            check(!window.m_shellHistoryPending, "Shell history completes before the next shortcut");
         };
         const auto source = root + L"\\Keyboard Source";
         const auto target = root + L"\\Keyboard Target";
@@ -624,18 +797,34 @@ struct MainWndRegressionAccess {
             }
             if (view) view->Release();
             SetFocus(hwnd);
+            check(window.m_shellBrowser->OwnsWindow(GetFocus()), "keyboard shortcut focuses the native file view");
             BYTE saved[256]{}, keys[256]{}; GetKeyboardState(saved);
-            if (ctrl) keys[VK_CONTROL] = 0x80;
-            if (shift) keys[VK_SHIFT] = 0x80;
-            if (alt) keys[VK_MENU] = 0x80;
+            if (ctrl) keys[VK_CONTROL] = keys[VK_LCONTROL] = 0x80;
+            if (shift) keys[VK_SHIFT] = keys[VK_LSHIFT] = 0x80;
+            if (alt) keys[VK_MENU] = keys[VK_LMENU] = 0x80;
             SetKeyboardState(keys);
+            check(((GetKeyState(VK_CONTROL)&0x8000)!=0)==ctrl &&
+                ((GetKeyState(VK_SHIFT)&0x8000)!=0)==shift &&
+                ((GetKeyState(VK_MENU)&0x8000)!=0)==alt, "synthetic shortcut has the requested modifier state");
             MSG message{}; message.hwnd = hwnd; message.message = alt ? WM_SYSKEYDOWN : WM_KEYDOWN;
             message.wParam = value; message.lParam = 1;
             const bool handled = CPaintManagerUI::TranslateMessage(&message);
             SetKeyboardState(saved);
             return handled;
         };
-        auto select = [&]() { check(key('A', true), "native Ctrl A routes to selection"); pump(); };
+        auto select = [&]() {
+            const DWORD deadline = GetTickCount() + 5000;
+            bool ready = false;
+            do {
+                check(key('A', true), "native Ctrl A routes to selection"); pump();
+                std::vector<std::pair<std::wstring, bool>> selected;
+                ready = window.m_shellBrowser->IsAtPath(window.m_currentPath)
+                    && window.m_shellBrowser->GetSelection(selected) && !selected.empty();
+                for (const auto& item : selected)
+                    ready = GetFileAttributesW(item.first.c_str()) != INVALID_FILE_ATTRIBUTES && ready;
+            } while (!ready && GetTickCount() < deadline);
+            check(ready, "native selection reflects completed enumeration and rename notifications");
+        };
         auto finish = [&]() {
             const DWORD until = GetTickCount() + 8000;
             do { pump(); } while (window.m_copyRunning && GetTickCount() < until);
@@ -676,13 +865,31 @@ struct MainWndRegressionAccess {
         }
         check(key('C', true, true), "Ctrl Shift C copies quoted paths");
         bool copiedPath = false;
+        std::wstring copiedText;
         if (OpenClipboard(window.m_hWnd)) {
             HGLOBAL data = GetClipboardData(CF_UNICODETEXT);
             const wchar_t* text = data ? static_cast<const wchar_t*>(GlobalLock(data)) : nullptr;
             copiedPath = text && std::wstring(text) == L"\"" + original + L"\"";
+            if (text) copiedText = text;
             if (text) GlobalUnlock(data); CloseClipboard();
         }
+        if (!copiedPath) {
+            std::vector<CMainWnd::ClipboardItem> selected;
+            window.CollectSelectedItems(selected);
+            const std::wstring status = window.m_pStatus ? window.m_pStatus->GetText().GetData() : L"";
+            std::cerr << "  copy-path diagnostic: selected=" << selected.size()
+                << " expectedSelected=" << (selected.size()==1 && CMainWnd::PathEquals(selected[0].path, original))
+                << " copiedChars=" << copiedText.size()
+                << " copySucceeded=" << (status.find(L"已复制完整路径")!=std::wstring::npos)
+                << " accessDenied=" << (status.find(L"剪贴板")!=std::wstring::npos)
+                << " clipboardOwner=" << GetOpenClipboardWindow() << "\n";
+        }
         check(copiedPath, "copy as path publishes Unicode quoted selection");
+        if (!copiedPath) {
+            OleSetClipboard(savedClipboard);
+            if (savedClipboard) { OleFlushClipboard(); savedClipboard->Release(); }
+            return failures; // later file-operation checks depend on this clipboard setup
+        }
         check(key(VK_INSERT, true), "Ctrl Insert copies native selection");
         // Paste must read Windows data, even when the old internal cache is empty.
         window.m_clipboard.clear(); navigate(target);
@@ -1018,7 +1225,54 @@ struct MainWndRegressionAccess {
             const auto computer=std::wstring(L"Software\\Classes\\CLSID\\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\shell");
             write(folder,L"原始文件夹命令");write(directory,L"%原始目录命令%",REG_EXPAND_SZ);write(drive,L"原始磁盘命令");
             FastFileSettings enabled;enabled.contextMenu=true;enabled.defaultFolders=true;enabled.defaultComputer=true;
+            write(directory+L"\\open\\command",L"original open",REG_EXPAND_SZ);
+            write(directory+L"\\open\\ddeexec",L"original DDE");
             check(CMainWnd::ApplySystemIntegration(enabled),"explicit integration registers folders drives and Computer");
+            auto publish=[&] {
+                RegDeleteTreeW(merged,nullptr);
+                check(RegCopyTreeW(HKEY_CURRENT_USER,L"Software\\Classes",merged)==ERROR_SUCCESS,"publish isolated effective classes for diagnostics");
+            };
+            auto effective=[&](const wchar_t* key,const wchar_t* name,const wchar_t* text) {
+                HKEY handle=nullptr;RegCreateKeyExW(merged,key,0,nullptr,0,KEY_ALL_ACCESS,nullptr,&handle,nullptr);
+                RegSetValueExW(handle,name,0,REG_SZ,reinterpret_cast<const BYTE*>(text),DWORD((wcslen(text)+1)*sizeof(wchar_t)));RegCloseKey(handle);
+            };
+            publish();
+            const auto configured=CMainWnd::DetectSystemIntegration();
+            check(configured.foldersReady && configured.computerReady && configured.menuReady,"diagnostics verify effective commands for the current executable");
+            RegDeleteTreeW(merged,L"Drive\\shell\\FastFile.SettingsOpen");
+            check(!CMainWnd::DetectSystemIntegration().menuReady,"context menu diagnostics verify all folder and drive classes");
+            publish();
+            const auto oldSettings=window.m_settings;
+            auto integrationOnly=enabled;integrationOnly.startup=2;integrationOnly.startupPath=L"Z:\\missing-integration-startup";
+            integrationOnly.navigationFont=16;
+            check(window.CommitIntegrationSettings(integrationOnly) && window.m_settings.startup==oldSettings.startup
+                && window.m_settings.navigationFont==oldSettings.navigationFont,
+                "repair applies only integration and does not validate or commit unrelated staged preferences");
+            window.m_settings=oldSettings;
+            effective(L"Directory\\shell\\open\\command",L"DelegateExecute",L"{11dbb47c-a525-400b-9e80-a54615a090c0}");
+            auto detected=CMainWnd::DetectSystemIntegration();
+            check(!detected.foldersReady && detected.details.find(L"Windows 资源管理器")!=std::wstring::npos,
+                "Explorer delegate takes precedence over a seemingly valid FastFile command");
+            publish();effective(L"Directory\\shell",nullptr,L"OtherTool");
+            effective(L"Directory\\shell\\OtherTool\\command",nullptr,L"\"C:\\Other\\Manager.exe\" \"%1\"");
+            detected=CMainWnd::DetectSystemIntegration();
+            check(!detected.foldersReady && detected.otherManager && read(directory)==L"FastFile.SettingsOpen",
+                "read-only diagnostics detect another effective manager without rewriting configured flags or commands");
+            publish();effective(L"Directory\\shell\\open\\command",nullptr,L"\"C:\\Old\\FastFile.exe\" --shell-folder \"%1\"");
+            detected=CMainWnd::DetectSystemIntegration();
+            check(!detected.foldersReady && detected.details.find(L"其他路径")!=std::wstring::npos,
+                "another FastFile executable is not reported as the current running version");
+            publish();effective(L"Directory\\shell",nullptr,L"BrokenVerb");
+            check(!CMainWnd::DetectSystemIntegration().foldersReady,"a broken explicit default cannot be mistaken for the inherited Folder default");
+            publish();
+            for(const auto& shell:{directory,drive})for(const auto* action:{L"open",L"explore",L"opennewwindow"}) {
+                const auto verb=shell+L"\\"+action;
+                check(read(verb+L"\\command").find(L"--shell-folder")!=std::wstring::npos,
+                    "explicit standard folder actions are routed to FastFile");
+                wchar_t delegate[64]{};DWORD size=sizeof(delegate);
+                check(RegGetValueW(HKEY_CURRENT_USER,(verb+L"\\command").c_str(),L"DelegateExecute",RRF_RT_REG_SZ,nullptr,delegate,&size)==ERROR_SUCCESS
+                    && !delegate[0],"standard actions suppress inherited Explorer delegates");
+            }
             check(read(folder)==L"原始文件夹命令","generic Folder namespace default is preserved for Windows virtual folders");
             for(const auto& shell:{directory,drive,computer})
                 check(read(shell)==L"FastFile.SettingsOpen" && read(shell+L"\\FastFile.SettingsOpen\\command").find(L"--shell-folder")!=std::wstring::npos,
@@ -1027,9 +1281,27 @@ struct MainWndRegressionAccess {
             check(read(directory)==L"FastFile.SettingsOpen","startup cleanup cannot undo user-enabled settings integration");
             FastFileSettings state;CMainWnd::ReadSystemIntegration(state);
             check(state.contextMenu && state.defaultFolders && state.defaultComputer,"integration switches survive reloading state");
+            enabled.explorerWindowTakeover=true;
+            check(CMainWnd::ApplySystemIntegration(enabled),"window takeover can be enabled independently in the integration journal");
+            CMainWnd::ReadSystemIntegration(state);check(state.explorerWindowTakeover,"window takeover survives a program restart");
+            enabled.explorerWindowTakeover=false;
+            check(CMainWnd::ApplySystemIntegration(enabled),"window takeover can be disabled without removing default associations");
+            write(directory,L"");write(drive,L"");
+            check(CMainWnd::ApplySystemIntegration(enabled) && read(directory)==L"FastFile.SettingsOpen"
+                && read(drive)==L"FastFile.SettingsOpen",
+                "saving unchanged enabled settings repairs missing effective default verbs");
+            write(directory,L"");write(drive,L"AnotherAppAfterEnable");
+            check(CMainWnd::RepairOwnedSystemIntegration() && read(directory)==L"FastFile.SettingsOpen"
+                && read(drive)==L"AnotherAppAfterEnable",
+                "startup repairs missing owned defaults without replacing a later explicit third-party default");
+            check(CMainWnd::ApplySystemIntegration(enabled),"restore enabled fixture after third-party default check");
             enabled.defaultFolders=false;
             check(CMainWnd::ApplySystemIntegration(enabled),"folder defaults can be disabled while keeping context menu and Computer enabled");
             DWORD type=0;
+            check(read(directory+L"\\open\\command",&type)==L"original open" && type==REG_EXPAND_SZ
+                && read(directory+L"\\open\\ddeexec")==L"original DDE",
+                "disabling restores the entire original explicit action including type and DDE");
+            check(read(drive+L"\\explore\\command").empty(),"disabling removes an originally absent explicit action override");
             check(read(folder)==L"原始文件夹命令" && read(directory,&type)==L"%原始目录命令%" && type==REG_EXPAND_SZ
                 && read(drive)==L"原始磁盘命令","disable restores exact original defaults including registry type");
             check(!read(folder+L"\\FastFile.SettingsOpen\\command").empty() && read(computer)==L"FastFile.SettingsOpen",
@@ -1042,8 +1314,11 @@ struct MainWndRegressionAccess {
             enabled.defaultFolders=true;
             check(CMainWnd::ApplySystemIntegration(enabled),"integration can be re-enabled after restoration");
             write(directory,L"AnotherAppAfterEnable");write(folder,L"AnotherAppAfterEnable");
+            write(drive+L"\\explore\\command",L"later third-party action");
             check(CMainWnd::ApplySystemIntegration(off) && read(directory)==L"AnotherAppAfterEnable" && read(folder)==L"AnotherAppAfterEnable",
                 "restoration preserves an application chosen after FastFile was enabled");
+            check(read(drive+L"\\explore\\command")==L"later third-party action",
+                "restoration preserves a later third-party explicit action command");
             check(CMainWnd::ApplySystemIntegration(enabled),"prepare interrupted registration recovery");
             HKEY flags=nullptr;RegOpenKeyExW(HKEY_CURRENT_USER,L"Software\\FastFile",0,KEY_SET_VALUE,&flags);
             for(const wchar_t* name:{L"IntegrationMenu",L"IntegrationFolders",L"IntegrationComputer"})RegDeleteValueW(flags,name);
@@ -1065,7 +1340,162 @@ struct MainWndRegressionAccess {
     }
 
     inline static HWND settingsTestOwner=nullptr;
+    inline static int explorerCloseCalls=0;
+    inline static bool explorerCloseAllowed=true;
+    static bool CloseTestExplorer(const CMainWnd::ExplorerSnapshot& source) {
+        ++explorerCloseCalls;
+        DWORD pid=0;GetWindowThreadProcessId(source.window,&pid);
+        return explorerCloseAllowed && pid==GetCurrentProcessId() && DestroyWindow(source.window)!=FALSE;
+    }
+    static int CheckExplorerTransfer(CMainWnd& window,const std::wstring& fixture) {
+        int failures=0;
+        auto check=[&](bool ok,const char* name){if(!ok){++failures;std::cerr<<"FAIL "<<name<<'\n';}};
+        auto pump=[] {MSG message{};while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)) {
+            if(message.message!=WM_QUIT){TranslateMessage(&message);DispatchMessageW(&message);}
+        }};
+        const auto original=window.m_settings;
+        window.StopExplorerTakeover();window.m_settings.explorerWindowTakeover=false;
+        CMainWnd::s_closeExplorerForTest=CloseTestExplorer;explorerCloseCalls=0;explorerCloseAllowed=true;
+        auto makeSource=[&](const std::wstring& path) {
+            HWND source=CreateWindowExW(WS_EX_TOOLWINDOW,L"STATIC",L"FastFile owned transfer fixture",WS_POPUP,-32000,-32000,1,1,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+            return CMainWnd::ExplorerSnapshot{source,GetCurrentProcessId(),path,{}};
+        };
+        auto existing=makeSource(fixture);
+        window.ProcessExplorerSnapshots({existing},false);
+        check(window.m_explorerTransfers.empty() && IsWindow(existing.window),"disabled window takeover does not discover or close windows");
+        window.m_settings.explorerWindowTakeover=true;
+        window.ProcessExplorerSnapshots({existing},true);
+        window.ProcessExplorerSnapshots({existing},false);
+        check(window.m_explorerTransfers[existing.window].ignored && explorerCloseCalls==0,
+            "Explorer windows present at enable time are never transferred or closed");
+        window.ProcessExplorerSnapshots({},false);
+        window.ProcessExplorerSnapshots({existing},false);
+        check(window.m_explorerTransfers[existing.window].ignored && explorerCloseCalls==0,
+            "an existing window stays protected when it is temporarily absent from a Shell enumeration");
+        window.StopExplorerTakeover();
+        auto source=makeSource(fixture);source.selection={fixture+L"\\sample.txt"};
+        window.ProcessExplorerSnapshots({source},false);
+        check(explorerCloseCalls==0,"new source waits for a stable observation");
+        window.m_explorerTransfers[source.window].changedAt-=1100;
+        window.ProcessExplorerSnapshots({source},false);
+        check(explorerCloseCalls==0 && window.m_externalOpensPending>0,
+            "source window stays open while FastFile is still resolving the folder");
+        const auto deadline=GetTickCount64()+8000;
+        while(GetTickCount64()<deadline && IsWindow(source.window)) {
+            pump();window.ProcessExplorerSnapshots({source},false);Sleep(10);
+        }
+        std::vector<std::pair<std::wstring,bool>> selection;
+        check(explorerCloseCalls==1 && !IsWindow(source.window)
+            && window.m_shellBrowser->IsNavigationCompleteAt(fixture)
+            && window.m_shellBrowser->GetSelection(selection) && selection.size()==1
+            && CMainWnd::PathEquals(selection.front().first,source.selection.front()),
+            "source closes exactly once after the real Shell view opens the folder and selects the requested file");
+        window.StopExplorerTakeover();explorerCloseCalls=0;
+        auto failed=makeSource(fixture);
+        const auto oldProbe=CMainWnd::s_folderProbe;
+        CMainWnd::s_folderProbe=[](const std::wstring&)->DWORD{return INVALID_FILE_ATTRIBUTES;};
+        window.ProcessExplorerSnapshots({failed},false);
+        window.m_explorerTransfers[failed.window].changedAt-=1100;
+        window.ProcessExplorerSnapshots({failed},false);
+        const auto failureDeadline=GetTickCount64()+3000;
+        while(window.m_externalOpensPending && GetTickCount64()<failureDeadline){pump();Sleep(10);}
+        window.ProcessExplorerSnapshots({failed},false);
+        CMainWnd::s_folderProbe=oldProbe;
+        check(explorerCloseCalls==0 && IsWindow(failed.window),
+            "a failed folder resolution cannot close the source merely because FastFile has an old view of the same path");
+        window.StopExplorerTakeover();explorerCloseCalls=0;
+        auto busy=makeSource(fixture);EnableWindow(busy.window,FALSE);
+        window.ProcessExplorerSnapshots({busy},false);
+        window.m_explorerTransfers[busy.window].changedAt-=1100;
+        window.ProcessExplorerSnapshots({busy},false);
+        const auto busyDeadline=GetTickCount64()+3000;
+        while(window.m_externalOpensPending && GetTickCount64()<busyDeadline){pump();Sleep(10);}
+        window.ProcessExplorerSnapshots({busy},false);
+        check(explorerCloseCalls==0 && IsWindow(busy.window),"a source disabled by an unfinished operation is retained");
+        EnableWindow(busy.window,TRUE);
+        window.StopExplorerTakeover();explorerCloseCalls=0;explorerCloseAllowed=false;
+        auto retained=makeSource(fixture);
+        window.ProcessExplorerSnapshots({retained},false);
+        window.m_explorerTransfers[retained.window].changedAt-=1100;
+        window.ProcessExplorerSnapshots({retained},false);
+        const auto retainedDeadline=GetTickCount64()+8000;
+        while(GetTickCount64()<retainedDeadline && !window.m_explorerTransfers[retained.window].ignored) {
+            pump();window.ProcessExplorerSnapshots({retained},false);Sleep(10);
+        }
+        check(explorerCloseCalls==1 && IsWindow(retained.window),"changed or multi-tab source is retained when the final close verification fails");
+        window.StopExplorerTakeover();explorerCloseCalls=0;
+        auto missing=makeSource(fixture+L"\\does-not-exist");
+        window.ProcessExplorerSnapshots({missing},false);
+        auto& expired=window.m_explorerTransfers[missing.window];expired.started=true;expired.deadline=GetTickCount64()-1;
+        window.ProcessExplorerSnapshots({missing},false);
+        check(expired.ignored && IsWindow(missing.window) && explorerCloseCalls==0,
+            "failed or expired transfers preserve the original window");
+        window.StopExplorerTakeover();
+        auto changed=makeSource(fixture);
+        window.ProcessExplorerSnapshots({changed},false);
+        window.m_explorerTransfers[changed.window].started=true;
+        changed.path=fixture+L"\\Battle.net";
+        window.ProcessExplorerSnapshots({changed},false);
+        check(!window.m_explorerTransfers[changed.window].started && explorerCloseCalls==0,
+            "source navigation resets the transfer rather than closing an outdated folder");
+        for(HWND owned:{existing.window,source.window,failed.window,busy.window,retained.window,missing.window,changed.window})if(IsWindow(owned))DestroyWindow(owned);
+        window.StopExplorerTakeover();CMainWnd::s_closeExplorerForTest=nullptr;window.m_settings=original;
+        return failures;
+    }
+    static int CheckIntegration(CMainWnd& window,const std::wstring& root) {
+        int failures=CheckHandlers(window);
+        failures+=CheckExplorerTransfer(window,root+L"\\Program Files");
+        failures+=CheckPreferences(window,root);
+        return failures;
+    }
+    static int CheckExplorerLive(CMainWnd& window,const std::wstring& fixture) {
+        auto pump=[] {MSG message{};while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)) {
+            if(message.message!=WM_QUIT){TranslateMessage(&message);DispatchMessageW(&message);}
+        }};
+        const auto original=window.m_settings;
+        window.StopExplorerTakeover();CMainWnd::s_explorerTestRoot=fixture;
+        window.m_settings.explorerWindowTakeover=true;window.UpdateExplorerTakeover();
+        const auto baselineDeadline=GetTickCount64()+10000;
+        while(!window.m_explorerBaseline && GetTickCount64()<baselineDeadline){pump();window.PollExplorerTakeover();Sleep(20);}
+        if(!window.m_explorerBaseline){std::cerr<<"FAIL native Explorer scanner could not establish its baseline\n";window.StopExplorerTakeover();window.m_settings=original;CMainWnd::s_explorerTestRoot.clear();return 1;}
+        wchar_t system[32768]{};GetWindowsDirectoryW(system,_countof(system));
+        const auto executable=std::wstring(system)+L"\\explorer.exe";
+        int failures=0;
+        const auto selectedFolder=fixture+L"\\Battle.net";
+        const auto selectedFile=selectedFolder+L"\\native-selection.txt";
+        HANDLE file=CreateFileW(selectedFile.c_str(),GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);if(file!=INVALID_HANDLE_VALUE)CloseHandle(file);
+        for(int iteration=0;iteration<2;++iteration) {
+            const auto target=iteration?selectedFolder:fixture;
+            std::wstring command=L"\""+executable+L"\" /n,/separate,"+(iteration?L"/select,":L"")+L"\""+(iteration?selectedFile:target)+L"\"";
+            STARTUPINFOW startup{sizeof(startup)};PROCESS_INFORMATION child{};
+            if(!CreateProcessW(executable.c_str(),command.data(),nullptr,nullptr,FALSE,0,nullptr,nullptr,&startup,&child)) {
+                std::cerr<<"FAIL direct Explorer launch "<<GetLastError()<<'\n';++failures;break;
+            }
+            CloseHandle(child.hThread);CloseHandle(child.hProcess);
+            HWND observed=nullptr;bool closed=false;
+            const auto deadline=GetTickCount64()+35000;
+            while(GetTickCount64()<deadline && !closed) {
+                pump();window.PollExplorerTakeover();
+                for(const auto& entry:window.m_explorerTransfers)
+                    if(CMainWnd::PathEquals(entry.second.source.path,target))observed=entry.first;
+                closed=observed && !IsWindow(observed);Sleep(20);
+            }
+            std::vector<std::pair<std::wstring,bool>> selected;
+            const bool selectionOk=!iteration || (window.m_shellBrowser && window.m_shellBrowser->GetSelection(selected)
+                && selected.size()==1 && CMainWnd::PathEquals(selected.front().first,selectedFile));
+            std::cout<<"Native Explorer observed "<<observed<<", closed "<<closed<<", FastFile folder confirmed "
+                <<(window.m_shellBrowser && window.m_shellBrowser->IsNavigationCompleteAt(target))<<", selection confirmed "<<selectionOk<<'\n';
+            if(!closed || !window.m_shellBrowser || !window.m_shellBrowser->IsNavigationCompleteAt(target) || !selectionOk) {
+                std::cerr<<"FAIL native Explorer direct/selected-file request must transfer and close\n";++failures;break;
+            }
+            const auto settle=GetTickCount64()+2000;
+            do {pump();window.PollExplorerTakeover();Sleep(20);}while(GetTickCount64()<settle);
+        }
+        window.StopExplorerTakeover();window.m_settings=original;CMainWnd::s_explorerTestRoot.clear();
+        return failures;
+    }
     inline static bool settingsTestSave=false,settingsDialogPages=false;
+    inline static bool settingsIntegrationUi=false;
     static void CALLBACK ExerciseSettingsDialog(HWND,UINT,UINT_PTR timer,DWORD) {
         HWND dialog=nullptr;
         EnumThreadWindows(GetCurrentThreadId(),[](HWND candidate,LPARAM value)->BOOL {
@@ -1086,6 +1516,18 @@ struct MainWndRegressionAccess {
             const int visibleIds[]={110,116,121,126};
             settingsDialogPages=settingsDialogPages && IsWindowVisible(GetDlgItem(dialog,visibleIds[page]));
         }
+        SendMessageW(dialog,WM_COMMAND,192,0); // read-only detection
+        wchar_t report[32768]{};GetWindowTextW(GetDlgItem(dialog,194),report,_countof(report));
+        settingsIntegrationUi=GetDlgItem(dialog,129) && GetDlgItem(dialog,193)
+            && std::wstring(report).find(L"当前运行程序")!=std::wstring::npos;
+        if(settingsTestSave) {
+            SendMessageW(dialog,WM_COMMAND,193,0); // apply from the actual repair button
+            FastFileSettings applied;CMainWnd::ReadSystemIntegration(applied);
+            settingsIntegrationUi=settingsIntegrationUi && applied.contextMenu && applied.defaultFolders && applied.defaultComputer;
+        }
+        RECT details{},restore{},save{};
+        GetWindowRect(GetDlgItem(dialog,194),&details);GetWindowRect(GetDlgItem(dialog,191),&restore);GetWindowRect(GetDlgItem(dialog,IDOK),&save);
+        settingsIntegrationUi=settingsIntegrationUi && details.bottom<=restore.top && restore.bottom<=save.top;
         TabCtrl_SetCurSel(tabs,1);
         NMHDR changed{tabs,100,TCN_SELCHANGE};SendMessageW(dialog,WM_NOTIFY,100,reinterpret_cast<LPARAM>(&changed));
         SendMessageW(GetDlgItem(dialog,116),CB_SETCURSEL,2,0); // 13 logical pixels
@@ -1226,16 +1668,38 @@ struct MainWndRegressionAccess {
             "new-tab routing leaves files and invalid mixed selections to Shell");
         check(!window.HandleInternalFolderOpenVerb(L"open",{fixture+L"\\Program Files\\sample.txt"})
             && !window.HandleInternalFolderOpenVerb(L"properties",{drive}),"menu routing preserves file associations and non-navigation Shell commands");
+        // Appearance-only dialog checks must never rewrite the real user's Shell
+        // commands to this test executable (enabled state is deliberately reapplied).
+        FastFileSettings realIntegration;CMainWnd::ReadSystemIntegration(realIntegration);
+        const auto settingsHive=L"Software\\FastFileSettingsDialogRegression_"+std::to_wstring(GetCurrentProcessId());
+        HKEY dialogUser=nullptr;
+        if(RegCreateKeyExW(HKEY_CURRENT_USER,settingsHive.c_str(),0,nullptr,0,KEY_ALL_ACCESS,nullptr,&dialogUser,nullptr)!=ERROR_SUCCESS
+            || RegOverridePredefKey(HKEY_CURRENT_USER,dialogUser)!=ERROR_SUCCESS) {
+            check(false,"settings dialog has an isolated registry");
+            if(dialogUser)RegCloseKey(dialogUser);
+            return failures;
+        }
+        FastFileSettings testIntegration;testIntegration.contextMenu=true;testIntegration.defaultFolders=true;testIntegration.defaultComputer=true;
+        check(CMainWnd::ApplySystemIntegration(testIntegration),"settings dialog starts with isolated integration enabled");
         settingsTestOwner=window.m_hWnd;settingsTestSave=false;settingsDialogPages=false;
         auto settingsTimer=SetTimer(nullptr,0,100,ExerciseSettingsDialog);window.ShowSettings();KillTimer(nullptr,settingsTimer);
         if(!settingsDialogPages || window.m_settings.navigationFont!=original.navigationFont)
             std::cerr<<"settings cancel diagnostic pages="<<settingsDialogPages<<" font="<<window.m_settings.navigationFont<<" expected="<<original.navigationFont<<'\n';
+        check(settingsIntegrationUi,"settings show detection repair and window takeover controls without overlapping the action buttons");
         check(settingsDialogPages && window.m_settings.navigationFont==original.navigationFont,
             "all four real settings pages open and cancel discards staged changes");
         settingsTestSave=true;settingsDialogPages=false;
         settingsTimer=SetTimer(nullptr,0,100,ExerciseSettingsDialog);window.ShowSettings();KillTimer(nullptr,settingsTimer);
         check(settingsDialogPages && window.m_settings.navigationFont==13 && FastFileSettings::Load(FastFileSettings::FilePath()).navigationFont==13,
             "real settings save applies appearance and persists the new value");
+        RegOverridePredefKey(HKEY_CURRENT_USER,nullptr);RegCloseKey(dialogUser);
+        RegDeleteTreeW(HKEY_CURRENT_USER,settingsHive.c_str());
+        FastFileSettings afterIntegration;CMainWnd::ReadSystemIntegration(afterIntegration);
+        check(afterIntegration.contextMenu==realIntegration.contextMenu
+            && afterIntegration.defaultFolders==realIntegration.defaultFolders
+            && afterIntegration.defaultComputer==realIntegration.defaultComputer
+            && afterIntegration.explorerWindowTakeover==realIntegration.explorerWindowTakeover,
+            "settings dialog regression preserves real integration flags");
         window.m_settings=original;window.ApplySettingsAppearance();
         return failures;
     }
@@ -2723,8 +3187,13 @@ static LONG WINAPI ReportCrash(EXCEPTION_POINTERS* info) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+std::atomic<int> MainWndRegressionAccess::slowProbeCalls{0};
+std::wstring MainWndRegressionAccess::slowRoot;
+
 int main(int argc, char** argv) {
     std::cout << std::unitbuf;
+    // Only the Shell activation test registers windows in the user's Shell window list.
+    CMainWnd::s_shellWindowRegistrationAllowed = false;
     SetUnhandledExceptionFilter(ReportCrash);
     if(argc>1 && strcmp(argv[1],"--shell-activation-launcher")==0) {
         wchar_t desktopName[256]{},hiveName[256]{};
@@ -2779,6 +3248,8 @@ int main(int argc, char** argv) {
     const int cacheFailures = MainWndRegressionAccess::CheckIconCache(*window, root, cacheMarker, userCacheFiles, userCacheNewest);
     ShowWindow(hwnd, SW_HIDE);
     int failures = activationOnly ? MainWndRegressionAccess::CheckShellActivation(*window,fixture)
+        : argc>1 && strcmp(argv[1],"--explorer-live-only")==0
+        ? MainWndRegressionAccess::CheckExplorerLive(*window,fixture)
         : argc>1 && strcmp(argv[1],"--delete-permission-check")==0
         ? MainWndRegressionAccess::CheckDeletePermissionDialog(*window, root)
         : argc>1 && strcmp(argv[1],"--delete-partial-check")==0
@@ -2789,8 +3260,12 @@ int main(int argc, char** argv) {
         ? MainWndRegressionAccess::CheckAsyncThumbs(*window, root)
         : argc>1 && strcmp(argv[1],"--ui-polish-only")==0
         ? MainWndRegressionAccess::RunUiPolish(*window, root)
+        : argc>1 && strcmp(argv[1],"--shortcuts-only")==0
+        ? MainWndRegressionAccess::CheckShortcuts(*window, root)
+        : argc>1 && strcmp(argv[1],"--integration-only")==0
+        ? MainWndRegressionAccess::CheckIntegration(*window,root)
         : MainWndRegressionAccess::Run(*window, fixture);
-    if(!activationOnly && !(argc>1 && (strcmp(argv[1],"--delete-permission-check")==0 || strcmp(argv[1],"--delete-partial-check")==0)))
+    if(!activationOnly && !(argc>1 && (strcmp(argv[1],"--delete-permission-check")==0 || strcmp(argv[1],"--delete-partial-check")==0 || strcmp(argv[1],"--integration-only")==0 || strcmp(argv[1],"--explorer-live-only")==0)))
         failures+=MainWndRegressionAccess::CheckPreferences(*window,root);
     failures += cacheFailures;
     if(!AppIconMatchesSource()) {++failures;std::cerr<<"FAIL all embedded application icon sizes must match res/FastFile.ico\n";}

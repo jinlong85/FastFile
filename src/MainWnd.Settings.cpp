@@ -54,12 +54,29 @@ bool FastFileSettings::Save(const std::wstring& path) const {
 
 namespace {
 enum { Startup=110,StartupPath,External,Reuse,ClosePrompt,Density,Font,TabHeight,FavHeight,TabWidth,Scrollbar,
-       View,Remember,Sort,Ascending,Grouping,Context,DefaultFolders,DefaultComputer,Browse=190,RestoreWindows };
+       View,Remember,Sort,Ascending,Grouping,Context,DefaultFolders,DefaultComputer,ExplorerTakeover,
+       Browse=190,RestoreWindows,DetectIntegration,RepairIntegration,IntegrationDetails };
 struct SettingsDialog {
     struct Control { HWND window;RECT bounds;int page; };
     FastFileSettings draft;std::function<bool(FastFileSettings)> save;
+    std::function<bool(const FastFileSettings&)> repair;
+    std::function<std::wstring()> monitorStatus;
     HWND dialog=nullptr,tab=nullptr;HFONT font=nullptr;UINT dpi=96;int page=0;
     std::vector<Control> controls;
+    void Detect() {
+        const auto status=CMainWnd::DetectSystemIntegration();
+        const auto desired=Read();
+        const bool ready=(!desired.defaultFolders || status.foldersReady)
+            && (!desired.defaultComputer || status.computerReady) && (!desired.contextMenu || status.menuReady);
+        const bool selected=desired.defaultFolders || desired.defaultComputer || desired.contextMenu;
+        FastFileSettings applied;CMainWnd::ReadSystemIntegration(applied);
+        const std::wstring heading=!selected?L"关联检测：未选择默认关联接管。\r\n":ready?
+            L"关联检测：所选入口已生效。\r\n":L"关联检测：所选入口尚未生效，请点击修复。\r\n";
+        const std::wstring monitor=(monitorStatus?monitorStatus():L"窗口转交：未启用。")+L"\r\n";
+        const std::wstring pending=desired.explorerWindowTakeover!=applied.explorerWindowTakeover?L"窗口转交选项的变化尚未保存。\r\n":L"";
+        const std::wstring text=heading+monitor+pending+status.details;
+        SetWindowTextW(Item(IntegrationDetails),text.c_str());
+    }
     HWND Item(int id) const {return GetDlgItem(dialog,id);}
     int Scale(int n) const {return MulDiv(n,dpi,96);}
     HWND Add(const wchar_t* cls,const wchar_t* text,int id,int x,int y,int w,int h,DWORD style,int p) {
@@ -109,12 +126,17 @@ struct SettingsDialog {
         Check(Context,L"添加右键“使用 FastFile 打开”",74,3,draft.contextMenu);
         Check(DefaultFolders,L"使用 FastFile 默认打开文件夹和磁盘",116,3,draft.defaultFolders);
         Check(DefaultComputer,L"使用 FastFile 打开桌面“此电脑”",158,3,draft.defaultComputer);
-        Add(L"STATIC",L"默认关闭，仅作用于当前用户。启用前保存原设置，关闭后恢复。\r\n直接调用 Explorer 的应用可能不受影响；图片和视频的默认程序由 Windows 管理。",0,30,210,566,100,SS_LEFT,3);
-        Add(L"BUTTON",L"恢复 Windows 打开方式",RestoreWindows,30,322,220,32,WS_TABSTOP|BS_PUSHBUTTON,3);
-        Add(L"BUTTON",L"恢复默认设置",IDRETRY,24,416,130,32,WS_TABSTOP|BS_PUSHBUTTON,-1);
-        Add(L"BUTTON",L"保存",IDOK,428,416,88,32,WS_TABSTOP|BS_DEFPUSHBUTTON,-1);
-        Add(L"BUTTON",L"取消",IDCANCEL,532,416,88,32,WS_TABSTOP|BS_PUSHBUTTON,-1);
+        Check(ExplorerTakeover,L"自动转交新打开的资源管理器文件夹（需保持 FastFile 运行）",200,3,draft.explorerWindowTakeover);
+        Add(L"STATIC",L"仅影响当前用户。原设置可恢复；不关闭已有窗口、其他管理器或多标签窗口。",0,30,238,566,34,SS_LEFT,3);
+        Add(L"BUTTON",L"检测接管状态",DetectIntegration,30,280,166,32,WS_TABSTOP|BS_PUSHBUTTON,3);
+        Add(L"BUTTON",L"修复并应用接管",RepairIntegration,208,280,166,32,WS_TABSTOP|BS_PUSHBUTTON,3);
+        Add(L"EDIT",L"",IntegrationDetails,30,322,566,126,ES_MULTILINE|ES_READONLY|WS_VSCROLL|WS_TABSTOP,3);
+        Add(L"BUTTON",L"恢复 Windows 打开方式",RestoreWindows,30,462,220,32,WS_TABSTOP|BS_PUSHBUTTON,3);
+        Add(L"BUTTON",L"恢复默认设置",IDRETRY,24,508,130,32,WS_TABSTOP|BS_PUSHBUTTON,-1);
+        Add(L"BUTTON",L"保存",IDOK,428,508,88,32,WS_TABSTOP|BS_DEFPUSHBUTTON,-1);
+        Add(L"BUTTON",L"取消",IDCANCEL,532,508,88,32,WS_TABSTOP|BS_PUSHBUTTON,-1);
         Layout();SelectPage(0);
+        Detect();
     }
     void Layout() {
         HFONT next=CreateFontW(-Scale(12),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
@@ -142,6 +164,7 @@ struct SettingsDialog {
         s.defaultView=Choice(View);s.rememberViews=Checked(Remember);s.sortColumn=Choice(Sort);
         s.sortAscending=Choice(Ascending)==0;s.grouping=Choice(Grouping)-1;
         s.contextMenu=Checked(Context);s.defaultFolders=Checked(DefaultFolders);s.defaultComputer=Checked(DefaultComputer);
+        s.explorerWindowTakeover=Checked(ExplorerTakeover);
         s.Normalize();return s;
     }
     void BrowseFolder() {
@@ -162,7 +185,7 @@ struct SettingsDialog {
         if(message==WM_INITDIALOG) {
             self=reinterpret_cast<SettingsDialog*>(l);SetWindowLongPtrW(window,DWLP_USER,l);self->dialog=window;
             self->dpi=GetDpiForWindow(window);if(!self->dpi)self->dpi=96;
-            self->Build();RECT r{0,0,self->Scale(640),self->Scale(468)};
+            self->Build();RECT r{0,0,self->Scale(640),self->Scale(560)};
             AdjustWindowRectExForDpi(&r,GetWindowLongW(window,GWL_STYLE),FALSE,GetWindowLongW(window,GWL_EXSTYLE),self->dpi);
             RECT owner{};GetWindowRect(GetParent(window),&owner);
             SetWindowPos(window,nullptr,(owner.left+owner.right-(r.right-r.left))/2,(owner.top+owner.bottom-(r.bottom-r.top))/2,
@@ -186,10 +209,17 @@ struct SettingsDialog {
                 SendMessageW(self->Item(TabHeight),CB_SETCURSEL,height-24,0);SendMessageW(self->Item(FavHeight),CB_SETCURSEL,height-24,0);return TRUE;
             }
             if(id==Browse) {self->BrowseFolder();return TRUE;}
-            if(id==RestoreWindows) {
-                for(int item:{Context,DefaultFolders,DefaultComputer})SendMessageW(self->Item(item),BM_SETCHECK,BST_UNCHECKED,0);
+            if(id==DetectIntegration) {self->Detect();return TRUE;}
+            if(id==RepairIntegration) {
+                if(self->repair(self->Read()))self->Detect();
                 return TRUE;
             }
+            if(id==RestoreWindows) {
+                for(int item:{Context,DefaultFolders,DefaultComputer,ExplorerTakeover})SendMessageW(self->Item(item),BM_SETCHECK,BST_UNCHECKED,0);
+                self->Detect();
+                return TRUE;
+            }
+            if(id>=Context && id<=ExplorerTakeover && HIWORD(w)==BN_CLICKED){self->Detect();return TRUE;}
             if(id==IDRETRY) {
                 self->draft=FastFileSettings{};for(const auto& c:self->controls)DestroyWindow(c.window);self->controls.clear();self->Build();return TRUE;
             }
@@ -203,6 +233,8 @@ struct SettingsDialog {
 void CMainWnd::ShowSettings() {
     SettingsDialog state;state.draft=m_settings;ReadSystemIntegration(state.draft);
     state.save=[this](FastFileSettings settings){return CommitSettings(settings);};
+    state.repair=[this](const FastFileSettings& settings){return CommitIntegrationSettings(settings);};
+    state.monitorStatus=[this]{return ExplorerTakeoverStatus();};
     struct Template {DLGTEMPLATE dialog;WORD menu=0,cls=0;wchar_t title[4]=L"设置";} layout{};
     layout.dialog.style=WS_POPUP|WS_CAPTION|WS_SYSMENU|DS_MODALFRAME;
     layout.dialog.dwExtendedStyle=WS_EX_CONTROLPARENT;layout.dialog.cx=440;layout.dialog.cy=320;
@@ -226,6 +258,8 @@ bool CMainWnd::CommitSettings(FastFileSettings next) {
         MessageBoxW(GetActiveWindow(),L"设置保存失败，请检查配置目录是否可写。",L"设置",MB_OK|MB_ICONERROR);return false;
     }
     m_settings=next;
+    UpdateShellWindowRegistration();
+    UpdateExplorerTakeover();
     if(next.sortColumn!=previous.sortColumn || next.sortAscending!=previous.sortAscending) {
         m_sortColumn=static_cast<SortColumn>(next.sortColumn);m_sortAscending=next.sortAscending;
     }
@@ -233,6 +267,16 @@ bool CMainWnd::CommitSettings(FastFileSettings next) {
     if(next.defaultView!=previous.defaultView || next.rememberViews!=previous.rememberViews)SetViewMode(static_cast<ViewMode>(next.defaultView));
     ApplyShellViewMode();
     SaveSession();return true;
+}
+bool CMainWnd::CommitIntegrationSettings(const FastFileSettings& settings) {
+    if(!ApplySystemIntegration(settings)) {
+        MessageBoxW(GetActiveWindow(),L"无法修复系统集成，已尝试恢复原设置。请检查当前用户的写入权限。",L"系统集成",MB_OK|MB_ICONERROR);
+        return false;
+    }
+    // Integration is journaled in HKCU, independently of unrelated INI drafts.
+    m_settings.contextMenu=settings.contextMenu;m_settings.defaultFolders=settings.defaultFolders;
+    m_settings.defaultComputer=settings.defaultComputer;m_settings.explorerWindowTakeover=settings.explorerWindowTakeover;
+    UpdateShellWindowRegistration();UpdateExplorerTakeover();return true;
 }
 void CMainWnd::ApplySettingsAppearance() {
     ApplyDpiScaledFonts();ApplyDpiScaledChrome();ApplyUiChromeTokens();

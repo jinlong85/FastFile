@@ -57,6 +57,7 @@
       <SubSystem>Windows</SubSystem>
       <AdditionalDependencies>comctl32.lib;gdiplus.lib;msimg32.lib;imm32.lib;ole32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalManifestFiles>..\cmake\FastFile.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
@@ -79,21 +80,31 @@
     <ClCompile Include="..\src\MainWnd.Menus.cpp" />
     <ClCompile Include="..\src\MainWnd.Settings.cpp" />
     <ClCompile Include="..\src\MainWnd.Integration.cpp" />
+    <ClCompile Include="..\src\MainWnd.ExplorerIntegration.cpp" />
     <ClCompile Include="..\src\MainWnd.Views.cpp" />
     <ClCompile Include="..\src\MainWnd.Icons.cpp" />
     <ClCompile Include="..\src\MainWnd.Preview.cpp" />
     <ClCompile Include="..\src\MainWnd.DragDrop.cpp" />
     <ClCompile Include="..\src\ShellBrowserHost.cpp" />
+    <ClCompile Include="..\src\ShellWindowRegistration.cpp" />
     <ClCompile Include="..\src\ShellFileOperation.cpp" />
+    <ClCompile Include="..\src\TabStripUI.cpp" />
+    <ClCompile Include="..\src\FluentScrollBarUI.cpp" />
     <ClInclude Include="..\src\MainWnd.h" />
     <ClInclude Include="..\src\MainWndInternal.h" />
     <ClInclude Include="..\src\ShellBrowserHost.h" />
+    <ClInclude Include="..\src\ShellWindowRegistration.h" />
     <ClInclude Include="..\src\ShellFileOperation.h" />
     <ClInclude Include="..\src\ShellMenuUtil.h" />
     <ClInclude Include="..\src\FavoriteStarUI.h" />
     <ClInclude Include="..\src\FavoritesJson.h" />
     <ClInclude Include="..\src\ShellPresentation.h" />
     <ClInclude Include="..\src\TabLayout.h" />
+    <ClInclude Include="..\src\TabStripUI.h" />
+    <ClInclude Include="..\src\FluentScrollBarUI.h" />
+    <ResourceCompile Include="..\res\FastFile.rc">
+      <AdditionalIncludeDirectories>..\res;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
   </ItemGroup>
   <ItemGroup>
     <Xml Include="..\skin\main.xml">

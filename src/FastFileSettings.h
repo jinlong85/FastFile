@@ -23,6 +23,7 @@ struct FastFileSettings {
     bool contextMenu = false;
     bool defaultFolders = false;
     bool defaultComputer = false;
+    bool explorerWindowTakeover = false;
     void Normalize();
     static std::wstring FilePath();
     static FastFileSettings Load(const std::wstring& path);

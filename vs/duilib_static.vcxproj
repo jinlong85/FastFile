@@ -49,7 +49,7 @@
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>false</SDLCheck>
       <ConformanceMode>false</ConformanceMode>
-      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/source-charset:.936 /MP %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
@@ -65,7 +65,6 @@
     <ClCompile Include="..\third_party\duilib\DuiLib\Control\UICombo.cpp" />
     <ClCompile Include="..\third_party\duilib\DuiLib\Control\UIDateTime.cpp" />
     <ClCompile Include="..\third_party\duilib\DuiLib\Control\UIEdit.cpp" />
-    <ClCompile Include="..\third_party\duilib\DuiLib\Control\UIFlash.cpp" />
     <ClCompile Include="..\third_party\duilib\DuiLib\Control\UIGifAnim.cpp" />
     <ClCompile Include="..\third_party\duilib\DuiLib\Control\UILabel.cpp" />
     <ClCompile Include="..\third_party\duilib\DuiLib\Control\UIList.cpp" />
@@ -76,7 +75,6 @@
     <ClCompile Include="..\third_party\duilib\DuiLib\Control\UISlider.cpp" />
     <ClCompile Include="..\third_party\duilib\DuiLib\Control\UIText.cpp" />
     <ClCompile Include="..\third_party\duilib\DuiLib\Control\UITreeView.cpp" />
-    <ClCompile Include="..\third_party\duilib\DuiLib\Control\UIWebBrowser.cpp" />
     <ClCompile Include="..\third_party\duilib\DuiLib\Core\UIBase.cpp" />
     <ClCompile Include="..\third_party\duilib\DuiLib\Core\UIContainer.cpp" />
     <ClCompile Include="..\third_party\duilib\DuiLib\Core\UIControl.cpp" />

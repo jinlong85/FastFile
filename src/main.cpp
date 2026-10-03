@@ -179,23 +179,42 @@ bool ForwardOpenPaths(HWND existing, const std::vector<std::wstring>& paths)
     if (!existing || paths.empty())
         return false;
     std::wstring payload;
+    std::vector<std::wstring> valid;
     for (const std::wstring& path : paths) {
         if (path.empty())
             continue;
         if (!payload.empty())
             payload.push_back(L'\n');
         payload += path;
+        valid.push_back(path);
     }
     if (payload.empty())
         return false;
     payload.push_back(L'\0');
+    // This process was just started by the Shell and may set the foreground window;
+    // hand that right to the running FastFile before asking it to come forward.
+    DWORD pid = 0;
+    ::GetWindowThreadProcessId(existing, &pid);
+    if (pid)
+        ::AllowSetForegroundWindow(pid);
     COPYDATASTRUCT cds = {};
     cds.dwData = kOpenPathsCopyData;
     cds.cbData = static_cast<DWORD>(payload.size() * sizeof(wchar_t));
     cds.lpData = const_cast<wchar_t*>(payload.c_str());
-    DWORD_PTR ignored = 0;
-    return ::SendMessageTimeoutW(existing, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&cds),
-        SMTO_ABORTIFHUNG | SMTO_BLOCK, 2000, &ignored) != 0 && ignored != 0;
+    DWORD_PTR accepted = 0;
+    if (::SendMessageTimeoutW(existing, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&cds),
+            SMTO_BLOCK, 1500, &accepted) != 0 && accepted != 0)
+        return true;
+    // The window exists but is busy (for example its UI thread is waiting for a sleeping
+    // disk). Do not drop the request and never fall back to Explorer: queue it and post a
+    // notification that the window handles as soon as it is free.
+    const std::wstring queued = CMainWnd::QueueExternalOpen(valid);
+    if (queued.empty())
+        return false;
+    if (::PostMessageW(existing, CMainWnd::kMsgDrainOpenQueue, 0, 0))
+        return true;
+    ::DeleteFileW(queued.c_str()); // the window is gone; this process opens the folder itself
+    return false;
 }
 
 bool ActivateExistingInstance(const std::vector<std::wstring>& paths)
@@ -203,8 +222,8 @@ bool ActivateExistingInstance(const std::vector<std::wstring>& paths)
     HWND existing = ::FindWindowW(kMainWndClass, nullptr);
     if (!existing)
         return false;
-    if (!paths.empty() && ForwardOpenPaths(existing, paths))
-        return true;
+    if (!paths.empty())
+        return ForwardOpenPaths(existing, paths); // false: open a window of our own
     DWORD pid = 0;
     ::GetWindowThreadProcessId(existing, &pid);
     if (pid)
@@ -254,13 +273,20 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPWSTR /*lpCmdLi
 
     int restoreArgc=0;auto restoreArgv=CommandLineToArgvW(GetCommandLineW(),&restoreArgc);
     bool restoreIntegration=false;
+    bool repairIntegration=false;
     for(int i=1;restoreArgv && i<restoreArgc;++i)if(wcscmp(restoreArgv[i],L"--restore-integration")==0)restoreIntegration=true;
+    for(int i=1;restoreArgv && i<restoreArgc;++i)if(wcscmp(restoreArgv[i],L"--repair-integration")==0)repairIntegration=true;
     LocalFree(restoreArgv);
     if(restoreIntegration) {
         FastFileSettings disabled;
         return CMainWnd::ApplySystemIntegration(disabled) && CMainWnd::RestoreNativeFolderHandlers() ? 0 : 2;
     }
+    if(repairIntegration) {
+        FastFileSettings current;CMainWnd::ReadSystemIntegration(current);
+        return CMainWnd::ApplySystemIntegration(current)?0:2;
+    }
     CMainWnd::RestoreNativeFolderHandlers();
+    CMainWnd::RepairOwnedSystemIntegration();
 
     // Single-instance: tray / second launch should restore the existing main HWND
     const std::vector<std::wstring> startupPaths = ParseOpenPaths();

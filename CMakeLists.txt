@@ -63,6 +63,7 @@ add_executable(FastFile WIN32
   src/MainWnd.Menus.cpp
   src/MainWnd.Settings.cpp
   src/MainWnd.Integration.cpp
+  src/MainWnd.ExplorerIntegration.cpp
   src/MainWnd.Views.cpp
   src/MainWnd.Icons.cpp
   src/FluentScrollBarUI.cpp
@@ -72,6 +73,7 @@ add_executable(FastFile WIN32
   src/MainWnd.Preview.cpp
   src/MainWnd.DragDrop.cpp
   src/ShellBrowserHost.cpp
+  src/ShellWindowRegistration.cpp
   src/ShellBrowserHost.h
   src/ShellFileOperation.cpp
   src/ShellFileOperation.h
@@ -135,7 +137,11 @@ if(BUILD_TESTING)
   add_test(NAME FastFileUiPolishTests COMMAND FastFileMainWndRegressionTests --ui-polish-only)
   set_tests_properties(FastFileUiPolishTests PROPERTIES TIMEOUT 30)
   add_test(NAME FastFileShellActivationTests COMMAND FastFileMainWndRegressionTests --shell-activation-only)
-  set_tests_properties(FastFileShellActivationTests PROPERTIES TIMEOUT 60)
+  set_tests_properties(FastFileShellActivationTests PROPERTIES TIMEOUT 90)
+  add_test(NAME FastFileIntegrationTests COMMAND FastFileMainWndRegressionTests --integration-only)
+  set_tests_properties(FastFileIntegrationTests PROPERTIES TIMEOUT 90)
+  add_test(NAME FastFileExplorerTakeoverLiveTests COMMAND FastFileMainWndRegressionTests --explorer-live-only)
+  set_tests_properties(FastFileExplorerTakeoverLiveTests PROPERTIES TIMEOUT 90)
   add_executable(FastFileFavoritesTests tests/FavoritesTests.cpp)
   target_include_directories(FastFileFavoritesTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_link_libraries(FastFileFavoritesTests PRIVATE duilib gdiplus)
@@ -153,6 +159,20 @@ if(BUILD_TESTING)
   target_include_directories(FastFileShellBrowserTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_link_libraries(FastFileShellBrowserTests PRIVATE shell32 shlwapi ole32 uuid propsys comctl32 msimg32)
   add_test(NAME FastFileShellBrowserTests COMMAND FastFileShellBrowserTests)
+  add_executable(FastFileShellWindowTests
+    tests/ShellWindowRegistrationTests.cpp
+    src/ShellWindowRegistration.cpp
+  )
+  target_include_directories(FastFileShellWindowTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(FastFileShellWindowTests PRIVATE shell32 shlwapi ole32 oleaut32 uuid propsys)
+  if(MSVC)
+    target_compile_options(FastFileShellWindowTests PRIVATE /utf-8)
+  endif()
+  add_test(NAME FastFileShellWindowTests COMMAND FastFileShellWindowTests)
+  set_tests_properties(FastFileShellWindowTests PROPERTIES TIMEOUT 120)
+  add_test(NAME FastFileBuildSourceParity
+    COMMAND "${CMAKE_COMMAND}" "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/CheckBuildSources.cmake")
   add_test(NAME FastFileVersionSource
     COMMAND "${CMAKE_COMMAND}"
       "-DPROJECT_VERSION=${PROJECT_VERSION}"

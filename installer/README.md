@@ -1,13 +1,21 @@
-# FastFile 安装程序
+﻿# FastFile 安装程序
 
 一条命令生成安装包（**不需要任何第三方安装器工具**，只用 Windows 自带的
 .NET Framework 编译器 `csc.exe`）：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File installer\build_installer.ps1
+powershell -ExecutionPolicy Bypass -File installer\build_installer.ps1 -BuildDirectory build-ui\Release
 ```
 
-产物：`dist\FastFile-Setup-1.0.0.exe`（版本用 `-Version 1.2.3` 指定）
+产物：`dist\FastFile-Setup-<版本>.exe`，当前源码候选为 **1.0.12**（验证状态见根目录 HANDOFF.md）。默认读取根目录 `VERSION`；临时指定版本可用 `-Version 1.2.3`。脚本支持 Windows PowerShell 5 和 PowerShell 7，以及包含空格的路径。
+
+`-BuildDirectory` 指定已有构建产物目录；不传时默认读取 `build\Release`（`-Configuration` 可更改配置）。当前候选构建位于 `build-ui\Release`，打包前应先完成该目录的 Release x64 构建。
+
+可只读验证安装包内嵌版本、文件清单与源文件哈希，不执行安装：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tests\CheckInstallerPayload.ps1 -InstallerPath dist\FastFile-Setup-1.0.12.exe -BuildDirectory build-ui\Release
+```
 
 ## 安装程序做了什么
 

@@ -7,7 +7,8 @@
 #   powershell -ExecutionPolicy Bypass -File installer\build_installer.ps1
 param(
     [string]$Configuration = 'Release',
-    [string]$Version = ''
+    [string]$Version = '',
+    [string]$BuildDirectory = ''
 )
 $ErrorActionPreference = 'Stop'
 
@@ -18,7 +19,11 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
     $Version = (Get-Content -LiteralPath $versionFile -Raw).Trim()
 }
 if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw "无效版本号：$Version（格式应为 x.y.z）" }
-$build = Join-Path $root "build\$Configuration"
+$build = if ([string]::IsNullOrWhiteSpace($BuildDirectory)) {
+    Join-Path $root "build\$Configuration"
+} else {
+    (Resolve-Path -LiteralPath $BuildDirectory).Path
+}
 $dist  = Join-Path $root 'dist'
 $stage = Join-Path $dist '_stage'
 $payload = Join-Path $stage 'payload'
@@ -35,6 +40,9 @@ $csc = @(
 if (-not $csc) { throw '找不到 .NET Framework 的 csc.exe（Windows 通常自带 4.x）。' }
 
 Write-Host "[1/4] 准备输出目录"
+if ([System.IO.Path]::GetFullPath($stage) -ne (Join-Path ([System.IO.Path]::GetFullPath($root)) 'dist\_stage')) {
+    throw '安装包暂存目录不在项目 dist 下。'
+}
 if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $payload | Out-Null
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
@@ -55,12 +63,12 @@ foreach ($f in $files) {
     $rel = $f.FullName.Substring($payload.Length + 1).Replace('\', '/')
     $name = 'ff' + $index
     $manifest.Add(($name + '|' + $rel))
-    $resArgs.Add(('/resource:"' + $f.FullName + '",' + $name))
+    $resArgs.Add(('/resource:' + $f.FullName + ',' + $name))
     $index++
 }
 $manifestPath = Join-Path $stage 'manifest.txt'
 [System.IO.File]::WriteAllText($manifestPath, (($manifest -join "`r`n") + "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
-$resArgs.Add(('/resource:"' + $manifestPath + '",ff_manifest'))
+$resArgs.Add(('/resource:' + $manifestPath + ',ff_manifest'))
 
 Write-Host ("      嵌入 {0} 个文件" -f $files.Count)
 
@@ -73,11 +81,11 @@ $versionCs = Join-Path $stage 'version.cs'
     ("internal static class BuildInfo { public const string Version = `"" + $Version + "`"; }`r`n"),
     (New-Object System.Text.UTF8Encoding($true)))
 
-$cscArgs = @('/nologo', '/target:winexe', '/platform:anycpu', '/optimize+',
-             ('/out:"' + $target + '"'),
+$cscArgs = @('/nologo', '/utf8output', '/target:winexe', '/platform:anycpu', '/optimize+',
+             ('/out:' + $target),
              '/reference:System.Windows.Forms.dll',
-             ('/win32icon:"' + (Join-Path $root 'res\FastFile.ico') + '"')) + $resArgs +
-           @(('"' + (Join-Path $root 'installer\setup.cs') + '"'), ('"' + $versionCs + '"'))
+             ('/win32icon:' + (Join-Path $root 'res\FastFile.ico'))) + $resArgs +
+           @((Join-Path $root 'installer\setup.cs'), $versionCs)
 
 & $csc @cscArgs
 if ($LASTEXITCODE -ne 0) { throw "csc 编译失败，退出码 $LASTEXITCODE" }

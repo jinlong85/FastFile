@@ -3,6 +3,7 @@
 // Behaviour is unchanged; declarations live in MainWnd.h.
 
 #include "MainWndInternal.h"
+#include "ShellWindowRegistration.h"
 
 #include <memory>
 
@@ -16,6 +17,11 @@ CMainWnd::CMainWnd()
 
 CMainWnd::~CMainWnd()
 {
+    StopExplorerTakeover();
+    delete m_shellWindow;
+    m_shellWindow = nullptr;
+    if (m_pendingShellSelect) ::CoTaskMemFree(m_pendingShellSelect);
+    m_pendingShellSelect = nullptr;
     if (m_shellBrowser) {
         m_shellBrowser->Destroy();
         delete m_shellBrowser;
@@ -62,6 +68,7 @@ void CMainWnd::InitWindow()
         CoTaskMemFree(desktop);
     }
     m_settings=FastFileSettings::Load(FastFileSettings::FilePath());
+    ReadSystemIntegration(m_settings);
     m_viewMode=static_cast<ViewMode>(m_settings.defaultView);m_sortColumn=static_cast<SortColumn>(m_settings.sortColumn);m_sortAscending=m_settings.sortAscending;
     RefreshDpiFromWindow();
     ApplyDpiScaledFonts();
@@ -176,8 +183,14 @@ void CMainWnd::InitWindow()
     SyncRecursiveCheckLabel();
     SetSearchPlaceholder(true);
 
-    // A first launch from a folder association should land directly in that folder,
-    // rather than briefly opening the normal "This PC" start tab.
+    // Register in the Shell window list (only while FastFile is the default folder
+    // handler) before handling the startup folder, so a "show in folder" request that
+    // launched this process can find the window.
+    UpdateShellWindowRegistration();
+    UpdateExplorerTakeover();
+    // A first launch from a folder association lands in that folder. Its target is
+    // resolved off the UI thread, so the window appears at once even while a sleeping
+    // disk spins up; the active tab switches as soon as the folder answers.
     if (!m_startupOpenPaths.empty()) {
         std::vector<std::wstring> paths;
         paths.swap(m_startupOpenPaths);
@@ -514,6 +527,8 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         std::unique_ptr<std::wstring> path(reinterpret_cast<std::wstring*>(lParam));
         if (path)
             OnShellBrowserNavigation(std::move(*path));
+        NotifyShellWindowLocation();
+        TryApplyPendingShellSelect();
         return 0;
     }
     if (uMsg == kMsgShellRename) {
@@ -703,6 +718,8 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         SaveSession();
     }
     if (uMsg == WM_DESTROY) {
+        StopExplorerTakeover();
+        if (m_shellWindow) m_shellWindow->Revoke();
         m_PaintManager.RemoveTranslateAccelerator(this);
         RemoveClipboardFormatListener(m_hWnd);
         if (m_shellRenameNotify) SHChangeNotifyDeregister(m_shellRenameNotify);
@@ -735,6 +752,8 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         if (wParam == kTimerDetailsSync) { UpdateDetailsWindow(false); return 0; }
         if (wParam == kTimerLayoutSync) { SyncLayoutDependents(); SyncShellViewSelection(); return 0; }
         if (wParam == kTimerSelectionPreview) { FlushSelectionPreview(); return 0; }
+        if (wParam == kTimerShellSelect) { TryApplyPendingShellSelect(); return 0; }
+        if (wParam == kTimerExplorerTakeover) { PollExplorerTakeover(); return 0; }
     }
     if (uMsg == WM_MBUTTONDOWN) {
         // Middle click on a tab closes it (Explorer behaviour).
@@ -1546,6 +1565,19 @@ LRESULT CMainWnd::HandleCustomMessage(UINT uMsg, WPARAM wParam, LPARAM lParam, B
             delete pending;                 // free before navigating: it can post more work
             NavigateToNow(path, addToHistory);
         }
+        return 0;
+    }
+    if (uMsg == kMsgDrainOpenQueue) {
+        // A second process could not reach this window in time and queued its folders.
+        bHandled = TRUE;
+        const auto paths = DrainExternalOpenQueue();
+        BringToForeground();
+        if (!paths.empty()) OpenExternalPaths(paths, false);
+        return 0;
+    }
+    if (uMsg == kMsgExternalPathsResolved) {
+        bHandled = TRUE;
+        FinishExternalOpen(reinterpret_cast<ExternalOpenJob*>(lParam));
         return 0;
     }
     if (uMsg == kMsgOpenExternalPaths) {

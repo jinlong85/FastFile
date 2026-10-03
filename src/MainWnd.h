@@ -6,7 +6,11 @@
 #include "FastFileSettings.h"
 #include "ShellFileOperation.h"
 
+#include <shtypes.h>
+
 class ShellBrowserHost;
+class ShellWindowRegistration;
+struct ExplorerScanState;
 
 #include <atomic>
 #include <condition_variable>
@@ -50,6 +54,31 @@ public:
     static bool RestoreNativeFolderHandlers();
     static void ReadSystemIntegration(FastFileSettings& settings);
     static bool ApplySystemIntegration(const FastFileSettings& settings);
+    static bool RepairOwnedSystemIntegration();
+    struct IntegrationStatus {
+        bool foldersReady=false, computerReady=false, menuReady=false;
+        bool otherManager=false;
+        std::wstring details;
+    };
+    static IntegrationStatus DetectSystemIntegration();
+    struct ExplorerSnapshot {
+        HWND window=nullptr;DWORD processId=0;
+        std::wstring path;
+        std::vector<std::wstring> selection;
+        std::vector<std::vector<BYTE>> selectionIds;
+    };
+    // A second FastFile process hands its folders to a busy window through this
+    // per-user queue plus a posted kMsgDrainOpenQueue, instead of dropping them.
+    static std::wstring OpenQueueDirectory();
+    static std::wstring QueueExternalOpen(const std::vector<std::wstring>& paths);
+    static std::vector<std::wstring> DrainExternalOpenQueue();
+    static constexpr UINT kMsgDrainOpenQueue = WM_USER + 108;   // must match main.cpp
+    // Test hook replacing GetFileAttributesW when an external open probes its target
+    // (simulates a spun-down disk). Production leaves it null.
+    static DWORD (*s_folderProbe)(const std::wstring& path);
+    // Tests that are not about Shell activation keep their windows out of the user's
+    // real Shell window list.
+    static bool s_shellWindowRegistrationAllowed;
     static bool ShouldRedirectDisabledShellOpen();
     static bool RedirectDisabledShellOpen(const std::vector<std::wstring>& paths);
 
@@ -301,6 +330,7 @@ private:
 
     void ShowSettings();
     bool CommitSettings(FastFileSettings settings);
+    bool CommitIntegrationSettings(const FastFileSettings& settings);
     void ApplySettingsAppearance();
     FastFileSettings m_settings;
     bool m_openingExternalPaths=false;
@@ -937,6 +967,53 @@ private:
     static constexpr UINT kMsgDetailsFill = WM_USER + 105;
     static constexpr UINT kMsgDeferredNav = WM_USER + 106;
     static constexpr UINT kMsgOpenExternalPaths = WM_USER + 107;
+    static constexpr UINT kMsgExternalPathsResolved = WM_USER + 109; // lParam ExternalOpenJob*
+    // External folder activations resolve their targets on a worker thread: the first
+    // touch of a sleeping disk can take many seconds and must not freeze the window.
+    struct ExternalOpenJob {
+        std::vector<std::wstring> paths;
+        std::vector<std::wstring> targets;
+        bool replaceInitialTab = false;
+    };
+    int m_externalOpensPending = 0;
+    void FinishExternalOpen(ExternalOpenJob* job);
+    static DWORD ProbeFolderAttributes(const std::wstring& path);
+    // Shell window registration (SHOpenFolderAndSelectItems finds FastFile).
+    ShellWindowRegistration* m_shellWindow = nullptr;
+    std::wstring m_shellWindowPath;
+    // Set by an external open: the next location is announced as a fresh Shell window
+    // registration (RegisterPending), which is what a waiting SHOpenFolderAndSelectItems
+    // call listens for; a plain OnNavigate of an existing registration is not enough.
+    bool m_shellWindowReannounce = false;
+    bool RegisterShellWindowAt(const std::wstring& path);
+    PIDLIST_ABSOLUTE m_pendingShellSelect = nullptr;
+    UINT m_pendingShellSelectFlags = 0;
+    ULONGLONG m_pendingShellSelectDeadline = 0;
+    static constexpr UINT_PTR kTimerShellSelect = 0x4606;
+    void UpdateShellWindowRegistration();
+    void NotifyShellWindowLocation();
+    HRESULT OnShellWindowSelect(PCIDLIST_ABSOLUTE item, UINT flags);
+    HRESULT OnShellWindowNavigate(PCIDLIST_ABSOLUTE folder);
+    bool TryApplyPendingShellSelect();
+    void UpdateExplorerTakeover();
+    void PollExplorerTakeover();
+    void StopExplorerTakeover();
+    std::wstring ExplorerTakeoverStatus() const;
+    void ProcessExplorerSnapshots(const std::vector<ExplorerSnapshot>& snapshots,bool baseline);
+    std::shared_ptr<ExplorerScanState> m_explorerScan;
+    struct ExplorerTransfer {
+        ExplorerSnapshot source;ULONGLONG changedAt=0,deadline=0;
+        bool ignored=false,started=false,resolved=false;
+    };
+    std::map<HWND,ExplorerTransfer> m_explorerTransfers;
+    std::map<HWND,DWORD> m_existingExplorerWindows;
+    ULONGLONG m_explorerScanSequence=0;
+    bool m_explorerBaseline=false;
+    bool m_explorerPollBusy=false;
+    static constexpr UINT_PTR kTimerExplorerTakeover=0x4607;
+    // Test injection and root filter never set by the application.
+    static bool (*s_closeExplorerForTest)(const ExplorerSnapshot&);
+    static std::wstring s_explorerTestRoot;
     static_assert(kMsgPreviewIconReady != kMsgThumbReady && kMsgPreviewIconReady != kMsgFileOpFinished
         && kMsgPreviewIconReady != kMsgShellContextMenu, "private window messages must be unique");
     static constexpr int kDetailsVirtOverscan = 8;
