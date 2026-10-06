@@ -47,6 +47,24 @@ jobs:
             }
           }
           Write-Host ('Explorer desktop Shell handle: ' + [DesktopShell]::FindWindow('Shell_TrayWnd', $null))
+          $shell = New-Object -ComObject Shell.Application
+          $shell.Explore($env:TEMP)
+          $deadline = [DateTime]::UtcNow.AddSeconds(20)
+          $ready = $false
+          while (-not $ready -and [DateTime]::UtcNow -lt $deadline) {
+            foreach ($window in @($shell.Windows())) {
+              try {
+                if ($window.Document.Folder.Self.Path -eq $env:TEMP) {
+                  $null = $window.Document.Folder.Items().Count
+                  $window.Quit()
+                  $ready = $true
+                }
+              } catch { }
+            }
+            if (-not $ready) { Start-Sleep -Milliseconds 250 }
+          }
+          if (-not $ready) { throw 'Explorer file-window Shell did not become ready.' }
+          Write-Host 'Explorer file-window Shell initialized and fixture window closed.'
       - name: Check release preparation
         shell: powershell
         run: ./tests/CheckReleasePreparation.ps1
