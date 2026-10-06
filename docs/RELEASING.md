@@ -21,4 +21,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/PrepareRelease.ps1
 
 第二条命令要求 dist 下已存在与 VERSION 相同的安装包。准备脚本不执行安装器。
 
-托管 runner 使用 RUNNER_TEMP 下的长路径作为 TEMP／TMP，避免 8.3 临时路径与 Shell 返回的规范路径不一致。编译日志和 CTest 日志无论成功失败均上传为 Verification-Logs artifact。
+托管 runner 使用 RUNNER_TEMP 下的长路径作为 TEMP／TMP，避免 8.3 临时路径与 Shell 返回的规范路径不一致；统一测试夹具的扩展名显示，并检查 Explorer 桌面和文件窗口 Shell 初始化完成。环境准备只修改一次性 runner，不修改用户电脑。运行库检查优先使用 CMake 实际选择的编译器旁的 dumpbin，避免新 Visual Studio 的安装查询信息不兼容。编译日志和 CTest 日志无论成功失败均上传为 Verification-Logs artifact。

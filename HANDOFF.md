@@ -1,8 +1,16 @@
-﻿# FastFile — 交接说明（给后续 AI / 开发者）
+# FastFile — 交接说明（给后续 AI / 开发者）
 
 更新日期：2026-10-06（Asia/Shanghai）
 
-## 当前候选：1.0.17 关于与诊断（2026-10-06）
+## 自动发行完成：1.0.17（2026-10-06）
+
+- 用户授权自动发行最新版本。已发布 [v1.0.17 预发布版](https://github.com/jinlong85/FastFile/releases/tag/v1.0.17)，标签指向 `8b8ee054f23eb2e1b3e8ad9c56419ba4adc4eadd`。GitHub 安装包为 **2,331,136 字节**，SHA256 **1AF2B6CBE0078F1A57DE4BC1A4F9E4B55B3FF95A0EFBB6E19BAC55FAD41FEB33**；已实际下载并与 SHA256SUMS.txt、GitHub asset digest 核对一致。发布于北京时间 2026-10-06 20:24。
+- [成功运行 37462065218](https://github.com/jinlong85/FastFile/actions/runs/37462065218)：Windows Server 2025／VS 2026，Release x64 静态 CRT 构建，完整 CTest **14/14，222.55 秒**；实际跨进程 Shell、设置、文件操作及代理测试通过；安装包版本／全部 3 文件哈希、进程归属与外部 CRT 依赖检查通过。发布包的 GUI／代理均不依赖外部 MSVC DLL。没有实际安装／卸载、替换用户当前程序；第三方软件菜单及现场视觉验收未完成，因此保留预发布。
+- 新增 `.github/workflows/release.yml`、PrepareRelease.ps1、CheckReleasePreparation.ps1、CheckReleaseRuntime.ps1。VERSION 或发行流程／准备测试更新触发，也支持 workflow_dispatch；全部验证通过后同一工作流用 GITHUB_TOKEN 创建标签和 Release，避免 token 创建标签不能触发另一工作流的问题。发布前核对 main 为本次构建提交，已有发行版不覆盖，孤立标签拒绝发行；维护规则见 [发行文档](docs/RELEASING.md)。
+- 准备脚本覆盖对应版本日志、SHA256、非法版本、缺少安装包及日志。本地及云端通过；运行库检查优先读 CMake 实际编译器配置定位同目录 dumpbin，再回退 vswhere。新增定位路径本地／云端通过；本地旧动态 CRT 候选确实被拒绝。没有更改生产 UI／Shell 逻辑。
+- 云端环境历史：Server 2022 初次 4/14，改 Server 2025 和长 TEMP 后 12/14；统一 HideFileExt=0 后属性测试通过。原监测器选择测试有一次失败，后续相同生产源码通过，根因未确定。绝对单文件 PIDL 的两个回调检查在未初始化 Shell 时失败，将异步等待从 1 秒增至 5 秒并未解决。仅启动桌面 Shell 后一次完整 14/14，但随后两次专项失败；再验证实际 Explorer 文件窗口 Shell 可用并关闭测试夹具后，连续两次专项和完整 14/14 通过。不能仅凭这些结果断言间歇性失败根因已完全确定；保留全部断言、不添加自动重试或跳过。所有环境准备仅修改一次性 runner。
+- 本地当前源码静态 Release x64 构建及最终 CTest **14/14，242.20 秒**（build-ui/release-static-all-tests.log）通过；本地静态候选 SHA256 **B141584F88F0436F4A2B467558DCCE02F463E45D98850812395A0553823AF982**，与云端工具链／构建时间不同，不作为发行包哈希。旧动态候选备份在 dist/archive/FastFile-Setup-1.0.17-D9B514C8793B.exe。下面是开发阶段历史验证，不代表当前发行资产。
+## 1.0.17：关于与诊断开发记录（2026-10-06）
 
 - 用户同意新增设置“关于 FastFile”。在现有 `MainWnd.Settings.cpp` Win32 对话框增加第 5 页，显示编译版本、Release／Debug、x64／x86、编译日期时间、Windows 内核版本、窗口 DPI、只读运行路径、本安装代理状态和文件版本。手动刷新，不创建新代理、不修改默认程序配置。安装／日志目录在主窗口标签中打开；项目主页、GitHub 更新日志和反馈入口由用户点击后交默认浏览器。
 - 新增 `FastFileAbout.h`，按当前会话与完整可执行路径匹配 FastFileAgent，排除同名其他安装；无法读取标未知。代理版本未知不误报匹配；已知不一致给出重新安装提示。诊断信息采用白名单字段，不含安装、日志、用户资料或浏览路径／文件名。UTF-16 剪贴板由用户按钮显式触发。

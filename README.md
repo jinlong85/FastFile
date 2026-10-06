@@ -18,7 +18,7 @@ FastFile 将多个文件夹放在同一个窗口的标签页中，提供地址�
 | 系统集成 | 检测实际文件夹打开入口，修复关联，可选转交新打开的资源管理器文件夹 |
 | 关于与诊断 | 查看版本、构建和代理状态，打开日志目录，复制不含路径与文件名的诊断信息 |
 
-源码中的 1.0.17 候选包含“关于 FastFile”和独立后台代理：关闭界面后退出界面进程，代理按需重新打开文件管理器。当前验证和限制见 [HANDOFF.md](HANDOFF.md)，交互架构依据见 [分析文档](docs/360_INTERACTION_ANALYSIS.md)。
+[1.0.17 预发布版](https://github.com/jinlong85/FastFile/releases/tag/v1.0.17)包含“关于 FastFile”和独立后台代理：关闭界面后退出界面进程，代理按需重新打开文件管理器。当前验证和限制见 [HANDOFF.md](HANDOFF.md)，交互架构依据见 [分析文档](docs/360_INTERACTION_ANALYSIS.md)。
 
 ## 下载与安装
 
