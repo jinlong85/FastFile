@@ -1,8 +1,8 @@
-﻿# FastFile
+# FastFile
 
 **多标签 Windows 文件管理器，保留熟悉的系统文件操作和右键菜单。**
 
-[下载 1.0.12 预发布版](https://github.com/jinlong85/FastFile/releases/tag/v1.0.12) · [直接下载安装包](https://github.com/jinlong85/FastFile/releases/download/v1.0.12/FastFile-Setup-1.0.12.exe) · [反馈问题](https://github.com/jinlong85/FastFile/issues/new/choose) · [English](README.en.md)
+[下载最新发行版](https://github.com/jinlong85/FastFile/releases) · [反馈问题](https://github.com/jinlong85/FastFile/issues/new/choose) · [English](README.en.md)
 
 FastFile 将多个文件夹放在同一个窗口的标签页中，提供地址面包屑、收藏、目录树、搜索和预览。普通文件夹使用 Windows 原生文件视图，文件右键菜单、复制移动进度和冲突提示由系统提供。
 
@@ -22,19 +22,15 @@ FastFile 将多个文件夹放在同一个窗口的标签页中，提供地址�
 
 ## 下载与安装
 
-当前提供 **1.0.12 预发布版，Windows x64**。程序界面为中文。
+发行版面向 **Windows x64**，默认保留预发布标记。程序界面为中文；版本及验证范围以发行说明为准。
 
-1. 从 [发布页面](https://github.com/jinlong85/FastFile/releases/tag/v1.0.12) 下载 `FastFile-Setup-1.0.12.exe`。`Source code` 压缩包是源码，不是安装包。
+1. 从 [发布页面](https://github.com/jinlong85/FastFile/releases) 的最新版本下载 `FastFile-Setup-<版本>.exe`。`Source code` 压缩包是源码，不是安装包。
 2. 更新时先关闭旧版 FastFile，再运行安装包。安装到当前用户，无需管理员权限。
 3. 从开始菜单启动 FastFile；点击命令栏右侧的齿轮调整设置。
 
 安装目录为 `%LOCALAPPDATA%\Programs\FastFile`。可通过 Windows「设置 → 应用」卸载；个人设置保存在 `%APPDATA%\FastFile`，卸载后保留。
 
-安装包 SHA-256：
-
-```text
-BB698D76A0B5363E1D7555D68A9AB183D7E7612C8D6449548C2DE902312554A1
-```
+安装包 SHA-256 在同一发行版的 `SHA256SUMS.txt` 和发行说明中。请核对与安装包相同的版本。
 
 ## 让其他程序通过 FastFile 打开文件夹
 
@@ -45,14 +41,14 @@ BB698D76A0B5363E1D7555D68A9AB183D7E7612C8D6449548C2DE902312554A1
 3. 如果调用程序直接启动 Windows 资源管理器，再勾选「自动转交新打开的资源管理器文件夹」。
 4. 点击「修复并应用接管」，再用「检测接管状态」确认实际生效的处理程序和路径。
 
-自动转交需要 **FastFile 保持运行**。确认 FastFile 打开目录并选中文件后，才关闭对应的新资源管理器窗口，资源管理器可能短暂出现。已有窗口、其他文件管理器窗口、多标签、虚拟目录、忙碌窗口、超过 256 项选择以及验证失败的窗口会保留。
+1.0.14 起，自动转交由 **FastFileAgent 后台代理**处理；关闭主窗口会退出界面进程，代理接到请求后按需启动界面。确认 FastFile 打开目录并选中文件后，才关闭对应的新资源管理器窗口，资源管理器可能短暂出现。已有窗口、其他文件管理器窗口、多标签、虚拟目录、忙碌窗口、超过 256 项选择以及验证失败的窗口会保留。
 
 此功能不保证覆盖所有第三方程序或系统文件选择对话框。要恢复原有打开方式，点击「恢复 Windows 打开方式」后「保存」；个人文件的默认打开程序继续由 Windows 管理。
 
 ## 当前状态与限制
 
-- Release x64 构建、13 项自动测试和安装包内容核对已通过；包括真实资源管理器的新目录及文件定位转交。
-- IDM 本体菜单和安装／卸载尚未完成人工验收，本版保留预发布标记。完整记录见 [交接说明](HANDOFF.md)。
+- 自动发行先执行 Release x64 构建、全部自动测试、安装包内容及进程归属检查，任何检查失败都不发布。各版本本地与云端验证范围见发行说明及交接记录。
+- IDM 本体菜单和安装／卸载尚未完成人工验收，本版保留预发布标记。完整记录见 [交接说明](HANDOFF.md)，自动发行规则见 [发行文档](docs/RELEASING.md)。
 - 暂不支持压缩包内浏览、网络位置、批量重命名和内容搜索。递归搜索结果最多 4000 项。
 - 不提供永久删除的撤销；部分覆盖或合并操作也不会写入撤销历史。详细行为见 [开发与功能参考](docs/DEVELOPMENT.md)。
 

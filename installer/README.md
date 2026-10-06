@@ -1,4 +1,4 @@
-﻿# FastFile 安装程序
+# FastFile 安装程序
 
 一条命令生成安装包（**不需要任何第三方安装器工具**，只用 Windows 自带的
 .NET Framework 编译器 `csc.exe`）：
@@ -7,20 +7,20 @@
 powershell -ExecutionPolicy Bypass -File installer\build_installer.ps1 -BuildDirectory cmake-build-verified-x64\Release
 ```
 
-产物：`dist\FastFile-Setup-<版本>.exe`，当前源码候选为 **1.0.14**（验证状态见根目录 [HANDOFF.md](../HANDOFF.md)）。默认读取根目录 `VERSION`；临时指定版本可用 `-Version 1.2.3`。脚本支持 Windows PowerShell 5 和 PowerShell 7，以及包含空格的路径。
+产物：`dist\FastFile-Setup-<版本>.exe`，当前源码版本为 **1.0.17**（验证状态见根目录 [HANDOFF.md](../HANDOFF.md)）。默认读取根目录 `VERSION`；临时指定版本可用 `-Version 1.2.3`。脚本支持 Windows PowerShell 5 和 PowerShell 7，以及包含空格的路径。
 
 `-BuildDirectory` 指定已有构建产物目录；不传时默认读取 `build\Release`（`-Configuration` 可更改配置）。2026-10-04 接续验证使用新目录 `cmake-build-verified-x64\Release`，打包前应先完成该目录的 Release x64 构建和测试。
 
 可只读验证安装包内嵌版本、文件清单与源文件哈希，不执行安装：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tests\CheckInstallerPayload.ps1 -InstallerPath dist\FastFile-Setup-1.0.14.exe -BuildDirectory cmake-build-verified-x64\Release
+powershell -ExecutionPolicy Bypass -File tests\CheckInstallerPayload.ps1 -InstallerPath dist\FastFile-Setup-1.0.17.exe -BuildDirectory cmake-build-verified-x64\Release
 ```
 
 验证安装器只结束指定目录的代理、保留其他目录的同名进程（不执行安装／卸载入口）：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tests\CheckInstallerProcessOwnership.ps1 -InstallerPath dist\FastFile-Setup-1.0.14.exe
+powershell -ExecutionPolicy Bypass -File tests\CheckInstallerProcessOwnership.ps1 -InstallerPath dist\FastFile-Setup-1.0.17.exe
 ```
 
 ## 安装程序做了什么
@@ -52,3 +52,5 @@ powershell -ExecutionPolicy Bypass -File tests\CheckInstallerProcessOwnership.ps
 | `install.cmd` / `install.ps1` / `uninstall.ps1` | 早期基于 ZIP + IExpress 的方案，保留供参考（当前未使用） |
 
 > 打包时会自动跳过 `*.bak*`、`*.original*`、`*.tmp` 之类的残留文件。
+
+GitHub 自动发行流程及静态运行库、测试和哈希校验要求见 [发行文档](../docs/RELEASING.md)。

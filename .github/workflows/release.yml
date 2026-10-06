@@ -8,6 +8,7 @@ on:
       - .github/workflows/release.yml
       - tools/PrepareRelease.ps1
       - tests/CheckReleasePreparation.ps1
+      - tests/CheckReleaseRuntime.ps1
   workflow_dispatch:
 
 permissions:
@@ -39,7 +40,7 @@ jobs:
         shell: powershell
         run: ./tests/CheckReleasePreparation.ps1
       - name: Configure Release x64
-        run: cmake -S . -B build-release -A x64
+        run: cmake -S . -B build-release -A x64 -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
       - name: Build
         run: |
           cmake --build build-release --config Release --parallel 4 *> build-output.log
@@ -60,6 +61,7 @@ jobs:
           $version = (Get-Content VERSION -Raw).Trim()
           ./tests/CheckInstallerPayload.ps1 -InstallerPath "dist/FastFile-Setup-$version.exe" -BuildDirectory build-release/Release
           ./tests/CheckInstallerProcessOwnership.ps1 -InstallerPath "dist/FastFile-Setup-$version.exe"
+          ./tests/CheckReleaseRuntime.ps1 -BuildDirectory build-release/Release
           ./tools/PrepareRelease.ps1
       - name: Preserve verified artifacts
         uses: actions/upload-artifact@v4
@@ -76,6 +78,9 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $version = (Get-Content VERSION -Raw).Trim()
           $tag = "v$version"
+          $currentHead = gh api "repos/$env:GITHUB_REPOSITORY/commits/main" --jq .sha
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot query current main commit.' }
+          if ($currentHead -ne $env:GITHUB_SHA) { throw 'This run was superseded; the latest main commit must be verified before publication.' }
           $existing = gh release list --limit 100 --json tagName | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw 'Cannot query existing releases.' }
           if ($existing.tagName -contains $tag) {
