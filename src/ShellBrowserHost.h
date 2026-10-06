@@ -31,7 +31,9 @@ public:
         UINT selectionMessage, UINT folderOpenMessage=0, UINT contextMenuMessage=0);
     void Destroy();
     void SetBounds(const RECT& bounds);
-    bool Navigate(const std::wstring& path);
+    bool Navigate(const std::wstring& path, bool retryPending = false);
+    // Called by the host's layout timer: serialize navigation and retry Shell busy.
+    void PollNavigation();
     void Refresh();
     bool BeginRename();
     // Starts the view's in-place name edit on the item with this file-system path
@@ -48,6 +50,7 @@ public:
     bool OwnsWindow(HWND window) const;
     bool IsAtPath(const std::wstring& path) const;
     bool IsNavigationCompleteAt(const std::wstring& path) const;
+    bool HasVisibleViewBounds() const;
     // Selects an item of the current folder given its absolute id list (Shell
     // "show in folder" requests). S_FALSE while the view has not listed it yet.
     HRESULT SelectAbsoluteItem(PCIDLIST_ABSOLUTE item, UINT flags);
@@ -73,6 +76,10 @@ private:
     HICON AssociatedAppIcon(const std::wstring& path);
     friend struct ShellBrowserHostTestAccess;
     class EventSink;
+    std::wstring ActualViewPath() const;
+    bool FinishNavigation(const std::wstring& path, bool failed);
+    void TraceNavigation(const wchar_t* event, HRESULT result = S_OK) const;
+    void ObserveViewState();
     void AttachViewFilter(IShellView* view);
     void DetachSelectionEvents();
     void StyleNativeView(IFolderView2* view);
@@ -194,6 +201,12 @@ private:
     FOLDERVIEWMODE m_requestedMode = FVM_DETAILS;
     int m_requestedIconSize = -1;
     std::wstring m_lastNavigation;
+    std::wstring m_pendingNavigation;
+    bool m_navigationFailed = false;
+    bool m_navigationQueued = false;
+    ULONGLONG m_navigationDeadline = 0;
+    HWND m_observedList = nullptr;
+    int m_observedItems = -2, m_observedVisible = -1, m_observedRedraw = -1;
     std::wstring m_filterText;
     IFolderFilterSite* m_filterSite = nullptr;
     IFolderFilter* m_filter = nullptr;

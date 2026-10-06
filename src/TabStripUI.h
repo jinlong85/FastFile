@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // FastFile - Explorer-style tab strip.
 //
 // One self-drawn control owns the tab geometry, hover/press state and the hit testing that
@@ -109,11 +109,11 @@ private:
     bool  m_dragging = false;
     bool  m_dark = false;
     int   m_dpi = 96;
-    int   m_maxTabW = 360;
+    int   m_maxTabW = 180;
     int m_barHeight=29;
     int m_widthPercent=150;
-    int   m_minTabW = 120;
-    int   m_selMinTabW = 120;
+    int   m_minTabW = 180;
+    int   m_selMinTabW = 180;
     int   m_scrollX = 0;         // horizontal offset when the tabs do not fit
     int   m_contentW = 0;        // total width of the tab cells
     RECT  m_plus = {};

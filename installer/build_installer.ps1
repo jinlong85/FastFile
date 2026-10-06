@@ -48,6 +48,9 @@ New-Item -ItemType Directory -Force -Path $payload | Out-Null
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 
 Write-Host "[2/4] 收集程序文件"
+$agent = Join-Path $build 'FastFileAgent.exe'
+if (-not (Test-Path -LiteralPath $agent)) { throw "FastFileAgent.exe missing: $agent" }
+Copy-Item -LiteralPath $agent -Destination $payload -Force
 Copy-Item -LiteralPath $exe -Destination $payload -Force
 Copy-Item -LiteralPath $skin -Destination $payload -Recurse -Force
 # Never ship editor/build leftovers that may sit in the output folder.

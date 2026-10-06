@@ -1,4 +1,4 @@
-// FastFile - Explorer-style tab strip implementation (see TabStripUI.h for the contract).
+﻿// FastFile - Explorer-style tab strip implementation (see TabStripUI.h for the contract).
 
 #include "MainWndInternal.h"
 #include "TabStripUI.h"
@@ -393,6 +393,7 @@ void CTabStripUI::DoEvent(TEventUI& event)
         const int hot = (h.part == Part::Body || h.part == Part::Close) ? h.index : -1;
         const int hotClose = (h.part == Part::Close) ? h.index : -1;
         const int hotPlus = (h.part == Part::Plus) ? 1 : -1;
+        SetToolTip(hot>=0?m_tabs[hot].path.c_str():L"");
         if (hot != m_hot || hotClose != m_hotClose || hotPlus != m_hotPlus) {
             m_hot = hot;
             m_hotClose = hotClose;
@@ -498,6 +499,7 @@ void CTabStripUI::DoEvent(TEventUI& event)
     }
 
     if (event.Type == UIEVENT_MOUSELEAVE) {
+        SetToolTip(L"");
         if (m_hot >= 0 || m_hotClose >= 0 || m_hotPlus >= 0) {
             m_hot = m_hotClose = m_hotPlus = -1;
             Invalidate();

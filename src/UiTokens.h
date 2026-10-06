@@ -29,9 +29,9 @@ constexpr int GapGroup = SpaceSm;   // toolbar group gaps
 constexpr int SepH = 32;            // command-bar separators: 1 x 32 like Explorer (bar 48, buttons 32)
 constexpr int HitTabH = 29;           // compact tab-row height; plus width stays 32
 constexpr int TabIconPx = 16;
-constexpr int TabMinW = 120;          // default width increased by 50 percent
+constexpr int TabMinW = 180;          // fixed default width at 96 DPI
 constexpr int TabSelMinW = TabMinW;   // active and idle tabs reserve the same close slot
-constexpr int TabMaxW = 360;
+constexpr int TabMaxW = TabMinW;
 // This PC drive cards (Explorer): thin rounded capacity bar with a warning ramp.
 constexpr int DriveBarH = 6;            // logical height of the usage bar
 constexpr int DriveBarRound = 2;

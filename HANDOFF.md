@@ -1,6 +1,89 @@
 ﻿# FastFile — 交接说明（给后续 AI / 开发者）
 
-更新日期：2026-10-03（Asia/Shanghai）
+更新日期：2026-10-06（Asia/Shanghai）
+
+## 当前候选：1.0.17 关于与诊断（2026-10-06）
+
+- 用户同意新增设置“关于 FastFile”。在现有 `MainWnd.Settings.cpp` Win32 对话框增加第 5 页，显示编译版本、Release／Debug、x64／x86、编译日期时间、Windows 内核版本、窗口 DPI、只读运行路径、本安装代理状态和文件版本。手动刷新，不创建新代理、不修改默认程序配置。安装／日志目录在主窗口标签中打开；项目主页、GitHub 更新日志和反馈入口由用户点击后交默认浏览器。
+- 新增 `FastFileAbout.h`，按当前会话与完整可执行路径匹配 FastFileAgent，排除同名其他安装；无法读取标未知。代理版本未知不误报匹配；已知不一致给出重新安装提示。诊断信息采用白名单字段，不含安装、日志、用户资料或浏览路径／文件名。UTF-16 剪贴板由用户按钮显式触发。
+- 原程序没有 Windows VERSIONINFO，新增资源与生成头模板。CMake 配置读取 VERSION，并登记 VERSION 配置依赖；独立 VS 在 ClCompile／ResourceCompile 前调用 `tools/GenerateBuildInfo.ps1`，写入本 IntDir，兼容无 CMake 构建。两份产物 Windows 文件版本均为 1.0.17。新增头登记两种构建；没有新增生产 cpp。
+- DuiLib 的原 MIT 许可完整内嵌为 RCDATA 2，经数据文件加载验证。项目根目录未找到自身 LICENSE，不擅自指定 FastFile 许可，“许可与组件”如实说明。候选包仍为 GUI、代理和皮肤三个文件。
+- Release x64 CMake／独立 VS 均成功（`build-ui/about-build.log`、`build-ui/about-vs-build.log`）；完整 CTest **14/14 通过，240.90 秒**（`build-ui/about-all-tests.log`），包含实际设置模态页面切换、只读字段、按钮边界、手动刷新和真实复制按钮。测试通过 IDataObject 保存原剪贴板，不打印用户内容。
+- 最后审查补充盘符根目录处理和剪贴板恢复后 OleFlushClipboard，防止测试退出后丢失延迟渲染数据；最终当前源码 CMake／VS Release 重建成功（`build-ui/about-final-build.log`、`build-ui/about-final-vs-build.log`），受影响设置／根路径／版本／许可／剪贴板专项再运行 **0 failures**（`build-ui/about-final-preferences-tests.log`，`--tabs-only` 入口也执行完整 CheckPreferences）。其他测试生产逻辑未变，未重复整套。
+- 最终安装包 `dist/FastFile-Setup-1.0.17.exe`，1,906,688 字节，SHA-256 `D9B514C8793B3B1F7C7EE1E8DD512DAD3DDAC79004DB7F26B690A6DC17853230`；版本与三文件哈希以及安装器进程归属验证通过（`build-ui/about-payload.log`、`build-ui/about-installer-process-tests.log`）。没有运行安装器、替换用户当前程序或发布。
+
+## 1.0.16：历史验证 固定标签宽度（2026-10-05）
+
+- 用户要求截图中过宽的第一个标签改为固定宽度，并隐藏超出宽度的名称。`RebuildTabStrip` 将最小、选中最小、最大宽度设为相同值：`120 × tabWidthPercent / 100` 个逻辑像素，默认 150% 为 180；控件默认范围也统一为 180。保留 DPI 缩放、现有宽度设置、原生字体、末尾省略号、关闭槽和溢出滚动。
+- 鼠标悬停标签显示完整路径，移开清空提示。更新旧“保留自然测量宽度”回归：96/144/192 DPI、长短名称同宽、隐藏后缀变更不改变实际绘制像素、选中不改变宽度、关闭命中、完整提示、窄窗口滚动及加号边界。新增 `--tabs-only` 测试入口；旧实现失败（`build-ui/tabs-before-tests.log`），修复后专项通过（`build-ui/tabs-after-tests.log`）。
+- Release x64 构建成功（`build-ui/tabs-configure.log`、`build-ui/tabs-build.log`）。完整 CTest 首轮 11/14（235.18 秒，`build-ui/tabs-all-tests.log`）：主窗口／外观的旧分隔线测试固定使用 1000 物理像素，高 DPI 下固定标签正常溢出导致断言不适用；测试画布改为随 DPI 缩放，溢出另有独立回归。另一次代理冷启动属性断言失败未确定根因，未修改代理生产逻辑。重新构建测试后仅重跑 3 个失败项，**3/3 通过，125.47 秒**（`build-ui/tabs-repaired-tests.log`）；合计全部 14 项已有通过结果。独立 VS Release x64 也构建成功（`build-ui/tabs-vs-build.log`）。安装包 `dist/FastFile-Setup-1.0.16.exe` 为 1,884,160 字节，SHA-256 `15FF534A07D8CA10814CECBA83FB5078049E24FD27D13F9C2959EBC2D4C046E6`，版本及全部 3 文件与构建一致，安装器进程归属回归通过（`build-ui/tabs-payload.log`、`build-ui/tabs-installer-process-tests.log`）。未修改用户正在运行的安装版，未发布。
+
+## 1.0.15：历史验证 文件启动与列表重绘（2026-10-04）
+
+- 用户报告 `E:\软件\3.常用软件\更新日志及hash.txt` 在 FastFile 出现“此应用无法在你的电脑上运行”，Explorer 正常。只读核对实际默认为 `Applications\Notepad3.exe`。使用生产文件启动辅助函数的原生探针复现旧强制 `lpClass` 路径失败 `ERROR_BAD_EXE_FORMAT`（193）；Windows 原生默认动词路径成功。改为 `SEE_MASK_NOASYNC | SEE_MASK_INVOKEIDLIST`，不强制关联类、不改用户默认程序。修复后同一实际文件成功启动（`build-ui/open-runtime-after.log`）；探针加 `SEE_MASK_FLAG_NO_UI` 仅用于诊断错误，生产保留正常错误界面。更新默认启动／取消／无关联回退测试，旧实现失败见 `build-ui/interaction-before-tests.log`。
+- 用户补充右键菜单执行刷新或排序后，列表文件区短暂出现渲染乱码。新增实际刷新／排序回归暴露 Shell 图标列表替换后旧来源不同步。原有绘制前检测只看图标高度，替换后的高图标列表漏判；改为句柄身份判断，保留行距代理并同步对应的新图标来源。增加高图标列表替换回归，旧条件失败（`build-ui/list-image-before-tests.log`）。原有单项空代理回归继续保护原图标来源。双缓冲原先仅在图标模式设置，现统一用于全部原生列表，在刷新／排序前恢复；控制样式重置回归修复前失败（`build-ui/list-buffer-reset-before-tests.log`）。
+- 调查中曾怀疑父窗口覆盖原生文件区；复核 DuiLib `WinImplBase::OnCreate` 已设置 `WS_CLIPCHILDREN`，撤销冗余生产改动，不将该猜测当作根因。保留原生文件区裁剪契约以及实际 Shell 弹出／取消菜单清理回归。测试父窗口隐藏，刷新与排序会异步重建行和图标，新增检查先泵消息等可用条目，再走生产绘制入口同步图标列表，不能立即读取刷新前的行。
+- 首次完整验证 12/14：新增测试未等待刷新／排序完成，以及 CMake 版本缓存未重新配置；已补齐等待并重新配置。修正后的最终当前源码完整 CTest **14/14 全部通过，235.19 秒**（`build-ui/interaction-final-all-tests.log`），包含实际 Shell 菜单、刷新／排序图标与缓冲、视图切换、异步缩略图、真实 Explorer 与代理转交。视觉闪烁仍需安装新候选后在用户目录复测，不能以测试通过代替用户现场效果确认。
+- CMake 与独立 VS Release x64 构建完成（`build-ui/interaction-final-configure.log`、`build-ui/interaction-final-build.log`、`build-ui/interaction-vs-build.log`）。安装包 `dist/FastFile-Setup-1.0.15.exe`，1,884,160 字节，SHA-256 `C3E55E6BD4A13E1D6CA956556B5FE16CDD4B9AD22C499274C67ABDEFF91C670D`；版本与全部 3 个内嵌文件以及安装器进程归属检查通过（`build-ui/interaction-payload.log`、`build-ui/interaction-installer-process-tests.log`）。未安装或替换当前运行的用户程序、未发布。
+
+## 1.0.14 独立用户代理：历史验证（2026-10-04）
+
+- 用户要求分析既有 360 文件夹交互并继续代码开发。本机服务、元数据和 PE 导入表证据以及推断边界见 [docs/360_INTERACTION_ANALYSIS.md](docs/360_INTERACTION_ANALYSIS.md)；本机为修改版分发，不能推断官方全部内部接管机制。
+- 新增独立 `FastFileAgent.exe`，当前用户会话运行，不初始化 DuiLib、不创建交互窗口。界面关闭走正常退出；代理检测新 Explorer 窗口，按需启动界面并通过有边界的 UTF-16 WM_COPYDATA 请求／确认协议通信。保留已有窗口、多标签、忙碌、无法验证和超时窗口。
+- 登录项改为代理路径。旧 `FastFile.exe --background` 兼容为启动代理并退出；保存／修复接管时迁移旧拥有的登录项，不覆盖其他程序的同名启动项。安装包增加代理；安装／卸载只结束目标安装路径中的两个进程。
+- 严格确认暴露可稳定复现的零尺寸问题：已列出 3 个文件，外层 ExplorerBrowserControl 为 664×542，内层 SHELLDLL_DefView 与 SysListView32 仍为 0×0。原有 `SetRect` 在外层尺寸不变时没有触发内层布局。`SetBounds` 仅遇到当前内层零尺寸、外层尺寸正常时请求容器执行正常 WM_SIZE 布局，不重启导航。新增 ShellBrowser 零尺寸回归在修复前失败（`build-ui/agent-zero-before.log`），修复后通过；集成真实选择及就绪确认也通过。先前夸克日志吻合，但尚未复测云盘本体，不能宣称其全部空白问题已经解决。
+- 新增／更新协议拒绝、实际文件选择、就绪确认、主界面退出、无窗口代理单实例／停用退出及独立代理真实 Explorer 转交测试。发现 Shell 集合中的 S_FALSE 空记录会令整轮扫描放弃，改为跳过明确未找到的条目；其他失败仍保留源窗口。真实代理回归增加待完成的 Shell 登记，验证在该状态下仍能转交正常窗口。
+- 首轮完整 CTest **14/14 通过，235.29 秒**（`build-ui/agent-pre-final-all-tests.log`）。最后审查补充“关闭标签复用后冷启动只产生一个标签”回归，修复前失败（`build-ui/agent-cold-once-before.log`），修复后通过（`build-ui/agent-cold-once-after.log`）。冷启动只通过命令行投递一次目录，并强制创建本安装目录的界面，避免另一安装目录的旧实例截走启动。
+- **最终当前源码 CTest 14/14 全部通过，235.53 秒**（`build-ui/agent-all-tests.log`）：覆盖真实 Explorer、选中文件、代理跨进程接收／冷启动、界面关闭及代理停用退出、Shell 窗口与文件操作。主窗口 100 秒左右；异步缩略图本轮通过，先前偶发根因仍未确定。
+- **CMake 与独立 Visual Studio 项目 Release x64 均成功生成 FastFile.exe 和 FastFileAgent.exe**（`build-ui/agent-configure.log`、`build-ui/agent-build.log`、`build-ui/agent-vs-build.log`）。VS 输出隔离在 `build-ui/vs-agent-verified`，没有覆盖旧 `build/Release`。DuiLib 原有编码／typedef 警告仍存在。
+- 新候选安装包 `dist/FastFile-Setup-1.0.14.exe`，**1,884,160 字节**，SHA-256 `0B7FBE8FF6EEB0B58E29B7DE3F83191968B186F8D59C31247AAC51A58DF52304`。内嵌版本、全部三个文件及哈希通过核对（`build-ui/agent-installer.log`、`build-ui/agent-payload.log`）。GUI 哈希 `CEF5BCA463EA8A598EC63408932F5F90DD22676AEA6949CB213A9CD0B1041181`；代理 `7EA4F35D9F1A291682134686891B9D07230A176D9DE74563F745E24B68EF3DED`；皮肤 `3C336D2915B20056EE1837FBAD05518562AD6FAE177344E8E9486FC4DD2ADE68`。
+- 安装器进程归属运行回归通过（`tests/CheckInstallerProcessOwnership.ps1`、`build-ui/agent-installer-process-tests.log`）：只结束指定安装目录中的代理，同名其他目录进程保留。夹具为测试编译出的无窗口进程；未执行安装器入口。
+- 未安装或替换用户正在运行的 FastFile，没有改变真实默认接管开关，没有发布到 GitHub。仍需候选安装后的云盘菜单、登录启动和安装／卸载验收。
+
+## 1.0.13 默认管理器与导航修复：历史验证（2026-10-04）
+
+- 用户手动安装 Visual Studio 2022 Build Tools 后，已确认 MSVC 19.44、Windows SDK 10.0.22621.0、CMake 和 ATL 可用。新建 `cmake-build-verified-x64`，不改写旧的失效路径缓存；Release x64 配置和构建成功，日志 `build-ui/resume-configure.log`、`build-ui/resume-build.log`、`build-ui/resume-diagnostic-build.log`。DuiLib 原有编码及 typedef 警告仍存在。
+- 默认管理器页统一开关和检测选择对话框已纳入当前候选；启用联动目录、磁盘、此电脑、右键入口、Explorer 转交及后台登录启动，关闭窗口后后台驻留，恢复原方式停止检测并移除拥有的启动项。新增三种选择回归在隔离 HKCU 下检查，设置页还检查检测按钮存在且可见，不触碰真实接管配置。
+- 首轮完整 CTest **12/13 通过，223.50 秒**，异步缩略图专项中的“显式重复标签保持激活”断言失败，日志 `build-ui/resume-all-tests.log`。加入失败时的标签、路径和待处理外部请求诊断后，单项通过，并连续 **5 次通过（63.84 秒）**，日志 `build-ui/resume-diagnostic-thumbs.log`、`build-ui/resume-thumbs-repeat.log`。未修改生产导航逻辑、未跳过或放宽断言；偶发失败根因未确定，不能声称已修复。将来复现时用保留的诊断继续定位。
+- 最终当前源码重新构建后的完整 CTest **13/13 通过，221.29 秒**，日志 `build-ui/resume-final-tests.log`。包含新增默认管理器检查、真实 Explorer 目录及 `/select` 转交、Shell 冷启动、跨进程 Shell 窗口、真实文件操作和界面回归；主窗口 99.82 秒，集成 4.88 秒，Explorer 转交 9.89 秒，Shell 窗口 26.12 秒。旧的 Explorer 失败在本机未复现，不能推断此前根因。
+- 已重新生成 `dist/FastFile-Setup-1.0.13.exe`，**1,638,912 字节**，SHA-256 `42F26C2A4D5B09C8E28D9627F430AED2F22BB7CE11E6E726CEA59C1D5CCE34EA`。内嵌版本及全部 2 个文件核对通过（`build-ui/resume-installer.log`、`build-ui/resume-payload.log`）；程序哈希 `D66A93D3667C2451FAA75A973DA38FB6B5198B8CA813298F303B9E3FB5578680`，皮肤哈希 `3C336D2915B20056EE1837FBAD05518562AD6FAE177344E8E9486FC4DD2ADE68`，均与新构建目录一致。旧候选包保留为 `dist/FastFile-Setup-1.0.13.before-20261004-verification.exe`。
+- 当前仍为未发布候选：没有运行安装器、替换已安装程序或 `build/Release`，没有改变真实接管选择或发布到 GitHub。安装／卸载、IDM 本体菜单及问题电脑的空白复测尚未完成；本机自动验证不能代表远端问题已解决。下方章节均为历史快照。
+
+### 夸克首次打开中央空白调查（2026-10-04，尚未修复）
+
+- 用户确认目标为 `E:\软件\3.常用软件`，首次中央文件区空白约十多秒，关闭 FastFile 后再次打开很快。只读日志中 11:27:33.026 提交请求、33.073 导航完成（47 ms）、33.218 Shell 和原生列表均已有 140 项（192 ms）；相关记录均为 `hr=00000000`，未出现忙重试或 15 秒超时。
+- 同时列表窗口矩形为 `749,373,749,373`，宽高均为零，虽然 `visible=1`、`redrawOff=0`。证据说明该次请求的文件枚举已快速完成，但存在显示几何异常；不能仅根据“首次慢、第二次快”归因于冷磁盘或缓存。
+- 当前程序仍是 PID 18712，自 00:28:26 起运行。用户关闭窗口只是后台驻留隐藏，第二次不是新进程冷启动。11:29:23 隐藏记录中矩形已恢复 `749,373,1745,1185`，11:29:28 又显示原目录 140 项，支持复用已有目录／视图且布局已恢复的解释。
+- 源码 `SyncLayoutDependents` 每 200 ms 直接把 `m_pListHost->GetPos()` 交给 `ShellBrowserHost::SetBounds`；显示入口 `EnsureMainWindowVisible` 没有同步确保 DuiLib 布局及原生视图矩形完成。此处是待复现的显示布局交互线索，尚未证明零尺寸来自宿主布局还是 Shell 新视图内部布局，不能声称确切触发机制已确认。
+- 现有 `ObserveViewState` 仅在列表句柄、数量、可见性或重绘状态变化时记日志，不跟踪单独矩形变化；外部请求解析和窗口转交各阶段也无统一耗时记录。因此现有日志不足以确定零尺寸恢复的精确时间，也不能分解用户感知的全部十多秒。后续需要对隐藏后恢复／新目录导航做矩形连续观测和阶段计时，再添加可复现的回归后修复。本轮未改生产代码、安装包或用户设置。
+
+### 百度网盘本体菜单复测（2026-10-04）
+
+- 用户反馈百度网盘右键“打开所在文件夹”仍出现 Windows 资源管理器。只读核对安装版及当前运行程序为最新候选（程序哈希 `D66A93D3667C2451FAA75A973DA38FB6B5198B8CA813298F303B9E3FB5578680`），四个集成开关均为 1，后台登录启动命令指向安装版。
+- 初次观察真实 Explorer 在 `E:\迅雷下载` 选中 `WiFi Analyzer Pro-v7.3_build_173.apk`；用户确认点击前没有该窗口。后续请求中观察到 Explorer `/factory,{75dff2b7-6936-4c06-a8bb-676a7b00b24b} -Embedding` 进程，结合窗口转交行为，推测此入口直接调用 Explorer，不能仅靠默认目录关联阻止其启动。
+- 用户再次点击实际菜单后明确确认“资源管理器短暂出现后关闭，FastFile 打开目标”。只读 ShellWindows 与顶层 Cabinet/Explore 窗口枚举均无残留 Explorer 文件夹窗口；导航日志记录 FastFile 已实际完成 `E:\迅雷下载` 浏览。该次真实菜单转交得到用户确认，符合当前先加载并选中目标再关闭源窗口的设计；未修改生产代码或用户关联。
+- 此记录只确认本次重试，不证明所有百度网盘调用都可靠，也未确定首次表现的原因。直接调用 Explorer 时仍可能短暂出现窗口；不能声称已实现完全不启动 Explorer。安装／卸载、IDM 本体菜单及其他电脑空白问题仍待验收。
+
+## 接续检查：工具安装前的历史快照（2026-10-04）
+
+- 下方导航修复的 13/13 通过结果和 1.0.13 安装包属于 2026-10-03 20:33 前的快照。随后源码新增统一默认管理器选择、关闭窗口后后台驻留及登录启动；当前 `build-ui/Release/FastFile.exe` 哈希为 `041289D0184FD285996431CD4BB882BD111405734C4E6110070CC216C7310AB5`，与候选安装包内嵌程序不同，不得套用旧验收结论。
+- 旧记录的 Explorer 转交专项失败已在当前电脑用现有测试程序重新检查：目录打开和 `/select` 文件定位均成功，日志 `build-ui/resume-20261004-explorer-before.log`；系统集成专项也通过，日志 `build-ui/resume-20261004-integration.log`。尚不能据此判定旧失败根因或当前源码全部通过。
+- 现有测试二进制的全部 11 个运行专项已逐项执行，退出码均为零：主窗口、视图切换、异步缩略图、UI、Shell 启动、系统集成、真实 Explorer 转交、收藏、核心工具、Shell 浏览器和跨进程 Shell 窗口。日志为 `build-ui/resume-20261004-*.log`。这是旧产物运行复核，不是当前源码重新构建后的完整 CTest；工程一致性和版本来源两项 CMake 检查尚未运行。`git diff --check` 未发现空白错误。
+- 本轮补充 `ApplyDefaultManagerChoice` 的保留、启用、恢复三种选择回归，以及设置页检测按钮存在和可见性检查；移除发送给已删除旧控件的无效检测消息。新增测试尚未编译和运行。
+- 当时未找到 CMake、MSVC 或 Windows SDK，旧缓存引用的 `C:/Users/JINLONG/文档/Grok/FastFile` 不存在。用户授权安装所需工具，但静默安装命令被执行策略拒绝（`blocked by policy`），未返回具体规则，不能据此确认是哪种审查机制；用户选择手动安装后继续。
+- 后续顺序：编译并运行新增回归及完整测试，定位任何可复现失败，重新生成并核对候选安装包，更新最终验证记录。当前未更新安装包、常用程序、用户关联或公开发布。问题电脑复测、IDM 本体菜单和安装／卸载验收仍未完成。
+
+## 当前源码：1.0.13 导航空白修复候选（未发布，待远端复测）
+
+- 用户在其他电脑反馈外部程序打开目录时中央列表持续空白、刷新无效；截图中右侧已经统计出 2 个文件。该截图不能证明原生视图已经枚举成功，右侧统计是独立的文件系统读取。
+- 确认两个程序缺陷：`IsAtPath` 曾只比较提前记录的请求路径，失败也被视为已经打开；连续浏览实测出现 `0x800700AA`（Windows 视图忙），缺少请求排队和重试。旧完成通知还可能覆盖新目标。回归修复前 5 项断言失败，日志 `build-ui/nav-recovery-before-tests.log`；真实忙错误记录在 `build-ui/nav-recovery-view-trace.log`。
+- `ShellBrowserHost` 区分最新目标、在途目标、排队和失败状态；`IsAtPath` / `IsNavigationCompleteAt` 同时核对实际 `IPersistFolder2` 位置。导航串行化，忙时排队，`SyncLayoutDependents` 的 200 ms 定时调用执行 `PollNavigation`，不得在 Shell 回调内重入 Browse。旧请求结束后继续最新目标，旧完成／失败不得改写它。等待 15 秒后报告失败，刷新允许重新导航；慢网络目录可能需要重试。
+- 外部链接冷启动恢复标签模型但不浏览启动目录，也不探测无关的自定义启动路径；只对外部目标提交一次浏览。无法解析外部路径时退回启动标签。底部接收提示不再提前声称已打开，异步失败有中文提示。
+- 自动日志 `%APPDATA%\FastFile\navigation.log`（可用 `FASTFILE_NAV_LOG` 覆盖）记录请求、排队、忙重试、实际目录、Shell / 列表项目数、可见性、重绘状态及矩形；超过 2 MB 后重置。只记录路径与状态，不读取文件内容。日志随 `APPDATA` 被主窗口测试隔离，ShellBrowser 测试日志放在枚举夹具之外，避免日志自身影响项目数。
+- 新增回归覆盖无真实视图的缓存路径、异步失败、刷新恢复、旧通知、新请求串行化、超时恢复和日志内容；冷启动跨进程检查真实可见列表中出现测试文件，并确认只发起一次导航。原主窗口重复外部打开检查补齐等待后台解析完成，避免把尚未完成的外部请求与后续导航交叉当成已稳定状态。
+- 最终 Release x64 构建成功，完整 CTest **13/13 通过，239.73 秒**；主窗口 106.69 秒。最终日志 `build-ui/nav-1.0.13-build.log`、`build-ui/nav-1.0.13-tests.log`。前序完整运行 11/13（`nav-recovery-final-tests.log`）是中间检查，不代表最终结果；其中新增诊断文件误入枚举夹具，以及旧测试未等待外部后台解析已修正，保留失败日志。
+- 已生成 `dist/FastFile-Setup-1.0.13.exe`，**1,634,304 字节**，SHA-256 `091A4DAEDB8243ADD945B97A370EB9F220791A71C99780132F36CB5981A086EC`。内嵌版本和全部 2 个文件哈希检查通过（`build-ui/nav-1.0.13-payload.log`）；程序 SHA-256 `C2CCC318A36DB5C590C284568289C7E7A18A2AF742FFFFFAA83C6312CB62EF6E`。测试说明在 `dist/FastFile-1.0.13-测试说明.md`。
+- 未替换已安装程序或 `build/Release`，未执行安装器、发布或修改真实接管选择。安装／卸载与问题电脑的实际复测尚未完成；不能声称远端截图问题已经彻底解决。其他电脑关闭旧窗口后安装候选，用原调用程序复测冷启动和连续打开，仍异常时提供 `navigation.log`。下方 1.0.12 及更早章节为历史快照，不能用来描述本轮当前源码。
 
 ## GitHub 首页与发布入口（2026-10-03）
 

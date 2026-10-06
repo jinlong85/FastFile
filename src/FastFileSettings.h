@@ -24,6 +24,9 @@ struct FastFileSettings {
     bool defaultFolders = false;
     bool defaultComputer = false;
     bool explorerWindowTakeover = false;
+    void SetDefaultManager(bool enabled) {
+        contextMenu=defaultFolders=defaultComputer=explorerWindowTakeover=enabled;
+    }
     void Normalize();
     static std::wstring FilePath();
     static FastFileSettings Load(const std::wstring& path);

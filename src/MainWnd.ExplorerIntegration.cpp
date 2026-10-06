@@ -4,6 +4,7 @@
 #include <shlguid.h>
 #include <UIAutomation.h>
 #include <wrl/client.h>
+#include "ExplorerAgentProtocol.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -21,8 +22,12 @@ struct ExplorerScanState {
 
 bool (*CMainWnd::s_closeExplorerForTest)(const ExplorerSnapshot&)=nullptr;
 std::wstring CMainWnd::s_explorerTestRoot;
+std::wstring CMainWnd::s_agentInterfaceForTest;
+std::wstring CMainWnd::s_agentArgumentsForTest;
+HDESK CMainWnd::s_agentDesktopForTest=nullptr;
 
 namespace {
+void AgentTrace(const wchar_t* event,const std::wstring& folder);
 bool IsExplorerWindow(HWND window,DWORD* processId=nullptr) {
     wchar_t name[64]{};GetClassNameW(window,name,_countof(name));
     if(wcscmp(name,L"CabinetWClass") && wcscmp(name,L"ExploreWClass"))return false;
@@ -59,6 +64,13 @@ bool ReadExplorerFolder(IDispatch* dispatch,CMainWnd::ExplorerSnapshot& result,
     if(SUCCEEDED(folder->GetCurFolder(&location)) && location) {
         wchar_t path[32768]{};
         if(SHGetPathFromIDListEx(location,path,_countof(path),GPFIDL_DEFAULT))result.path=path;
+        else {
+            PIDLIST_ABSOLUTE computer=nullptr;
+            if(SUCCEEDED(SHGetKnownFolderIDList(FOLDERID_ComputerFolder,0,nullptr,&computer)) && computer) {
+                if(ILIsEqual(location,computer))result.path=L"::ThisPC";
+                CoTaskMemFree(computer);
+            }
+        }
         CoTaskMemFree(location);
     }
     int selected=0;
@@ -88,11 +100,21 @@ bool ReadExplorerFolder(IDispatch* dispatch,CMainWnd::ExplorerSnapshot& result,
 bool ScanExplorer(std::vector<CMainWnd::ExplorerSnapshot>& snapshots,const std::wstring& testRoot,
     const std::map<HWND,DWORD>& ignored={},HWND only=nullptr) {
     ComPtr<IShellWindows> windows;
-    if(FAILED(CoCreateInstance(CLSID_ShellWindows,nullptr,CLSCTX_ALL,IID_PPV_ARGS(windows.GetAddressOf()))))return false;
-    long count=0;if(FAILED(windows->get_Count(&count)))return false;
+    const HRESULT created=CoCreateInstance(CLSID_ShellWindows,nullptr,CLSCTX_ALL,IID_PPV_ARGS(windows.GetAddressOf()));
+    if(FAILED(created)){if(!testRoot.empty())AgentTrace(L"test-scan-com-failed",std::to_wstring(static_cast<unsigned long>(created)));return false;}
+    long count=0;const HRESULT counted=windows->get_Count(&count);
+    if(FAILED(counted)){if(!testRoot.empty())AgentTrace(L"test-scan-count-failed",std::to_wstring(static_cast<unsigned long>(counted)));return false;}
     for(long i=0;i<count;++i) {
         VARIANT index{};index.vt=VT_I4;index.lVal=i;ComPtr<IDispatch> dispatch;
-        if(windows->Item(index,dispatch.GetAddressOf())!=S_OK || !dispatch)return false;
+        const HRESULT fetched=windows->Item(index,dispatch.GetAddressOf());
+        // A missing/pending collection entry is S_FALSE, not a scan failure.
+        // Existing windows are protected by the independent HWND baseline, and
+        // closure still requires the expected source to be readable and unique.
+        if(fetched==S_FALSE && !dispatch) {
+            if(!testRoot.empty())AgentTrace(L"test-scan-empty-entry-skipped",std::to_wstring(i));
+            continue;
+        }
+        if(fetched!=S_OK || !dispatch){if(!testRoot.empty())AgentTrace(L"test-scan-item-failed",std::to_wstring(i)+L" hr="+std::to_wstring(static_cast<unsigned long>(fetched)));return false;}
         CMainWnd::ExplorerSnapshot snapshot;
         if(dispatch && ReadExplorerFolder(dispatch.Get(),snapshot,ignored,only)) {
             if(!testRoot.empty() && (snapshot.path.size()<testRoot.size()
@@ -141,13 +163,197 @@ bool CloseTransferredExplorer(const CMainWnd::ExplorerSnapshot& expected,const s
 }
 }
 
+namespace {
+void AgentTrace(const wchar_t* event,const std::wstring& folder=L"") {
+    auto directory=FastFileSettings::FilePath();const auto slash=directory.find_last_of(L"\\/");
+    if(slash==std::wstring::npos)return;
+    directory.resize(slash);SHCreateDirectoryExW(nullptr,directory.c_str(),nullptr);
+    const auto path=directory+L"\\explorer-agent.log";
+    HANDLE file=CreateFileW(path.c_str(),FILE_APPEND_DATA|GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+    if(file==INVALID_HANDLE_VALUE)return;
+    LARGE_INTEGER size{};
+    if(GetFileSizeEx(file,&size) && size.QuadPart>2*1024*1024) {
+        CloseHandle(file);file=CreateFileW(path.c_str(),GENERIC_WRITE,FILE_SHARE_READ,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+        if(file==INVALID_HANDLE_VALUE)return;
+    }
+    SYSTEMTIME now{};GetLocalTime(&now);wchar_t stamp[128]{};
+    swprintf_s(stamp,L"%04u-%02u-%02u %02u:%02u:%02u.%03u pid=%lu ",now.wYear,now.wMonth,now.wDay,now.wHour,now.wMinute,now.wSecond,now.wMilliseconds,GetCurrentProcessId());
+    const auto line=std::wstring(stamp)+event+L" folder="+folder+L"\r\n";
+    const int count=WideCharToMultiByte(CP_UTF8,0,line.data(),static_cast<int>(line.size()),nullptr,0,nullptr,nullptr);
+    if(count>0) {
+        std::string bytes(count,0);WideCharToMultiByte(CP_UTF8,0,line.data(),static_cast<int>(line.size()),bytes.data(),count,nullptr,nullptr);
+        DWORD written=0;WriteFile(file,bytes.data(),count,&written,nullptr);
+    }
+    CloseHandle(file);
+}
+std::wstring AgentMutexName() {
+    auto profile=FastFileSettings::FilePath();
+    for(auto& ch:profile)if(ch==L'\\' || ch==L'/')ch=L'_';
+    return L"Local\\FastFile.ExplorerAgent."+profile;
+}
+bool AgentEnabled() {
+    FastFileSettings settings;CMainWnd::ReadSystemIntegration(settings);
+    return settings.defaultFolders && settings.explorerWindowTakeover;
+}
+bool LaunchAgentProcess(const std::wstring& executable,const std::wstring& arguments) {
+    if(executable.empty() || GetFileAttributesW(executable.c_str())==INVALID_FILE_ATTRIBUTES)return false;
+    auto command=L"\""+executable+L"\""+arguments;
+    STARTUPINFOW startup{};startup.cb=sizeof(startup);PROCESS_INFORMATION process{};
+    if(!CreateProcessW(executable.c_str(),command.data(),nullptr,nullptr,FALSE,0,nullptr,nullptr,&startup,&process))return false;
+    CloseHandle(process.hThread);CloseHandle(process.hProcess);return true;
+}
+HWND AgentInterfaceWindow(HDESK desktop) {
+    struct Search { std::wstring executable;HWND window=nullptr; } search{CMainWnd::ExplorerAgentInterfacePath()};
+    auto enumerate=[](HWND window,LPARAM value)->BOOL {
+        auto& search=*reinterpret_cast<Search*>(value);wchar_t name[128]{};
+        GetClassNameW(window,name,_countof(name));if(wcscmp(name,L"FastFile_MainWnd"))return TRUE;
+        DWORD pid=0;GetWindowThreadProcessId(window,&pid);
+        HANDLE process=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,pid);
+        if(!process)return TRUE;
+        wchar_t path[32768]{};DWORD count=_countof(path);
+        const bool match=QueryFullProcessImageNameW(process,0,path,&count) && !_wcsicmp(path,search.executable.c_str());
+        CloseHandle(process);if(!match)return TRUE;
+        search.window=window;return FALSE;
+    };
+    if(desktop)EnumDesktopWindows(desktop,enumerate,reinterpret_cast<LPARAM>(&search));
+    else EnumWindows(enumerate,reinterpret_cast<LPARAM>(&search));
+    return search.window;
+}
+bool AgentSend(HWND window,ULONG_PTR operation,const std::vector<wchar_t>& payload) {
+    if(!window || payload.empty())return false;
+    COPYDATASTRUCT data{operation,static_cast<DWORD>(payload.size()*sizeof(wchar_t)),const_cast<wchar_t*>(payload.data())};
+    DWORD_PTR result=0;
+    return SendMessageTimeoutW(window,WM_COPYDATA,0,reinterpret_cast<LPARAM>(&data),
+        SMTO_ABORTIFHUNG|SMTO_BLOCK,1000,&result) && result==1;
+}
+}
+
+std::wstring CMainWnd::ExplorerAgentPath() { return ExplorerAgentProtocol::Sibling(L"FastFileAgent.exe"); }
+std::wstring CMainWnd::ExplorerAgentInterfacePath() {
+    return s_agentInterfaceForTest.empty()?ExplorerAgentProtocol::Sibling(L"FastFile.exe"):s_agentInterfaceForTest;
+}
+bool CMainWnd::StartExplorerAgent() {
+    HANDLE existing=OpenMutexW(SYNCHRONIZE,FALSE,AgentMutexName().c_str());
+    if(existing){CloseHandle(existing);return true;}
+    return LaunchAgentProcess(ExplorerAgentPath(),L"");
+}
+int CMainWnd::RunExplorerAgent() {
+    HANDLE singleton=CreateMutexW(nullptr,FALSE,AgentMutexName().c_str());
+    const auto mutexError=GetLastError();
+    if(!singleton)return 2;
+    if(mutexError==ERROR_ALREADY_EXISTS){CloseHandle(singleton);return 0;}
+    if(FAILED(OleInitialize(nullptr))){CloseHandle(singleton);return 3;}
+    // Baseline includes unavailable folders, and persists across partial COM scans.
+    std::map<HWND,DWORD> protectedWindows;
+    EnumWindows([](HWND window,LPARAM value)->BOOL {
+        DWORD pid=0;if(IsExplorerWindow(window,&pid))(*reinterpret_cast<std::map<HWND,DWORD>*>(value))[window]=pid;
+        return TRUE;
+    },reinterpret_cast<LPARAM>(&protectedWindows));
+    AgentTrace(L"baseline-ready");
+    struct Pending { ExplorerSnapshot source;ULONGLONG changed=0,deadline=0;bool opened=false,launched=false;HWND receiver=nullptr; };
+    std::map<HWND,Pending> pending;
+    bool scanFailed=false;
+    while(AgentEnabled()) {
+        MSG message{};while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)){TranslateMessage(&message);DispatchMessageW(&message);}
+        std::vector<ExplorerSnapshot> snapshots;
+        if(ScanExplorer(snapshots,s_explorerTestRoot,protectedWindows)) {
+            if(scanFailed){AgentTrace(L"scan-recovered");scanFailed=false;}
+            const auto now=GetTickCount64();std::map<HWND,bool> seen;
+            for(const auto& source:snapshots) {
+                seen[source.window]=true;
+                const auto known=protectedWindows.find(source.window);
+                if(known!=protectedWindows.end() && known->second==source.processId)continue;
+                auto& item=pending[source.window];
+                if(item.source.processId!=source.processId || item.source.path!=source.path || item.source.selection!=source.selection) {
+                    const bool launched=item.launched && item.source.processId==source.processId;
+                    item=Pending{};item.source=source;item.changed=now;item.launched=launched;
+                    AgentTrace(L"discovered",source.path);
+                }
+            }
+            for(auto iterator=pending.begin();iterator!=pending.end();) {
+                if(!seen.count(iterator->first))iterator=pending.erase(iterator);else ++iterator;
+            }
+            // One request at a time prevents another navigation racing confirmation.
+            for(auto& pair:pending) {
+                auto& item=pair.second;if(item.source.path.empty() || now-item.changed<1000)continue;
+                if(!item.deadline)item.deadline=now+20000;
+                if(now>item.deadline){AgentTrace(L"retained-timeout",item.source.path);protectedWindows[pair.first]=item.source.processId;pending.erase(pair.first);break;}
+                std::vector<std::wstring> paths{item.source.path};paths.insert(paths.end(),item.source.selection.begin(),item.source.selection.end());
+                const auto payload=ExplorerAgentProtocol::Encode(paths);
+                if(payload.empty()){AgentTrace(L"retained-payload-limit",item.source.path);protectedWindows[pair.first]=item.source.processId;pending.erase(pair.first);break;}
+                const HWND receiver=AgentInterfaceWindow(s_agentDesktopForTest);
+                if(!receiver) {
+                    if(!item.launched && item.source.path.find(L'"')==std::wstring::npos) {
+                        // A different installation's window must not intercept this launch.
+                        item.launched=LaunchAgentProcess(ExplorerAgentInterfacePath(),s_agentArgumentsForTest+L" --new-window --shell-folder \""+item.source.path+L"\"");
+                        AgentTrace(item.launched?L"interface-started":L"interface-start-failed",item.source.path);
+                    }
+                    break;
+                }
+                if(item.receiver!=receiver) {
+                    item.receiver=receiver;
+                    // A cold launch already delivered the folder via its command line.
+                    // Sending Open again creates a duplicate tab when reuse is disabled.
+                    item.opened=item.launched;
+                }
+                if(!item.opened) {
+                    item.opened=AgentSend(receiver,ExplorerAgentProtocol::Open,payload);
+                    if(item.opened)AgentTrace(L"request-accepted",item.source.path);
+                }
+                else if(AgentSend(receiver,ExplorerAgentProtocol::Confirm,payload)) {
+                    AgentTrace(CloseTransferredExplorer(item.source,AgentEnabled)?L"confirmed-close-posted":L"confirmed-source-retained",item.source.path);
+                    protectedWindows[pair.first]=item.source.processId;pending.erase(pair.first);
+                }
+                break;
+            }
+        }
+        else if(!scanFailed){AgentTrace(L"scan-unavailable-source-retained");scanFailed=true;}
+        MsgWaitForMultipleObjects(0,nullptr,FALSE,500,QS_ALLINPUT);
+    }
+    AgentTrace(L"disabled-exit");OleUninitialize();CloseHandle(singleton);return 0;
+}
+
+LRESULT CMainWnd::HandleExplorerAgentMessage(const COPYDATASTRUCT& data) {
+    std::vector<std::wstring> paths;
+    if(!ExplorerAgentProtocol::Decode(data,paths) || !AgentEnabled())return 0;
+    if(data.dwData==ExplorerAgentProtocol::Open) {
+        if(m_externalOpensPending)return 0;
+        OpenExternalPaths({paths.front()},false);EnsureMainWindowVisible();return 1;
+    }
+    if(m_externalOpensPending || !m_shellBrowser || !PathEquals(m_currentPath,paths.front())
+        || !m_shellBrowser->IsNavigationCompleteAt(paths.front()) || !IsWindowVisible(m_hWnd) || IsIconic(m_hWnd))return 0;
+    if(!m_shellBrowser->HasVisibleViewBounds())return 0;
+    if(paths.size()==1 && !m_shellBrowser->ClearSelection())return 0;
+    for(size_t i=1;i<paths.size();++i) {
+        // A source may select only direct children of the requested folder.
+        const auto slash=paths[i].find_last_of(L"\\/");
+        const auto parent=paths[i].substr(0,slash==2?3:slash);
+        if(!PathEquals(parent,paths.front()))return 0;
+        PIDLIST_ABSOLUTE id=nullptr;
+        if(FAILED(SHParseDisplayName(paths[i].c_str(),nullptr,&id,0,nullptr)) || !id)return 0;
+        const auto result=m_shellBrowser->SelectAbsoluteItem(id,SVSI_SELECT|SVSI_ENSUREVISIBLE|(i==1?SVSI_DESELECTOTHERS:0));
+        CoTaskMemFree(id);if(result!=S_OK)return 0;
+    }
+    if(paths.size()>1) {
+        std::vector<std::pair<std::wstring,bool>> actual;
+        if(!m_shellBrowser->GetSelection(actual) || actual.size()!=paths.size()-1)return 0;
+        for(size_t i=1;i<paths.size();++i) {
+            bool found=false;for(const auto& selected:actual)if(PathEquals(selected.first,paths[i]))found=true;
+            if(!found)return 0;
+        }
+    }
+    m_shellBrowser->FlushPaint();return 1;
+}
+
 void CMainWnd::StopExplorerTakeover() {
     if(m_hWnd)KillTimer(m_hWnd,kTimerExplorerTakeover);
     if(m_explorerScan){m_explorerScan->stop=true;m_explorerScan->wake.notify_all();}
     m_explorerScan.reset();m_explorerTransfers.clear();m_existingExplorerWindows.clear();m_explorerBaseline=false;m_explorerScanSequence=0;
+    if(m_integrationMonitorMutex){CloseHandle(m_integrationMonitorMutex);m_integrationMonitorMutex=nullptr;}
 }
 std::wstring CMainWnd::ExplorerTakeoverStatus() const {
     if(!m_settings.explorerWindowTakeover)return L"窗口转交：当前未启用。";
+    if(m_explorerAgentAllowed)return L"窗口转交：由独立后台代理检测；关闭文件管理器窗口会退出界面进程。";
     if(!m_explorerScan)return L"窗口转交：检测未启动，请修复并应用。";
     std::lock_guard<std::mutex> lock(m_explorerScan->mutex);
     if(FAILED(m_explorerScan->error))return L"窗口转交：无法读取资源管理器状态，原窗口将保留。";
@@ -158,6 +364,10 @@ std::wstring CMainWnd::ExplorerTakeoverStatus() const {
 void CMainWnd::UpdateExplorerTakeover() {
     if(!m_settings.explorerWindowTakeover || !m_hWnd){StopExplorerTakeover();return;}
     if(m_explorerScan)return;
+    if(m_explorerAgentAllowed) {
+        if(!StartExplorerAgent())UpdateStatus(L"后台代理启动失败，请检查安装文件");
+        return;
+    }
     // Capture existing top-level windows independently of the non-atomic COM
     // enumeration. Their protection survives a missed/partial later scan.
     EnumWindows([](HWND window,LPARAM value)->BOOL {
@@ -205,6 +415,14 @@ void CMainWnd::UpdateExplorerTakeover() {
 
 void CMainWnd::PollExplorerTakeover() {
     if(!m_explorerScan || m_explorerPollBusy)return;
+    if(m_explorerAgentAllowed) {
+        FastFileSettings current;ReadSystemIntegration(current);
+        if(!current.explorerWindowTakeover || !current.defaultFolders) {
+            m_settings.explorerWindowTakeover=false;StopExplorerTakeover();
+            if(!IsWindowVisible(m_hWnd))::PostMessageW(m_hWnd,WM_CLOSE,0,0);
+            return;
+        }
+    }
     struct Guard {bool& busy;Guard(bool& value):busy(value){busy=true;}~Guard(){busy=false;}} guard(m_explorerPollBusy);
     std::vector<ExplorerSnapshot> snapshots;ULONGLONG sequence=0;
     std::vector<std::pair<ExplorerSnapshot,bool>> completed;

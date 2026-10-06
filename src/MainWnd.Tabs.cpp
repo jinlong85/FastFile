@@ -1,4 +1,4 @@
-// FastFile - tab strip, session persistence, per-folder view memory
+﻿// FastFile - tab strip, session persistence, per-folder view memory
 // Implements CMainWnd members moved out of the original monolithic MainWnd.cpp.
 // Behaviour is unchanged; declarations live in MainWnd.h.
 
@@ -44,7 +44,8 @@ void CMainWnd::RebuildTabStrip()
     m_pTabStrip->SetBarHeight(m_settings.tabHeight);
         m_pTabStrip->SetWidthPercent(m_settings.tabWidthPercent);
         m_pTabStrip->SetMetrics(static_cast<int>(m_dpi));
-    m_pTabStrip->SetTabWidthRange(MulDiv(80,m_settings.tabWidthPercent,100), MulDiv(80,m_settings.tabWidthPercent,100), MulDiv(240,m_settings.tabWidthPercent,100));
+    const int tabWidth=MulDiv(120,m_settings.tabWidthPercent,100);
+    m_pTabStrip->SetTabWidthRange(tabWidth,tabWidth,tabWidth);
     m_pTabStrip->Clear();
     for (int i = 0; i < static_cast<int>(m_tabs.size()); ++i) {
         const std::wstring title = TabTitleForPath(m_tabs[i].path);
@@ -455,7 +456,7 @@ void CMainWnd::UpdateActiveTabPath(const std::wstring& path)
         return;
     m_tabs[m_activeTab].path = path;
     m_tabs[m_activeTab].searchFilter = m_searchFilter;
-    // A folder name changes both text and measured width, so rebuild immediately
+    // A folder name changes its title and tooltip, so rebuild immediately
     // instead of waiting for a later tab activation to refresh the layout.
     RebuildTabStrip();
 }
@@ -737,7 +738,8 @@ bool CMainWnd::LoadSession()
 
     if(m_settings.startup!=0) {
         paths.clear();filters.clear();
-        const auto custom=ResolveFolderOpenTarget(m_settings.startupPath);
+        const auto custom=m_settings.startup==2 && m_startupOpenPaths.empty()
+            ? ResolveFolderOpenTarget(m_settings.startupPath) : std::wstring();
         paths[0]=m_settings.startup==2 && !custom.empty() ? custom : std::wstring(kThisPcPath);
         count=1;active=0;
     }
@@ -773,7 +775,12 @@ bool CMainWnd::LoadSession()
 
     if (active < 0 || active >= (int)m_tabs.size())
         active = 0;
-    ActivateTab(active);
+    if(m_startupOpenPaths.empty())ActivateTab(active);
+    else {
+        // Restore the tab model, but let the external target own the first browse.
+        m_activeTab=active;
+        RebuildTabStrip();
+    }
     RebuildBreadcrumb();
     // Startup preferences decide whether paths are restored or replaced above.
     UpdateStatus(_T("已就绪"));

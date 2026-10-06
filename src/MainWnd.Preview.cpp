@@ -561,6 +561,7 @@ void CMainWnd::UpdatePreviewPath(const std::wstring& path, bool isDir)
 // preview picture in sync with the live layout.
 void CMainWnd::SyncLayoutDependents()
 {
+    if(m_shellBrowser)m_shellBrowser->PollNavigation();
     RevealSyncedTreeNode(); // DuiLib has now laid out newly expanded descendants
     UpdateSearchBoxWidth();  // keeps clamp(240, 30% of row, 435) after DPI / size changes
     if (m_shellBrowser && m_shellBrowser->IsCreated() && m_pListHost)

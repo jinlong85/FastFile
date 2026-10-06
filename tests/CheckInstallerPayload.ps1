@@ -18,7 +18,7 @@ $taskStream = $taskAssembly.GetManifestResourceStream('ff_manifest')
 if (-not $taskStream) { throw '安装包缺少文件清单。' }
 $taskReader = New-Object System.IO.StreamReader($taskStream)
 try { $taskManifest = $taskReader.ReadToEnd() } finally { $taskReader.Dispose() }
-$taskExpected = @('FastFile.exe') + @(Get-ChildItem -LiteralPath (Join-Path $taskBuild 'skin') -Recurse -File |
+$taskExpected = @('FastFile.exe', 'FastFileAgent.exe') + @(Get-ChildItem -LiteralPath (Join-Path $taskBuild 'skin') -Recurse -File |
     Where-Object { $_.Name -notlike '*.bak*' -and $_.Name -notlike '*.original*' -and $_.Name -notlike '*.tmp' } |
     ForEach-Object { $_.FullName.Substring($taskBuild.Length + 1).Replace('\', '/') })
 $taskSeen = New-Object 'System.Collections.Generic.HashSet[string]'

@@ -70,7 +70,7 @@ internal static class Setup
     private static int DoInstall(string dir, bool quiet)
     {
         Assembly asm = Assembly.GetExecutingAssembly();
-        KillRunning(asm);
+        KillRunning(dir);
 
         Directory.CreateDirectory(dir);
         string manifest;
@@ -193,7 +193,7 @@ internal static class Setup
                 return 0;
         }
 
-        KillRunning(Assembly.GetExecutingAssembly());
+        KillRunning(dir);
 
         // Folder opening is opt-in and stored per user.  Restore it before deleting the
         // program folder so Windows can never retain a default command pointing at an
@@ -368,17 +368,23 @@ internal static class Setup
         return 0;
     }
 
-    private static void KillRunning(Assembly asm)
+    private static void KillRunning(string dir)
     {
-        try
+        bool stopped = false;
+        foreach (string name in new string[] { AppName, "FastFileAgent" })
         {
-            Process[] procs = Process.GetProcessesByName(AppName);
-            foreach (Process p in procs)
+            foreach (Process process in Process.GetProcessesByName(name))
             {
-                try { p.Kill(); } catch { }
+                try
+                {
+                    string expected = Path.GetFullPath(Path.Combine(dir, name + ".exe"));
+                    if (!string.Equals(process.MainModule.FileName, expected, StringComparison.OrdinalIgnoreCase)) continue;
+                    process.Kill(); stopped = true;
+                }
+                catch { }
+                finally { process.Dispose(); }
             }
-            if (procs.Length > 0) System.Threading.Thread.Sleep(600);
         }
-        catch { }
+        if (stopped) System.Threading.Thread.Sleep(600);
     }
 }

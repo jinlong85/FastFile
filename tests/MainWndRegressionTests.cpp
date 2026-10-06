@@ -1,11 +1,19 @@
 ﻿#include "MainWndInternal.h"
 #include "FavoriteStarUI.h"
 #include "ShellMenuUtil.h"
+#include "ExplorerAgentProtocol.h"
+#include "FastFileAbout.h"
+namespace { bool ForceNewWindowRequested(); }
 class FastFileActivationWindow : public CMainWnd {
 public:
+    // HKCU overrides are process-local; do not spawn an unisolated agent here.
+    void EnableExplorerAgent() {}
     HWND Create(HWND parent,LPCTSTR title,DWORD style,DWORD extendedStyle) {
         HWND window=CMainWnd::Create(parent,title,style,extendedStyle);
-        if(window)SetPropW(window,L"FastFile.Test.Initialized",reinterpret_cast<HANDLE>(1));
+        if(window) {
+            SetPropW(window,L"FastFile.Test.Initialized",reinterpret_cast<HANDLE>(1));
+            if(ForceNewWindowRequested())SetPropW(window,L"FastFile.Test.ForcedNewWindow",reinterpret_cast<HANDLE>(1));
+        }
         return window;
     }
 };
@@ -22,6 +30,7 @@ public:
 #include <thread>
 #include <exdisp.h>
 #include <shlguid.h>
+#include <propvarutil.h>
 #include "ShellWindowRegistration.h"
 #include <sddl.h>
 #pragma comment(lib, "advapi32.lib")
@@ -328,6 +337,23 @@ struct ShellBrowserHostTestAccess {
         SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);ReleaseDC(nullptr,screen);
         return pixels>100;
     }
+    static void DumpVisibleView(ShellBrowserHost& host) {
+        RECT bounds{};GetClientRect(host.m_listWindow,&bounds);
+        std::cerr<<"native list="<<host.m_listWindow<<" visible="<<IsWindowVisible(host.m_listWindow)
+            <<" size="<<bounds.right<<","<<bounds.bottom<<" count="<<(host.m_listWindow?ListView_GetItemCount(host.m_listWindow):-1)<<'\n';
+        IShellView* view=nullptr;HWND root=nullptr;
+        if(SUCCEEDED(host.m_browser->GetCurrentView(IID_PPV_ARGS(&view)))){view->GetWindow(&root);view->Release();}
+        std::cerr<<"view root="<<root<<" visible="<<IsWindowVisible(root)<<'\n';
+        for(HWND frame=root;frame;frame=GetParent(frame)) {
+            wchar_t name[64]{};GetClassNameW(frame,name,_countof(name));RECT rc{};GetClientRect(frame,&rc);
+            std::wcerr<<L"parent="<<name<<L" size="<<rc.right<<L","<<rc.bottom<<L" visible="<<IsWindowVisible(frame)<<L"\n";
+            if(frame==host.m_parent)break;
+        }
+        EnumChildWindows(root,[](HWND child,LPARAM)->BOOL {
+            wchar_t name[64]{};GetClassNameW(child,name,_countof(name));RECT rectangle{};GetClientRect(child,&rectangle);
+            std::wcerr<<name<<L" visible="<<IsWindowVisible(child)<<L" size="<<rectangle.right<<L","<<rectangle.bottom<<L"\n";return TRUE;
+        },0);
+    }
     static bool ContainerVisible(ShellBrowserHost& host) {
         IShellView* view = nullptr;
         if (FAILED(host.m_browser->GetCurrentView(IID_PPV_ARGS(&view)))) return false;
@@ -409,10 +435,10 @@ struct TabStripRegressionAccess {
     static bool SeparatorPixels(DuiLib::CTabStripUI& strip,UINT dpi,bool dark) {
         strip.Clear();strip.SetMetrics(dpi);strip.SetDarkMode(dark);
         for(int i=0;i<3;++i)strip.Add(std::to_wstring(i),L"标签",L"",MulDiv(16,dpi,96),i==2);
-        const int height=MulDiv(29,dpi,96);strip.SetPos({0,0,1000,height},false);
+        const int width=MulDiv(1000,dpi,96),height=MulDiv(29,dpi,96);strip.SetPos({0,0,width,height},false);
         HDC screen=GetDC(nullptr),dc=CreateCompatibleDC(screen);
-        HBITMAP bitmap=CreateCompatibleBitmap(screen,1000,height);auto old=SelectObject(dc,bitmap);
-        RECT canvas{0,0,1000,height};FillRect(dc,&canvas,reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+        HBITMAP bitmap=CreateCompatibleBitmap(screen,width,height);auto old=SelectObject(dc,bitmap);
+        RECT canvas{0,0,width,height};FillRect(dc,&canvas,reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
         strip.DoPaint(dc,canvas,nullptr);
         const int x=strip.m_tabs[0].body.right+MulDiv(UiTokens::TabCardGap,dpi,96)/2;
         const COLORREF expected=dark ? RGB(0x50,0x50,0x50):RGB(0xcf,0xcf,0xcf);
@@ -422,36 +448,55 @@ struct TabStripRegressionAccess {
         strip.SetDarkMode(false);return line && seam && strip.GetFixedHeight()==height && strip.m_plus.top>=0 && strip.m_plus.bottom<=height;
     }
     static bool Check(DuiLib::CTabStripUI& strip) {
-        strip.Clear();
-        strip.SetMetrics(144);
-        strip.SetTabWidthRange(UiTokens::TabMinW, UiTokens::TabSelMinW, UiTokens::TabMaxW);
-        strip.Add(L"D:\\Program Files", L"Program Files", L"", 24, true);
-        strip.Add(L"D:\\", L"D:", L"", 24, false);
-        strip.SetPos({0, 0, 1000, MulDiv(29,144,96)}, false);
-        const int preferred = strip.MeasureTabWidth(0);
-        const int activeWidth = strip.m_tabs[0].width;
-        strip.SetActiveTab(1);
-        const bool equal = activeWidth == strip.m_tabs[0].width;
-        const bool full = activeWidth >= preferred;
-        const bool plus = strip.m_plus.left > strip.m_tabs.back().body.right &&
-            strip.m_plus.left - strip.m_tabs.back().body.right <= MulDiv(8, 144, 96);
-        const bool height=strip.m_tabs[0].body.bottom-strip.m_tabs[0].body.top==MulDiv(29,144,96) &&
-            strip.m_tabs[1].body.bottom-strip.m_tabs[1].body.top==MulDiv(29,144,96);
-        // Width is 1.5 times the measured icon/title/close-slot content at this DPI.
-        HDC dc=GetDC(strip.m_pManager->GetPaintWindow());
-        auto old=SelectObject(dc,strip.m_pManager->GetFont(7));SIZE title{};
-        GetTextExtentPoint32W(dc,L"Program Files",13,&title);
-        SelectObject(dc,old);ReleaseDC(strip.m_pManager->GetPaintWindow(),dc);
-        const int former=MulDiv(10,144,96)+MulDiv(16,144,96)+MulDiv(6,144,96)+
-            title.cx+MulDiv(28,144,96)+MulDiv(10,144,96);
-        return equal && full && plus && height && preferred==MulDiv(former,3,2) &&
-            UiTokens::TabMinW==120 && UiTokens::TabMaxW==360;
+        const std::wstring longName(80,L'长');
+        for(UINT dpi:{96u,144u,192u}) {
+            strip.Clear();strip.SetMetrics(dpi);
+            strip.SetTabWidthRange(UiTokens::TabMinW,UiTokens::TabSelMinW,UiTokens::TabMaxW);
+            strip.Add(L"D:\\"+longName,L"中文 "+longName+L"尾部甲",L"",MulDiv(16,dpi,96),true);
+            strip.Add(L"D:\\短",L"短",L"",MulDiv(16,dpi,96),false);
+            strip.SetPos({0,0,1200,MulDiv(29,dpi,96)},false);
+            const int expected=MulDiv(180,dpi,96);
+            if(strip.m_tabs[0].width!=expected || strip.m_tabs[1].width!=expected)return false;
+            const auto before=PaintPixels(strip);
+            strip.SetTabTitle(0,L"中文 "+longName+L"尾部乙");
+            if(before.empty() || before!=PaintPixels(strip))return false; // hidden suffix changes no pixels
+            strip.SetActiveTab(1);
+            if(strip.m_tabs[0].width!=expected || strip.m_tabs[1].width!=expected)return false;
+            const auto close=strip.m_tabs[0].close;
+            const auto hit=strip.HitTest({(close.left+close.right)/2,(close.top+close.bottom)/2});
+            if(hit.part!=CTabStripUI::Part::Close || hit.index!=0)return false;
+            TEventUI hover{};hover.Type=UIEVENT_MOUSEMOVE;
+            hover.ptMouse={strip.m_tabs[0].body.left+MulDiv(15,dpi,96),strip.GetPos().bottom/2};
+            strip.DoEvent(hover);
+            if(std::wstring(strip.GetToolTip())!=strip.m_tabs[0].path)return false;
+            strip.SetPos({0,0,MulDiv(220,dpi,96),MulDiv(29,dpi,96)},false);
+            strip.SetActiveTab(0);strip.SetActiveTab(1);
+            if(strip.m_tabs[0].width!=expected || strip.m_tabs[1].width!=expected
+                || strip.m_scrollX<=0 || strip.m_plus.right>strip.GetPos().right)return false;
+        }
+        return true;
     }
 };
 
 }
 
 struct MainWndRegressionAccess {
+    static int CheckTabs(CMainWnd& window) { return DuiLib::TabStripRegressionAccess::Check(*window.m_pTabStrip)?0:1; }
+    static int RunIsolatedAgent() {
+        // Real Explorer lives on the interactive default desktop; fixture GUI is isolated.
+        HDESK sourceDesktop=OpenDesktopW(L"Default",0,FALSE,GENERIC_ALL);
+        if(!sourceDesktop || !SetThreadDesktop(sourceDesktop))return 4;
+        wchar_t root[32768]{};GetEnvironmentVariableW(L"APPDATA",root,_countof(root));
+        CMainWnd::s_explorerTestRoot=root;
+        wchar_t executable[32768]{};GetModuleFileNameW(nullptr,executable,_countof(executable));
+        CMainWnd::s_agentInterfaceForTest=executable;
+        CMainWnd::s_agentArgumentsForTest=L" --agent-ui-launcher";
+        wchar_t desktop[256]{};GetEnvironmentVariableW(L"FASTFILE_TEST_DESKTOP",desktop,_countof(desktop));
+        CMainWnd::s_agentDesktopForTest=OpenDesktopW(desktop,0,FALSE,GENERIC_ALL);
+        const int result=CMainWnd::RunExplorerAgent();
+        if(CMainWnd::s_agentDesktopForTest)CloseDesktop(CMainWnd::s_agentDesktopForTest);
+        CMainWnd::s_agentDesktopForTest=nullptr;CloseDesktop(sourceDesktop);return result;
+    }
     static int CheckShellActivation(CMainWnd& window,const std::wstring& fixture) {
         int failures=0;
         auto check=[&](bool value,const char* name){if(!value){++failures;std::cerr<<"FAIL "<<name<<"\n";}};
@@ -541,6 +586,10 @@ struct MainWndRegressionAccess {
         RegOverridePredefKey(HKEY_CLASSES_ROOT,nullptr);
         DestroyWindow(window.m_hWnd);
         pump(); // Consume the closed host's WM_QUIT before ShellExecuteEx waits.
+        const auto coldFile=fixture+L"\\115Chrome\\cold-visible.txt";
+        HANDLE coldFixture=CreateFileW(coldFile.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
+        check(coldFixture!=INVALID_HANDLE_VALUE,"cold-start enumeration fixture is created");
+        if(coldFixture!=INVALID_HANDLE_VALUE)CloseHandle(coldFixture);
         RegOverridePredefKey(HKEY_CLASSES_ROOT,classes);
         HANDLE cold=invokeAction(fixture+L"\\115Chrome",L"Directory",L"opennewwindow");
         if(cold) {
@@ -555,22 +604,84 @@ struct MainWndRegressionAccess {
                 Sleep(5);
             }
             check(opened!=nullptr,"explicit menu cold-starts a FastFile window");
-            if(opened)PostMessageW(opened,WM_CLOSE,0,0);
+            bool listed=false;
+            if(opened) {
+                const ULONGLONG listedDeadline=GetTickCount64()+5000;
+                do {
+                    pump();HWND list=nullptr;
+                    EnumChildWindows(opened,[](HWND child,LPARAM data)->BOOL {
+                        wchar_t type[64]{};GetClassNameW(child,type,_countof(type));
+                        if(wcscmp(type,WC_LISTVIEWW)==0){*reinterpret_cast<HWND*>(data)=child;return FALSE;}
+                        return TRUE;
+                    },reinterpret_cast<LPARAM>(&list));
+                    RECT bounds{};if(list)GetWindowRect(list,&bounds);
+                    listed=list && IsWindowVisible(list) && bounds.right>bounds.left && bounds.bottom>bounds.top
+                        && SendMessageW(list,LVM_GETITEMCOUNT,0,0)==1;
+                    if(listed)break;Sleep(5);
+                }while(GetTickCount64()<listedDeadline);
+                // Closing exits the UI even while default integration is enabled.
+                PostMessageW(opened,WM_CLOSE,0,0);
+
+            }
+            check(listed,"cold-started native file view actually displays the file, not only the requested path");
             const DWORD closeDeadline=GetTickCount()+6000;
             while(GetTickCount()<closeDeadline && WaitForSingleObject(cold,0)==WAIT_TIMEOUT){pump();Sleep(5);}
             DWORD result=STILL_ACTIVE;GetExitCodeProcess(cold,&result);
             check(result==0,"cold-started FastFile closes normally");
+            const DWORD coldPid=GetProcessId(cold);
             if(result==STILL_ACTIVE)TerminateProcess(cold,3);CloseHandle(cold);
+            wchar_t explicitLog[32768]{};GetEnvironmentVariableW(L"FASTFILE_NAV_LOG",explicitLog,_countof(explicitLog));
+            auto logPath=CMainWnd::GetSessionFilePath();logPath=logPath.substr(0,logPath.find_last_of(L'\\')+1)+L"navigation.log";
+            if(explicitLog[0])logPath=explicitLog;
+            std::ifstream navigationLog(logPath,std::ios::binary);std::string line;int requests=0;
+            const std::string pidToken="pid="+std::to_string(coldPid)+" ";
+            while(std::getline(navigationLog,line))
+                if(line.find(pidToken)!=std::string::npos && line.find("event=request ")!=std::string::npos)++requests;
+            check(requests==1,"external cold start issues only one navigation, directly to the requested folder");
             wchar_t saved[32768]{};GetPrivateProfileStringW(L"Tabs",L"Path0",L"",saved,_countof(saved),CMainWnd::GetSessionFilePath().c_str());
             check(CMainWnd::PathEquals(saved,fixture+L"\\115Chrome"),"cold start opens the requested folder rather than Explorer or the default location");
         }
+        DeleteFileW(coldFile.c_str());
+        RegOverridePredefKey(HKEY_CLASSES_ROOT,nullptr);
+        FastFileSettings agentSettings;agentSettings.SetDefaultManager(true);
+        check(CMainWnd::ApplySystemIntegration(agentSettings),"enable isolated agent lifecycle flags");
+        auto spawnAgent=[]() -> HANDLE {
+            wchar_t path[32768]{};GetModuleFileNameW(nullptr,path,_countof(path));
+            auto command=L"\""+std::wstring(path)+L"\" --agent-lifecycle-launcher";
+            STARTUPINFOW startup{sizeof(startup)};PROCESS_INFORMATION child{};
+            if(!CreateProcessW(path,command.data(),nullptr,nullptr,FALSE,0,nullptr,nullptr,&startup,&child))return nullptr;
+            CloseHandle(child.hThread);return child.hProcess;
+        };
+        HANDLE agent=spawnAgent();
+        check(agent!=nullptr,"headless agent starts in isolated profile");
+        if(agent) {
+            Sleep(1500);
+            check(WaitForSingleObject(agent,0)==WAIT_TIMEOUT,"enabled agent remains running without GUI");
+            struct AgentWindows { DWORD pid;int count=0; } owned{GetProcessId(agent)};
+            EnumWindows([](HWND hwnd,LPARAM value)->BOOL {
+                auto& owned=*reinterpret_cast<AgentWindows*>(value);DWORD pid=0;GetWindowThreadProcessId(hwnd,&pid);
+                if(pid==owned.pid)++owned.count;return TRUE;
+            },reinterpret_cast<LPARAM>(&owned));
+            check(owned.count==0,"agent creates no top-level interaction window");
+            HANDLE duplicate=spawnAgent();
+            if(duplicate) {
+                check(WaitForSingleObject(duplicate,5000)==WAIT_OBJECT_0,"second agent exits under profile singleton");
+                DWORD code=1;GetExitCodeProcess(duplicate,&code);check(code==0,"duplicate agent exits successfully");
+                if(code==STILL_ACTIVE)TerminateProcess(duplicate,3);CloseHandle(duplicate);
+            } else check(false,"duplicate agent starts");
+            FastFileSettings off;check(CMainWnd::ApplySystemIntegration(off),"disable isolated agent flags");
+            check(WaitForSingleObject(agent,6000)==WAIT_OBJECT_0,"agent exits after integration is disabled");
+            DWORD code=1;GetExitCodeProcess(agent,&code);check(code==0,"agent shuts down cleanly");
+            if(code==STILL_ACTIVE)TerminateProcess(agent,3);CloseHandle(agent);
+        }
+
         RegOverridePredefKey(HKEY_CLASSES_ROOT,nullptr);RegOverridePredefKey(HKEY_CURRENT_USER,nullptr);
         RegCloseKey(classes);RegCloseKey(user);RegDeleteTreeW(HKEY_CURRENT_USER,hiveName);
         return failures;
     }
     // Counts Explorer windows (other than FastFile's own registration) showing a folder
     // below root. Read-only enumeration of the Shell window list.
-    static int ExplorerWindowsUnder(const std::wstring& root,HWND own) {
+    static int ExplorerWindowsUnder(const std::wstring& root,HWND own,bool cleanupOwned=false) {
         IShellWindows* windows=nullptr;int found=0;
         if(FAILED(CoCreateInstance(CLSID_ShellWindows,nullptr,CLSCTX_ALL,IID_PPV_ARGS(&windows))))return -1;
         long count=0;if(FAILED(windows->get_Count(&count))){windows->Release();return -1;}
@@ -589,7 +700,10 @@ struct MainWndRegressionAccess {
                 && SUCCEEDED(folder->GetCurFolder(&pidl))) {
                 wchar_t path[MAX_PATH*4]{};
                 if(SHGetPathFromIDListEx(pidl,path,_countof(path),GPFIDL_DEFAULT)
-                    && _wcsnicmp(path,root.c_str(),root.size())==0)++found;
+                    && _wcsnicmp(path,root.c_str(),root.size())==0) {
+                    ++found;if(cleanupOwned && root.find(L"FastFileUIRegression_")!=std::wstring::npos)
+                        PostMessageW(reinterpret_cast<HWND>(hwnd),WM_CLOSE,0,0);
+                }
             }
             if(pidl)CoTaskMemFree(pidl);if(folder)folder->Release();if(folderView)folderView->Release();
             if(view)view->Release();if(browser)browser->Release();if(provider)provider->Release();item->Release();
@@ -1448,6 +1562,106 @@ struct MainWndRegressionAccess {
         failures+=CheckPreferences(window,root);
         return failures;
     }
+    static int CheckExplorerAgentLive(CMainWnd& window,const std::wstring& fixture) {
+        int failures=0;
+        auto check=[&](bool ok,const char* name){if(!ok){++failures;std::cerr<<"FAIL "<<name<<'\n';}};
+        auto pump=[] {MSG message{};while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE))
+            if(message.message!=WM_QUIT){TranslateMessage(&message);DispatchMessageW(&message);}};
+        wchar_t hive[256]{};GetEnvironmentVariableW(L"FASTFILE_TEST_HIVE",hive,_countof(hive));
+        HKEY user=nullptr,classes=nullptr;
+        RegCreateKeyExW(HKEY_CURRENT_USER,(std::wstring(hive)+L"\\User").c_str(),0,nullptr,0,KEY_ALL_ACCESS,nullptr,&user,nullptr);
+        RegCreateKeyExW(HKEY_CURRENT_USER,(std::wstring(hive)+L"\\Classes").c_str(),0,nullptr,0,KEY_ALL_ACCESS,nullptr,&classes,nullptr);
+        if(!user || !classes)return 1;
+        // Keep a legitimate pending Shell registration while real windows arrive.
+        IShellWindows* pendingShell=nullptr;long pendingCookie=0;PIDLIST_ABSOLUTE pendingLocation=nullptr;
+        if(SUCCEEDED(CoCreateInstance(CLSID_ShellWindows,nullptr,CLSCTX_ALL,IID_PPV_ARGS(&pendingShell)))
+            && SUCCEEDED(SHParseDisplayName(fixture.c_str(),nullptr,&pendingLocation,0,nullptr))) {
+            VARIANT where{},root{};VariantInit(&where);VariantInit(&root);
+            InitVariantFromBuffer(pendingLocation,ILGetSize(pendingLocation),&where);
+            check(SUCCEEDED(pendingShell->RegisterPending(GetCurrentThreadId(),&where,&root,SWC_BROWSER,&pendingCookie)),
+                "pending Shell entry is registered for scan regression");
+            VariantClear(&where);CoTaskMemFree(pendingLocation);
+        } else check(false,"pending Shell regression prerequisites available");
+        window.StopExplorerTakeover();
+        RegOverridePredefKey(HKEY_CURRENT_USER,user);
+        FastFileSettings enabled;enabled.SetDefaultManager(true);enabled.confirmClose=false;enabled.startup=1;enabled.reuseTabs=false;
+        check(CMainWnd::ApplySystemIntegration(enabled),"agent live test enables isolated registry flags");
+        auto saved=window.m_settings;window.m_settings=enabled;enabled.Save(FastFileSettings::FilePath());
+        wchar_t executable[32768]{};GetModuleFileNameW(nullptr,executable,_countof(executable));
+        auto command=L"\""+std::wstring(executable)+L"\" --agent-lifecycle-launcher";
+        STARTUPINFOW startup{sizeof(startup)};PROCESS_INFORMATION agent{};
+        const bool started=CreateProcessW(executable,command.data(),nullptr,nullptr,FALSE,0,nullptr,nullptr,&startup,&agent)!=FALSE;
+        check(started,"independent agent process starts");
+        if(started) {
+            CloseHandle(agent.hThread);Sleep(1500);
+            wchar_t system[32768]{};GetWindowsDirectoryW(system,_countof(system));
+            const auto explorer=std::wstring(system)+L"\\explorer.exe";
+            const auto selected=fixture+L"\\Battle.net\\agent-selected.txt";
+            HANDLE file=CreateFileW(selected.c_str(),GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+            if(file!=INVALID_HANDLE_VALUE)CloseHandle(file);
+            HWND receiver=window.m_hWnd;
+            HANDLE cold=nullptr;
+            for(int iteration=0;iteration<2;++iteration) {
+                const auto folder=iteration?fixture+L"\\Battle.net":fixture;
+                if(iteration) {
+                    window.m_closeConfirmed=true;PostMessageW(window.m_hWnd,WM_CLOSE,0,0);
+                    const auto until=GetTickCount64()+4000;
+                    while(IsWindow(window.m_hWnd) && GetTickCount64()<until){pump();Sleep(10);}
+                    check(!IsWindow(receiver),"closing receiver destroys GUI while agent remains alive");receiver=nullptr;
+                    check(WaitForSingleObject(agent.hProcess,0)==WAIT_TIMEOUT,"agent survives receiver close");
+                } else ShowWindow(receiver,SW_HIDE);
+                auto launch=L"\""+explorer+L"\" /n,/separate,"+(iteration?L"/select,":L"")+L"\""+(iteration?selected:folder)+L"\"";
+                PROCESS_INFORMATION source{};
+                check(CreateProcessW(explorer.c_str(),launch.data(),nullptr,nullptr,FALSE,0,nullptr,nullptr,&startup,&source)!=FALSE,"real Explorer request starts");
+                if(source.hThread)CloseHandle(source.hThread);if(source.hProcess)CloseHandle(source.hProcess);
+                bool sourceSeen=false,transferred=false;
+                const auto deadline=GetTickCount64()+35000;
+                do {
+                    pump();
+                    const int count=ExplorerWindowsUnder(folder,receiver);
+                    if(count>0)sourceSeen=true;
+                    if(iteration && !receiver) {
+                        EnumWindows([](HWND hwnd,LPARAM value)->BOOL {
+                            wchar_t name[128]{};GetClassNameW(hwnd,name,_countof(name));DWORD pid=0;GetWindowThreadProcessId(hwnd,&pid);
+                            if(!wcscmp(name,L"FastFile_MainWnd") && pid!=GetCurrentProcessId()) {
+                                *reinterpret_cast<HWND*>(value)=hwnd;return FALSE;
+                            }return TRUE;
+                        },reinterpret_cast<LPARAM>(&receiver));
+                        if(receiver) {
+                            DWORD pid=0;GetWindowThreadProcessId(receiver,&pid);cold=OpenProcess(SYNCHRONIZE|PROCESS_QUERY_LIMITED_INFORMATION,FALSE,pid);
+                        }
+                    }
+                    transferred=sourceSeen && count==0 && receiver && IsWindowVisible(receiver)
+                        && !GetPropW(receiver,L"FastFile.ExternalOpenPending");
+                    if(!iteration)transferred=transferred && window.m_shellBrowser && window.m_shellBrowser->IsNavigationCompleteAt(folder)
+                        && window.m_shellBrowser->HasVisibleViewBounds();
+                    if(transferred)break;Sleep(15);
+                }while(GetTickCount64()<deadline);
+                check(transferred,iteration?"agent cold-starts GUI and transfers real selected-file request":"agent transfers real Explorer request through IPC to existing GUI");
+                if(!transferred)break;
+            }
+            if(cold) {
+                check(GetPropW(receiver,L"FastFile.Test.ForcedNewWindow")!=nullptr,
+                    "cold agent launch bypasses windows belonging to other installations");
+                PostMessageW(receiver,WM_CLOSE,0,0);
+                check(WaitForSingleObject(cold,6000)==WAIT_OBJECT_0,"cold GUI exits on close with integration still enabled");
+                if(WaitForSingleObject(cold,0)==WAIT_TIMEOUT)TerminateProcess(cold,3);CloseHandle(cold);
+                const int savedTabs=GetPrivateProfileIntW(L"Tabs",L"Count",-1,CMainWnd::GetSessionFilePath().c_str());
+                check(savedTabs==1,"cold agent request is delivered once even when tab reuse is disabled");
+            }
+            FastFileSettings off;check(CMainWnd::ApplySystemIntegration(off),"agent live test disables isolated integration");
+            check(WaitForSingleObject(agent.hProcess,6000)==WAIT_OBJECT_0,"independent agent stops after disable");
+            if(WaitForSingleObject(agent.hProcess,0)==WAIT_TIMEOUT)TerminateProcess(agent.hProcess,3);CloseHandle(agent.hProcess);
+        }
+        auto logPath=FastFileSettings::FilePath();logPath=logPath.substr(0,logPath.find_last_of(L"\\/"))+L"\\explorer-agent.log";
+        CopyFileW(logPath.c_str(),L"agent-live-trace.log",FALSE);
+        ExplorerWindowsUnder(fixture,window.m_hWnd,true);
+        if(pendingShell){if(pendingCookie)pendingShell->Revoke(pendingCookie);pendingShell->Release();}
+        window.m_settings=saved;
+        RegOverridePredefKey(HKEY_CURRENT_USER,nullptr);RegCloseKey(classes);RegCloseKey(user);
+        RegDeleteTreeW(HKEY_CURRENT_USER,hive);
+        return failures;
+    }
     static int CheckExplorerLive(CMainWnd& window,const std::wstring& fixture) {
         auto pump=[] {MSG message{};while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)) {
             if(message.message!=WM_QUIT){TranslateMessage(&message);DispatchMessageW(&message);}
@@ -1465,6 +1679,7 @@ struct MainWndRegressionAccess {
         const auto selectedFile=selectedFolder+L"\\native-selection.txt";
         HANDLE file=CreateFileW(selectedFile.c_str(),GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);if(file!=INVALID_HANDLE_VALUE)CloseHandle(file);
         for(int iteration=0;iteration<2;++iteration) {
+            if(!iteration)ShowWindow(window.m_hWnd,SW_HIDE);
             const auto target=iteration?selectedFolder:fixture;
             std::wstring command=L"\""+executable+L"\" /n,/separate,"+(iteration?L"/select,":L"")+L"\""+(iteration?selectedFile:target)+L"\"";
             STARTUPINFOW startup{sizeof(startup)};PROCESS_INFORMATION child{};
@@ -1478,14 +1693,23 @@ struct MainWndRegressionAccess {
                 pump();window.PollExplorerTakeover();
                 for(const auto& entry:window.m_explorerTransfers)
                     if(CMainWnd::PathEquals(entry.second.source.path,target))observed=entry.first;
-                closed=observed && !IsWindow(observed);Sleep(20);
+                std::vector<std::pair<std::wstring,bool>> actualSelection;
+                const bool readySelection=!iteration || (window.m_shellBrowser && window.m_shellBrowser->GetSelection(actualSelection)
+                    && actualSelection.size()==1 && CMainWnd::PathEquals(actualSelection.front().first,selectedFile));
+                closed=observed && !IsWindow(observed) && IsWindowVisible(window.m_hWnd) && window.m_shellBrowser
+                    && window.m_shellBrowser->IsNavigationCompleteAt(target) && readySelection;
+                Sleep(20);
             }
             std::vector<std::pair<std::wstring,bool>> selected;
             const bool selectionOk=!iteration || (window.m_shellBrowser && window.m_shellBrowser->GetSelection(selected)
                 && selected.size()==1 && CMainWnd::PathEquals(selected.front().first,selectedFile));
             std::cout<<"Native Explorer observed "<<observed<<", closed "<<closed<<", FastFile folder confirmed "
                 <<(window.m_shellBrowser && window.m_shellBrowser->IsNavigationCompleteAt(target))<<", selection confirmed "<<selectionOk<<'\n';
-            if(!closed || !window.m_shellBrowser || !window.m_shellBrowser->IsNavigationCompleteAt(target) || !selectionOk) {
+            if(!closed || !IsWindowVisible(window.m_hWnd) || !window.m_shellBrowser || !window.m_shellBrowser->IsNavigationCompleteAt(target) || !selectionOk) {
+                std::cerr<<"scan entries="<<window.m_explorerTransfers.size()<<" sequence="<<window.m_explorerScanSequence<<'\n';
+                std::wcerr<<L"current="<<window.m_currentPath<<L" scan="<<window.ExplorerTakeoverStatus()<<L"\n";
+                for(const auto& entry:window.m_explorerTransfers)std::wcerr<<L"transfer="<<entry.first<<L" path="<<entry.second.source.path
+                    <<L" ignored="<<entry.second.ignored<<L" started="<<entry.second.started<<L" resolved="<<entry.second.resolved<<L"\n";
                 std::cerr<<"FAIL native Explorer direct/selected-file request must transfer and close\n";++failures;break;
             }
             const auto settle=GetTickCount64()+2000;
@@ -1495,7 +1719,7 @@ struct MainWndRegressionAccess {
         return failures;
     }
     inline static bool settingsTestSave=false,settingsDialogPages=false;
-    inline static bool settingsIntegrationUi=false;
+    inline static bool settingsIntegrationUi=false,settingsAboutUi=false;
     static void CALLBACK ExerciseSettingsDialog(HWND,UINT,UINT_PTR timer,DWORD) {
         HWND dialog=nullptr;
         EnumThreadWindows(GetCurrentThreadId(),[](HWND candidate,LPARAM value)->BOOL {
@@ -1506,28 +1730,64 @@ struct MainWndRegressionAccess {
         },reinterpret_cast<LPARAM>(&dialog));
         // DialogBox can pump during creation; wait until initialization and showing
         // have finished before checking visibility or sending modal commands.
-        if(!dialog || !IsWindowVisible(dialog) || !GetDlgItem(dialog,126))return;
+        if(!dialog || !IsWindowVisible(dialog) || !GetDlgItem(dialog,127))return;
         KillTimer(nullptr,timer);
         HWND tabs=GetDlgItem(dialog,100);
-        settingsDialogPages=TabCtrl_GetItemCount(tabs)==4;
+        settingsDialogPages=TabCtrl_GetItemCount(tabs)==5;
         for(int page=0;page<4;++page) {
             TabCtrl_SetCurSel(tabs,page);
             NMHDR changed{tabs,100,TCN_SELCHANGE};SendMessageW(dialog,WM_NOTIFY,100,reinterpret_cast<LPARAM>(&changed));
-            const int visibleIds[]={110,116,121,126};
+            const int visibleIds[]={110,116,121,127};
             settingsDialogPages=settingsDialogPages && IsWindowVisible(GetDlgItem(dialog,visibleIds[page]));
         }
-        SendMessageW(dialog,WM_COMMAND,192,0); // read-only detection
         wchar_t report[32768]{};GetWindowTextW(GetDlgItem(dialog,194),report,_countof(report));
-        settingsIntegrationUi=GetDlgItem(dialog,129) && GetDlgItem(dialog,193)
-            && std::wstring(report).find(L"当前运行程序")!=std::wstring::npos;
+        settingsIntegrationUi=GetDlgItem(dialog,127) && !GetDlgItem(dialog,126)
+            && !GetDlgItem(dialog,128) && !GetDlgItem(dialog,129)
+            && !GetDlgItem(dialog,192) && !GetDlgItem(dialog,193) && !GetDlgItem(dialog,191)
+            && GetDlgItem(dialog,195) && IsWindowVisible(GetDlgItem(dialog,195))
+            && std::wstring(report).find(L"当前状态")!=std::wstring::npos;
         if(settingsTestSave) {
-            SendMessageW(dialog,WM_COMMAND,193,0); // apply from the actual repair button
-            FastFileSettings applied;CMainWnd::ReadSystemIntegration(applied);
-            settingsIntegrationUi=settingsIntegrationUi && applied.contextMenu && applied.defaultFolders && applied.defaultComputer;
+            SendMessageW(GetDlgItem(dialog,127),BM_SETCHECK,BST_CHECKED,0);
         }
-        RECT details{},restore{},save{};
-        GetWindowRect(GetDlgItem(dialog,194),&details);GetWindowRect(GetDlgItem(dialog,191),&restore);GetWindowRect(GetDlgItem(dialog,IDOK),&save);
-        settingsIntegrationUi=settingsIntegrationUi && details.bottom<=restore.top && restore.bottom<=save.top;
+        RECT details{},save{};
+        GetWindowRect(GetDlgItem(dialog,194),&details);GetWindowRect(GetDlgItem(dialog,IDOK),&save);
+        settingsIntegrationUi=settingsIntegrationUi && details.bottom<=save.top;
+        TabCtrl_SetCurSel(tabs,4);
+        NMHDR aboutChanged{tabs,100,TCN_SELCHANGE};SendMessageW(dialog,WM_NOTIFY,100,reinterpret_cast<LPARAM>(&aboutChanged));
+        wchar_t aboutText[4096]{},programPath[32768]{};
+        GetWindowTextW(GetDlgItem(dialog,196),aboutText,_countof(aboutText));
+        GetWindowTextW(GetDlgItem(dialog,197),programPath,_countof(programPath));
+        settingsAboutUi=IsWindowVisible(GetDlgItem(dialog,196)) && !IsWindowVisible(GetDlgItem(dialog,127))
+            && std::wstring(aboutText).find(FASTFILE_VERSION_W)!=std::wstring::npos
+            && std::wstring(aboutText).find(L"后台代理")!=std::wstring::npos
+            && std::wstring(programPath)==FastFileAbout::ExecutablePath()
+            && (GetWindowLongPtrW(GetDlgItem(dialog,196),GWL_STYLE)&ES_READONLY);
+        for(int id=198;id<=205;++id) {
+            RECT button{};GetWindowRect(GetDlgItem(dialog,id),&button);
+            settingsAboutUi=settingsAboutUi && IsWindowVisible(GetDlgItem(dialog,id)) && button.bottom<=save.top;
+        }
+        SendMessageW(dialog,WM_COMMAND,198,0);
+        // Exercise the real Unicode clipboard button, retaining every original
+        // clipboard format through its IDataObject instead of copying user text.
+        IDataObject* originalClipboard=nullptr;
+        if(SUCCEEDED(OleGetClipboard(&originalClipboard))) {
+            SendMessageW(dialog,WM_COMMAND,201,0);
+            bool copied=false;
+            if(OpenClipboard(dialog)) {
+                const auto data=GetClipboardData(CF_UNICODETEXT);
+                const auto value=data?static_cast<const wchar_t*>(GlobalLock(data)):nullptr;
+                if(value) {
+                    const std::wstring diagnostic(value);
+                    copied=diagnostic.find(FASTFILE_VERSION_W)!=std::wstring::npos
+                        && diagnostic.find(programPath)==std::wstring::npos;
+                    GlobalUnlock(data);
+                }
+                CloseClipboard();
+            }
+            const bool restored=SUCCEEDED(OleSetClipboard(originalClipboard)) && SUCCEEDED(OleFlushClipboard());
+            originalClipboard->Release();
+            settingsAboutUi=settingsAboutUi && copied && restored;
+        } else settingsAboutUi=false;
         TabCtrl_SetCurSel(tabs,1);
         NMHDR changed{tabs,100,TCN_SELCHANGE};SendMessageW(dialog,WM_NOTIFY,100,reinterpret_cast<LPARAM>(&changed));
         SendMessageW(GetDlgItem(dialog,116),CB_SETCURSEL,2,0); // 13 logical pixels
@@ -1535,6 +1795,32 @@ struct MainWndRegressionAccess {
     }
     static int CheckPreferences(CMainWnd& window,const std::wstring& fixture) {
         int failures=0;auto check=[&](bool ok,const char* name){if(!ok){std::cerr<<"FAIL "<<name<<'\n';++failures;}};
+        FastFileAbout::Info diagnostic;
+        check(FastFileAbout::Directory(L"C:\\FastFile.exe")==L"C:\\"
+            && FastFileAbout::Directory(L"\\\\server\\share\\FastFile.exe")==L"\\\\server\\share",
+            "about installation directory preserves drive and network roots");
+        check(FastFileAbout::IsOwnedAgent(L"C:\\App\\FastFileAgent.exe",L"c:\\app\\fastfileagent.exe",1,1)
+            && !FastFileAbout::IsOwnedAgent(L"D:\\App\\FastFileAgent.exe",L"C:\\App\\FastFileAgent.exe",1,1)
+            && !FastFileAbout::IsOwnedAgent(L"C:\\App\\FastFileAgent.exe",L"C:\\App\\FastFileAgent.exe",0,1),
+            "about agent status excludes other installations and other sessions");
+        diagnostic.executable=L"C:\\private-profile\\secret.exe";
+        diagnostic.build=L"Release / x64";diagnostic.windows=L"10.0.22621";
+        diagnostic.agentInstalled=true;diagnostic.agentPid=123;diagnostic.agentVersion=L"0.0.1";
+        check(diagnostic.Diagnostics().find(L"private-profile")==std::wstring::npos
+            && diagnostic.AgentText().find(L"不一致")!=std::wstring::npos,
+            "about diagnostics exclude paths and report agent version mismatch");
+        diagnostic.agentPid=0;diagnostic.agentUnknown=true;
+        check(diagnostic.AgentText().find(L"无法确认")!=std::wstring::npos,"inaccessible agent status is not reported as stopped");
+        const auto buildDirectory=FastFileAbout::Directory(FastFileAbout::ExecutablePath());
+        const auto app=buildDirectory+L"\\FastFile.exe";
+        check(FastFileAbout::FileVersion(app)==FASTFILE_VERSION_W
+            && FastFileAbout::FileVersion(buildDirectory+L"\\FastFileAgent.exe")==FASTFILE_VERSION_W,
+            "GUI and agent VERSIONINFO share the generated build version");
+        HMODULE metadata=LoadLibraryExW(app.c_str(),nullptr,LOAD_LIBRARY_AS_DATAFILE|LOAD_LIBRARY_AS_IMAGE_RESOURCE);
+        const auto license=metadata?FastFileAbout::LicenseText(metadata):L"";
+        check(license.find(L"Permission is hereby granted")!=std::wstring::npos
+            && license.find(L"2013 duilib")!=std::wstring::npos,"DuiLib complete MIT notice is embedded in the shipped executable");
+        if(metadata)FreeLibrary(metadata);
         const auto file=fixture+L"\\preferences-test.ini";
         FastFileSettings prefs;
         check(!prefs.contextMenu && !prefs.defaultFolders && !prefs.defaultComputer && prefs.startup==1
@@ -1574,6 +1860,15 @@ struct MainWndRegressionAccess {
         check(window.LoadSession() && window.m_tabs.size()==1 && CMainWnd::PathEquals(window.m_currentPath,fixture),"custom startup folder overrides saved tabs");
         window.m_settings.startup=1;
         check(window.LoadSession() && window.m_tabs.size()==1 && CMainWnd::IsThisPcPath(window.m_currentPath),"This PC startup remains available");
+        const auto startupProbe=CMainWnd::s_folderProbe;
+        const auto startupCurrent=window.m_currentPath;
+        slowProbeCalls=0;
+        CMainWnd::s_folderProbe=[](const std::wstring&)->DWORD {++slowProbeCalls;return INVALID_FILE_ATTRIBUTES;};
+        window.m_startupOpenPaths={fixture};window.m_settings.startup=2;
+        window.m_settings.startupPath=fixture+L"\\unavailable-startup";
+        check(window.LoadSession() && slowProbeCalls==0 && window.m_currentPath==startupCurrent,
+            "external startup restores the tab model without probing or browsing the old startup location");
+        window.m_startupOpenPaths.clear();CMainWnd::s_folderProbe=startupProbe;
         window.m_settings=original;window.ApplySettingsAppearance();
         auto* gear=window.m_PaintManager.FindControl(L"btn_settings");
         check(gear && gear->IsVisible() && gear->GetFixedHeight()==window.DpiScale(32),"settings entry has a normal command-button hit area");
@@ -1660,6 +1955,10 @@ struct MainWndRegressionAccess {
             do {MSG message{};while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)) {
                 if(message.message!=WM_QUIT){TranslateMessage(&message);DispatchMessageW(&message);}
             }Sleep(5);}while(GetTickCount()<deadline);
+            if(window.m_activeTab!=static_cast<int>(count) || !CMainWnd::PathEquals(window.m_currentPath,sample.second))
+                std::wcerr<<L"duplicate tab diagnostic: expected="<<count<<L" actual="<<window.m_activeTab
+                    <<L" target="<<sample.second<<L" current="<<window.m_currentPath
+                    <<L" externalPending="<<window.m_externalOpensPending<<L"\n";
             check(window.m_activeTab==static_cast<int>(count) && CMainWnd::PathEquals(window.m_currentPath,sample.second),
                 "navigation completion must keep an explicitly duplicated tab active");
         }
@@ -1681,17 +1980,97 @@ struct MainWndRegressionAccess {
         }
         FastFileSettings testIntegration;testIntegration.contextMenu=true;testIntegration.defaultFolders=true;testIntegration.defaultComputer=true;
         check(CMainWnd::ApplySystemIntegration(testIntegration),"settings dialog starts with isolated integration enabled");
+        check(window.ApplyDefaultManagerChoice(CMainWnd::DefaultManagerChoice::KeepCurrent),
+            "keeping the current manager succeeds without applying staged preferences");
+        FastFileSettings kept;CMainWnd::ReadSystemIntegration(kept);
+        check(kept.contextMenu && kept.defaultFolders && kept.defaultComputer && !kept.explorerWindowTakeover,
+            "keeping the current manager preserves independent integration flags");
+        check(window.ApplyDefaultManagerChoice(CMainWnd::DefaultManagerChoice::UseFastFile),
+            "the default manager choice applies unified integration");
+        FastFileSettings chosen;CMainWnd::ReadSystemIntegration(chosen);
+        check(chosen.contextMenu && chosen.defaultFolders && chosen.defaultComputer && chosen.explorerWindowTakeover
+            && CMainWnd::DetectSystemIntegration().backgroundReady,
+            "choosing FastFile enables all entry points and owned login startup");
+        check(window.ApplyDefaultManagerChoice(CMainWnd::DefaultManagerChoice::RestorePrevious),
+            "the restore choice restores the previous manager");
+        FastFileSettings restored;CMainWnd::ReadSystemIntegration(restored);
+        check(!restored.contextMenu && !restored.defaultFolders && !restored.defaultComputer && !restored.explorerWindowTakeover
+            && !CMainWnd::DetectSystemIntegration().backgroundReady,
+            "restoring the previous manager removes unified integration and login startup");
+        check(CMainWnd::ApplySystemIntegration(testIntegration),"restore isolated integration before dialog checks");
         settingsTestOwner=window.m_hWnd;settingsTestSave=false;settingsDialogPages=false;
         auto settingsTimer=SetTimer(nullptr,0,100,ExerciseSettingsDialog);window.ShowSettings();KillTimer(nullptr,settingsTimer);
         if(!settingsDialogPages || window.m_settings.navigationFont!=original.navigationFont)
             std::cerr<<"settings cancel diagnostic pages="<<settingsDialogPages<<" font="<<window.m_settings.navigationFont<<" expected="<<original.navigationFont<<'\n';
-        check(settingsIntegrationUi,"settings show detection repair and window takeover controls without overlapping the action buttons");
+        check(settingsIntegrationUi,"system integration exposes only one default FastFile switch with no repair controls");
+        check(settingsAboutUi,"about settings page exposes version, readonly path, bounded actions and privacy-preserving clipboard");
         check(settingsDialogPages && window.m_settings.navigationFont==original.navigationFont,
             "all four real settings pages open and cancel discards staged changes");
         settingsTestSave=true;settingsDialogPages=false;
         settingsTimer=SetTimer(nullptr,0,100,ExerciseSettingsDialog);window.ShowSettings();KillTimer(nullptr,settingsTimer);
         check(settingsDialogPages && window.m_settings.navigationFont==13 && FastFileSettings::Load(FastFileSettings::FilePath()).navigationFont==13,
             "real settings save applies appearance and persists the new value");
+        FastFileSettings unified;CMainWnd::ReadSystemIntegration(unified);
+        check(unified.contextMenu && unified.defaultFolders && unified.defaultComputer && unified.explorerWindowTakeover,
+            "single default switch saves folder Computer menu and direct Explorer handling together");
+        wchar_t run[32768]{};DWORD runBytes=sizeof(run);
+        check(RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",L"FastFile.DefaultManager",
+            RRF_RT_REG_SZ,nullptr,run,&runBytes)==ERROR_SUCCESS && std::wstring(run)==L"\""+CMainWnd::ExplorerAgentPath()+L"\"",
+            "default integration registers independent agent at login");
+        std::vector<std::wstring> decoded;
+        auto payload=ExplorerAgentProtocol::Encode({fixture+L"\\Program Files",fixture+L"\\Program Files\\sample.txt"});
+        COPYDATASTRUCT message{ExplorerAgentProtocol::Confirm,static_cast<DWORD>(payload.size()*sizeof(wchar_t)),payload.data()};
+        check(ExplorerAgentProtocol::Decode(message,decoded) && decoded.size()==2,"agent protocol preserves folder and selection");
+        check(ExplorerAgentProtocol::Encode(std::vector<std::wstring>(258,L"C")).empty(),"agent payload rejects excess selections");
+        check(ExplorerAgentProtocol::Encode({std::wstring(ExplorerAgentProtocol::MaxChars,L'x')}).empty(),"agent payload enforces total size limit");
+        message.dwData=0;check(!ExplorerAgentProtocol::Decode(message,decoded),"unknown agent operation is rejected");
+        message.dwData=ExplorerAgentProtocol::Confirm;
+        message.cbData--;check(!ExplorerAgentProtocol::Decode(message,decoded),"odd-byte UTF-16 payload is rejected");message.cbData++;
+        message.cbData-=sizeof(wchar_t);
+        check(!ExplorerAgentProtocol::Decode(message,decoded),"truncated agent protocol is rejected");
+        message.cbData=static_cast<DWORD>(payload.size()*sizeof(wchar_t));
+        const auto oldPath=window.m_currentPath;
+        const bool wasVisible=IsWindowVisible(window.m_hWnd)!=FALSE;
+        ShowWindow(window.m_hWnd,SW_HIDE);
+        check(window.HandleExplorerAgentMessage(message)==0,"hidden or wrong-folder view cannot confirm handoff");
+        message.dwData=ExplorerAgentProtocol::Open;
+        check(window.HandleExplorerAgentMessage(message)==1,"agent open request is accepted asynchronously");
+        message.dwData=ExplorerAgentProtocol::Confirm;
+        window.m_externalOpensPending++;
+        check(window.HandleExplorerAgentMessage(message)==0,"pending external navigation cannot confirm handoff");
+        window.m_externalOpensPending--;
+        const auto readyDeadline=GetTickCount64()+8000;
+        bool confirmed=false;
+        do {
+            MSG msg{};while(PeekMessageW(&msg,nullptr,0,0,PM_REMOVE))if(msg.message!=WM_QUIT){TranslateMessage(&msg);DispatchMessageW(&msg);}
+            confirmed=window.HandleExplorerAgentMessage(message)==1;if(confirmed)break;Sleep(10);
+        }while(GetTickCount64()<readyDeadline);
+        if(!confirmed)std::wcerr<<L"agent confirm current="<<window.m_currentPath<<L" target="<<payload.data()
+            <<L" pending="<<window.m_externalOpensPending<<L" visible="<<IsWindowVisible(window.m_hWnd)
+            <<L" hostVisible="<<(window.m_shellBrowser && window.m_shellBrowser->IsVisible())
+            <<L" hostRect="<<(window.m_pListHost?window.m_pListHost->GetWidth():-1)<<L","<<(window.m_pListHost?window.m_pListHost->GetHeight():-1)
+            <<L" sized="<<(window.m_shellBrowser && window.m_shellBrowser->HasVisibleViewBounds())
+            <<L" file="<<GetFileAttributesW((fixture+L"\\Program Files\\sample.txt").c_str())
+            <<L" complete="<<(window.m_shellBrowser && window.m_shellBrowser->IsNavigationCompleteAt(fixture+L"\\Program Files"))<<L"\n";
+        if(!confirmed && window.m_shellBrowser)ShellBrowserHostTestAccess::DumpVisibleView(*window.m_shellBrowser);
+        check(confirmed,"agent confirmation requires visible loaded folder and real file selection");
+        if(!wasVisible)ShowWindow(window.m_hWnd,SW_HIDE);
+        CharUpperBuffW(run,static_cast<DWORD>(wcslen(run)));
+        HKEY startupKey=nullptr;
+        if(RegOpenKeyExW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",0,KEY_SET_VALUE,&startupKey)==ERROR_SUCCESS) {
+            RegSetValueExW(startupKey,L"FastFile.DefaultManager",0,REG_SZ,reinterpret_cast<const BYTE*>(run),static_cast<DWORD>((wcslen(run)+1)*sizeof(wchar_t)));
+            RegCloseKey(startupKey);
+        }
+        check(CMainWnd::DetectSystemIntegration().backgroundReady,"agent login ownership ignores Windows path casing");
+        // The test keeps its own window alive; the cold activation suite verifies exit.
+        FastFileSettings disabled;
+        check(CMainWnd::ApplySystemIntegration(disabled),"disabling default integration restores associations");
+        runBytes=sizeof(run);
+        check(RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",L"FastFile.DefaultManager",
+            RRF_RT_REG_SZ,nullptr,run,&runBytes)==ERROR_FILE_NOT_FOUND,"disabling removes owned login startup");
+        window.m_settings.explorerWindowTakeover=false;window.UpdateExplorerTakeover();
+        check(!window.m_explorerScan,"applying disabled preferences stops the test scanner");
+        window.m_explorerAgentAllowed=false;
         RegOverridePredefKey(HKEY_CURRENT_USER,nullptr);RegCloseKey(dialogUser);
         RegDeleteTreeW(HKEY_CURRENT_USER,settingsHive.c_str());
         FastFileSettings afterIntegration;CMainWnd::ReadSystemIntegration(afterIntegration);
@@ -2431,6 +2810,27 @@ struct MainWndRegressionAccess {
         const DWORD deadline = GetTickCount() + 4000;
         do { pump(50); } while (!window.ShellBrowserShowsFolder(folder) && GetTickCount() < deadline);
         pump(300);
+        // A parent repaint after a popup closes must never cover the native list.
+        const bool paintWasShown = IsWindowVisible(window.m_hWnd) != FALSE;
+        if (!paintWasShown) ShowWindow(window.m_hWnd, SW_SHOWNOACTIVATE);
+        window.SyncLayoutDependents(); pump(200);
+        HWND nativeList = nullptr;
+        EnumChildWindows(window.m_hWnd, [](HWND child, LPARAM data)->BOOL {
+            wchar_t name[64]{}; GetClassNameW(child,name,_countof(name));
+            if (wcscmp(name,L"SysListView32")==0 && IsWindowVisible(child)) {
+                *reinterpret_cast<HWND*>(data)=child; return FALSE;
+            }
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(&nativeList));
+        RECT nativeRect{}; if (nativeList) GetWindowRect(nativeList,&nativeRect);
+        POINT nativePoint{(nativeRect.left+nativeRect.right)/2,(nativeRect.top+nativeRect.bottom)/2};
+        ScreenToClient(window.m_hWnd,&nativePoint);
+        HDC parentDc=GetDC(window.m_hWnd);
+        check(nativeList && nativeRect.right>nativeRect.left && nativeRect.bottom>nativeRect.top
+            && (GetWindowLongPtrW(window.m_hWnd,GWL_STYLE)&WS_CLIPCHILDREN)
+            && !PtVisible(parentDc,nativePoint.x,nativePoint.y),
+            "parent painting excludes native files after context-menu repaint");
+        ReleaseDC(window.m_hWnd,parentDc);
         IContextMenu* menu = nullptr; HMENU popup = nullptr; UINT shellMax = 0; bool fromView = false;
         const bool built = window.BuildShellBackgroundMenu(folder, &menu, &popup, &shellMax, &fromView);
         check(built && fromView, "folder background menu comes from the live Explorer view (SVGIO_BACKGROUND)");
@@ -2448,9 +2848,24 @@ struct MainWndRegressionAccess {
             }
             check(viewMenu && sortMenu, "background 查看 and 排序方式 keep driving the FastFile view");
             check(!stacked(popup), "background menu has no leading, trailing or stacked separators");
+            POINT popupPoint=nativePoint; ClientToScreen(window.m_hWnd,&popupPoint);
+            const UINT_PTR cancelTimer=SetTimer(nullptr,0,100,[](HWND,UINT,UINT_PTR id,DWORD) {
+                EndMenu(); KillTimer(nullptr,id);
+            });
+            if (cancelTimer) {
+                window.TrackPopupShellMenu(menu,popup,popupPoint,1,shellMax,false);
+                KillTimer(nullptr,cancelTimer);
+                InvalidateRect(window.m_hWnd,nullptr,FALSE); UpdateWindow(window.m_hWnd);
+                parentDc=GetDC(window.m_hWnd);
+                check(!PtVisible(parentDc,nativePoint.x,nativePoint.y)
+                    && !window.m_pCtxMenu2 && !window.m_pCtxMenu3,
+                    "real Shell popup cleanup preserves native view paint exclusion");
+                ReleaseDC(window.m_hWnd,parentDc);
+            } else check(false,"popup cancellation timer starts");
             DestroyMenu(popup); menu->Release();
             window.ReleaseRetiredShellMenus();
         }
+        if (!paintWasShown) ShowWindow(window.m_hWnd,SW_HIDE);
         {
             // Item menus must offer Explorer's 重命名(M) (CMF_CANRENAME) for one renamable
             // item in the Shell view, and the verb must start the view's in-place edit.
@@ -3095,6 +3510,9 @@ struct MainWndRegressionAccess {
         check(window.m_tabs.size() == tabCount && window.m_currentPath == existingPath,
             "plus and Ctrl T reuse an already open target folder");
         window.OpenExternalPaths({fixture + L"\\", fixture + L"\\Battle.net"}, false);
+        const ULONGLONG resolvedDeadline=GetTickCount64()+5000;
+        while(window.m_externalOpensPending && GetTickCount64()<resolvedDeadline)pump();
+        check(window.m_externalOpensPending==0,"external repeated paths finish resolving before the next navigation");
         check(window.m_tabs.size() == tabCount && window.m_currentPath == fixture + L"\\Battle.net",
             "external repeated paths reuse existing tabs");
         window.NavigateToNow(fixture, true);
@@ -3147,7 +3565,7 @@ struct MainWndRegressionAccess {
         window.AddTab(siblingPrefix, true); pump();
         check(window.m_tabs.size() == tabCount + 2 && window.m_currentPath == siblingPrefix,
             "a sibling sharing the parent name prefix is not a descendant");
-        check(DuiLib::TabStripRegressionAccess::Check(*window.m_pTabStrip), "150 percent tab title retains preferred width, idle/active equal, plus follows last tab");
+        check(DuiLib::TabStripRegressionAccess::Check(*window.m_pTabStrip), "fixed-width tabs truncate long titles and preserve DPI, tooltip, close and overflow behavior");
         failures += CheckSelectionLatency(window, fixture);
         failures += CheckShellMenus(window, fixture);
         failures += CheckFileOperationEngine(window.ParentPath(fixture));
@@ -3195,16 +3613,21 @@ int main(int argc, char** argv) {
     // Only the Shell activation test registers windows in the user's Shell window list.
     CMainWnd::s_shellWindowRegistrationAllowed = false;
     SetUnhandledExceptionFilter(ReportCrash);
-    if(argc>1 && strcmp(argv[1],"--shell-activation-launcher")==0) {
+    if(argc>1 && (strcmp(argv[1],"--shell-activation-launcher")==0 || strcmp(argv[1],"--agent-lifecycle-launcher")==0 || strcmp(argv[1],"--agent-ui-launcher")==0)) {
         wchar_t desktopName[256]{},hiveName[256]{};
         GetEnvironmentVariableW(L"FASTFILE_TEST_DESKTOP",desktopName,_countof(desktopName));
         GetEnvironmentVariableW(L"FASTFILE_TEST_HIVE",hiveName,_countof(hiveName));
         HDESK desktop=OpenDesktopW(desktopName,0,FALSE,GENERIC_ALL);
         HKEY user=nullptr,classes=nullptr;
-        if(!desktop || !SetThreadDesktop(desktop)
+        if(!desktop || (strcmp(argv[1],"--agent-lifecycle-launcher")!=0 && !SetThreadDesktop(desktop))
             || RegOpenKeyExW(HKEY_CURRENT_USER,(std::wstring(hiveName)+L"\\User").c_str(),0,KEY_ALL_ACCESS,&user)!=ERROR_SUCCESS
             || RegOpenKeyExW(HKEY_CURRENT_USER,(std::wstring(hiveName)+L"\\Classes").c_str(),0,KEY_ALL_ACCESS,&classes)!=ERROR_SUCCESS)return 4;
         if(RegOverridePredefKey(HKEY_CURRENT_USER,user)!=ERROR_SUCCESS || RegOverridePredefKey(HKEY_CLASSES_ROOT,classes)!=ERROR_SUCCESS)return 4;
+        if(strcmp(argv[1],"--agent-lifecycle-launcher")==0) {
+            RegOverridePredefKey(HKEY_CLASSES_ROOT,nullptr);
+            return MainWndRegressionAccess::RunIsolatedAgent();
+        }
+        if(strcmp(argv[1],"--agent-ui-launcher")==0)RegOverridePredefKey(HKEY_CLASSES_ROOT,nullptr);
         return FastFileActivationEntry(GetModuleHandleW(nullptr),nullptr,nullptr,SW_HIDE);
     }
     const bool activationOnly=argc>1 && strcmp(argv[1],"--shell-activation-only")==0;
@@ -3247,13 +3670,18 @@ int main(int argc, char** argv) {
     if (!hwnd) return 1;
     const int cacheFailures = MainWndRegressionAccess::CheckIconCache(*window, root, cacheMarker, userCacheFiles, userCacheNewest);
     ShowWindow(hwnd, SW_HIDE);
-    int failures = activationOnly ? MainWndRegressionAccess::CheckShellActivation(*window,fixture)
+    int failures = argc>1 && strcmp(argv[1],"--agent-live-only")==0 ? MainWndRegressionAccess::CheckExplorerAgentLive(*window,fixture)
+        : activationOnly ? MainWndRegressionAccess::CheckShellActivation(*window,fixture)
         : argc>1 && strcmp(argv[1],"--explorer-live-only")==0
         ? MainWndRegressionAccess::CheckExplorerLive(*window,fixture)
         : argc>1 && strcmp(argv[1],"--delete-permission-check")==0
         ? MainWndRegressionAccess::CheckDeletePermissionDialog(*window, root)
         : argc>1 && strcmp(argv[1],"--delete-partial-check")==0
         ? MainWndRegressionAccess::CheckDeletePermissionDialog(*window, root, true)
+        : argc>1 && strcmp(argv[1],"--tabs-only")==0
+        ? MainWndRegressionAccess::CheckTabs(*window)
+        : argc>1 && strcmp(argv[1],"--shell-menus-only")==0
+        ? MainWndRegressionAccess::CheckShellMenus(*window,fixture)
         : argc>1 && strcmp(argv[1],"--view-switch-only")==0
         ? MainWndRegressionAccess::CheckViewSwitch(*window, root)
         : argc>1 && strcmp(argv[1],"--thumbs-only")==0
@@ -3265,7 +3693,7 @@ int main(int argc, char** argv) {
         : argc>1 && strcmp(argv[1],"--integration-only")==0
         ? MainWndRegressionAccess::CheckIntegration(*window,root)
         : MainWndRegressionAccess::Run(*window, fixture);
-    if(!activationOnly && !(argc>1 && (strcmp(argv[1],"--delete-permission-check")==0 || strcmp(argv[1],"--delete-partial-check")==0 || strcmp(argv[1],"--integration-only")==0 || strcmp(argv[1],"--explorer-live-only")==0)))
+    if(!activationOnly && !(argc>1 && (strcmp(argv[1],"--delete-permission-check")==0 || strcmp(argv[1],"--delete-partial-check")==0 || strcmp(argv[1],"--integration-only")==0 || strcmp(argv[1],"--explorer-live-only")==0 || strcmp(argv[1],"--agent-live-only")==0)))
         failures+=MainWndRegressionAccess::CheckPreferences(*window,root);
     failures += cacheFailures;
     if(!AppIconMatchesSource()) {++failures;std::cerr<<"FAIL all embedded application icon sizes must match res/FastFile.ico\n";}

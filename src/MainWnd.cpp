@@ -1,9 +1,10 @@
-// FastFile - main window: lifecycle, message routing, selection, window activation
+﻿// FastFile - main window: lifecycle, message routing, selection, window activation
 // Implements CMainWnd members moved out of the original monolithic MainWnd.cpp.
 // Behaviour is unchanged; declarations live in MainWnd.h.
 
 #include "MainWndInternal.h"
 #include "ShellWindowRegistration.h"
+#include "ExplorerAgentProtocol.h"
 
 #include <memory>
 
@@ -165,8 +166,14 @@ void CMainWnd::InitWindow()
         }
     }
     if (!LoadSession()) {
-        const std::wstring start = m_settings.startup==2 && !ResolveFolderOpenTarget(m_settings.startupPath).empty() ? m_settings.startupPath : GetDefaultStartPath();
-        AddTab(start, true);
+        if(m_startupOpenPaths.empty()) {
+            const std::wstring start = m_settings.startup==2 && !ResolveFolderOpenTarget(m_settings.startupPath).empty() ? m_settings.startupPath : GetDefaultStartPath();
+            AddTab(start, true);
+        } else {
+            // An external cold start must not first browse the default folder.
+            AddTab(kThisPcPath,false);
+            m_activeTab=0;
+        }
     }
     ApplyColumnWidths();
     UpdateHeaderSortIndicators();
@@ -525,6 +532,10 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     }
     if (uMsg == kMsgShellNavigation) {
         std::unique_ptr<std::wstring> path(reinterpret_cast<std::wstring*>(lParam));
+        if(wParam==1) {
+            if(path && PathEquals(*path,m_currentPath))UpdateStatus(_T("Windows 文件视图打开失败，请刷新重试"));
+            return 0;
+        }
         if (path)
             OnShellBrowserNavigation(std::move(*path));
         NotifyShellWindowLocation();
@@ -632,6 +643,8 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     constexpr ULONG_PTR kOpenPathsCopyData = 0x46464F50; // "FFOP"
     if (uMsg == WM_COPYDATA) {
         const auto* cds = reinterpret_cast<const COPYDATASTRUCT*>(lParam);
+        if(cds && (cds->dwData==ExplorerAgentProtocol::Open || cds->dwData==ExplorerAgentProtocol::Confirm))
+            return HandleExplorerAgentMessage(*cds);
         if (!cds || cds->dwData != kOpenPathsCopyData || !cds->lpData
             || cds->cbData < sizeof(wchar_t) || (cds->cbData % sizeof(wchar_t)) != 0)
             return 0;
@@ -1599,6 +1612,7 @@ LRESULT CMainWnd::HandleCustomMessage(UINT uMsg, WPARAM wParam, LPARAM lParam, B
 void CMainWnd::EnsureMainWindowVisible()
 {
     if (!m_hWnd || !::IsWindow(m_hWnd)) return;
+    m_closeConfirmed=false;
     if (!::IsWindowVisible(m_hWnd))
         ::ShowWindow(m_hWnd, SW_SHOW);
     if (::IsIconic(m_hWnd))

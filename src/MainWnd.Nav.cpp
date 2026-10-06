@@ -131,6 +131,9 @@ void CMainWnd::OnShellBrowserNavigation(std::wstring path)
     // A queued completion for the previous tab must not rewrite the newly
     // activated tab or select an earlier duplicate of its path.
     if(m_shellBrowser && !m_shellBrowser->IsAtPath(path))return;
+    CDuiString viewStatus;
+    viewStatus.Format(_T("%s  ·  Windows 原生文件视图"),IsThisPcPath(path)?_T("此电脑"):path.c_str());
+    UpdateStatus(viewStatus.GetData());
     const int existingTab = FindTabForPath(path);
     if (!PathEquals(path,m_currentPath) && m_settings.reuseTabs && existingTab >= 0 && existingTab != m_activeTab) {
         ActivateTab(existingTab);
@@ -339,7 +342,7 @@ void CMainWnd::RefreshListing()
         const bool alreadyThere = m_shellBrowser->IsAtPath(m_currentPath);
         // Save the destination's remembered mode before Shell creates its view.
         if(!alreadyThere)ApplyShellViewMode();
-        if (!alreadyThere && !m_shellBrowser->Navigate(m_currentPath)) {
+        if (!alreadyThere && !m_shellBrowser->Navigate(m_currentPath,true)) {
             UpdateStatus(_T("Windows 文件视图无法打开此位置"));
             return;
         }

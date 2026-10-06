@@ -267,6 +267,9 @@ void EnablePerMonitorDpiAwareness()
 
 int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPWSTR /*lpCmdLine*/, int /*nShow*/)
 {
+#ifdef FASTFILE_AGENT_EXECUTABLE
+    return CMainWnd::RunExplorerAgent();
+#else
     g_mainThreadId = ::GetCurrentThreadId();
     EnablePerMonitorDpiAwareness();
     ::SetUnhandledExceptionFilter(FastFileCrashHandler);
@@ -274,8 +277,13 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPWSTR /*lpCmdLi
     int restoreArgc=0;auto restoreArgv=CommandLineToArgvW(GetCommandLineW(),&restoreArgc);
     bool restoreIntegration=false;
     bool repairIntegration=false;
+    bool background=false;
     for(int i=1;restoreArgv && i<restoreArgc;++i)if(wcscmp(restoreArgv[i],L"--restore-integration")==0)restoreIntegration=true;
     for(int i=1;restoreArgv && i<restoreArgc;++i)if(wcscmp(restoreArgv[i],L"--repair-integration")==0)repairIntegration=true;
+    for(int i=1;restoreArgv && i<restoreArgc;++i) {
+        if(wcscmp(restoreArgv[i],L"--")==0)break;
+        if(wcscmp(restoreArgv[i],L"--background")==0)background=true;
+    }
     LocalFree(restoreArgv);
     if(restoreIntegration) {
         FastFileSettings disabled;
@@ -283,10 +291,15 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPWSTR /*lpCmdLi
     }
     if(repairIntegration) {
         FastFileSettings current;CMainWnd::ReadSystemIntegration(current);
+        if(current.defaultFolders)current.SetDefaultManager(true);
         return CMainWnd::ApplySystemIntegration(current)?0:2;
     }
     CMainWnd::RestoreNativeFolderHandlers();
     CMainWnd::RepairOwnedSystemIntegration();
+    FastFileSettings integration;CMainWnd::ReadSystemIntegration(integration);
+    // Migrate old login commands without creating a hidden file-manager window.
+    if(background)return integration.defaultFolders && integration.explorerWindowTakeover
+        && !CMainWnd::StartExplorerAgent()?2:0;
 
     // Single-instance: tray / second launch should restore the existing main HWND
     const std::vector<std::wstring> startupPaths = ParseOpenPaths();
@@ -315,8 +328,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPWSTR /*lpCmdLi
     // (Shell video thumbnails). Letting the object live until the process exits keeps
     // those detached workers from touching freed memory and keeps the close instant.
     CMainWnd* mainWnd = new CMainWnd();
+    mainWnd->EnableExplorerAgent();
     mainWnd->SetStartupOpenPaths(startupPaths);
-    HWND hWnd = mainWnd->Create(nullptr, _T("FastFile"), UI_WNDSTYLE_FRAME, WS_EX_WINDOWEDGE);
+    HWND hWnd = mainWnd->Create(nullptr, _T("FastFile"), background?(UI_WNDSTYLE_FRAME & ~WS_VISIBLE):UI_WNDSTYLE_FRAME, WS_EX_WINDOWEDGE);
     if (hWnd == nullptr)
     {
         ::MessageBoxW(nullptr,
@@ -326,7 +340,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPWSTR /*lpCmdLi
         return 1;
     }
     mainWnd->CenterWindow();
-    mainWnd->ShowWindow(true);
+    mainWnd->ShowWindow(!background);
     mainWnd->EnsureDpiLayout();
     RECT startupGeom = {};
     if (StartupGeometryRequested(startupGeom)) {
@@ -343,4 +357,5 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPWSTR /*lpCmdLi
 
     ::OleUninitialize();
     return 0;
+#endif
 }

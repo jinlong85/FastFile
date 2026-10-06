@@ -5,6 +5,11 @@ if(NOT FASTFILE_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
   message(FATAL_ERROR "VERSION must contain a semantic version such as 1.0.9")
 endif()
 project(FastFile VERSION "${FASTFILE_VERSION}" LANGUAGES CXX)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
+string(REPLACE "." "," FASTFILE_VERSION_COMMAS "${FASTFILE_VERSION}")
+configure_file(res/FastFileBuildInfo.h.in generated/FastFileBuildInfo.h @ONLY)
+include_directories("${CMAKE_CURRENT_BINARY_DIR}/generated" "${CMAKE_CURRENT_SOURCE_DIR}/res")
+
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -80,6 +85,8 @@ add_executable(FastFile WIN32
   src/ShellMenuUtil.h
   src/MainWnd.h
   src/MainWndInternal.h
+  src/ExplorerAgentProtocol.h
+  src/FastFileAbout.h
   src/FastFileCore.h
   src/UiTokens.h
   src/FavoriteStarUI.h
@@ -97,7 +104,7 @@ if(WIN32)
   set_property(SOURCE res/FastFile.rc APPEND PROPERTY
                OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/res/FastFile.ico")
 endif()
-target_link_libraries(FastFile PRIVATE duilib shell32 shlwapi propsys msimg32)
+target_link_libraries(FastFile PRIVATE duilib shell32 shlwapi propsys msimg32 version)
 if(MSVC)
   target_compile_options(FastFile PRIVATE /W3 /utf-8)
   # Emit FastFile.map: a crash report gives an RVA, the map turns it into a function name.
@@ -107,6 +114,17 @@ if(MSVC)
     VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:FastFile>"
   )
 endif()
+
+# Headless per-user Shell handoff process; no DuiLib initialization at runtime.
+get_target_property(FASTFILE_AGENT_SOURCES FastFile SOURCES)
+add_executable(FastFileAgent WIN32 ${FASTFILE_AGENT_SOURCES})
+target_compile_definitions(FastFileAgent PRIVATE FASTFILE_AGENT_EXECUTABLE)
+target_link_libraries(FastFileAgent PRIVATE duilib shell32 shlwapi propsys msimg32 version)
+if(MSVC)
+  target_compile_options(FastFileAgent PRIVATE /W3 /utf-8 /Gy)
+  target_link_options(FastFileAgent PRIVATE /OPT:REF)
+endif()
+add_dependencies(FastFile FastFileAgent)
 
 # Copy skin XML next to the exe so CPaintManagerUI can load it at runtime
 add_custom_command(TARGET FastFile POST_BUILD
@@ -122,7 +140,7 @@ if(BUILD_TESTING)
   list(FILTER FASTFILE_REGRESSION_SOURCES EXCLUDE REGEX "(^src/main[.]cpp$|^res/|^cmake/)")
   add_executable(FastFileMainWndRegressionTests tests/MainWndRegressionTests.cpp ${FASTFILE_REGRESSION_SOURCES})
   target_include_directories(FastFileMainWndRegressionTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-  target_link_libraries(FastFileMainWndRegressionTests PRIVATE duilib shell32 shlwapi propsys msimg32)
+  target_link_libraries(FastFileMainWndRegressionTests PRIVATE duilib shell32 shlwapi propsys msimg32 version)
   if(MSVC)
     target_compile_options(FastFileMainWndRegressionTests PRIVATE /utf-8 /wd4828 /MP)
   endif()
@@ -142,6 +160,8 @@ if(BUILD_TESTING)
   set_tests_properties(FastFileIntegrationTests PROPERTIES TIMEOUT 90)
   add_test(NAME FastFileExplorerTakeoverLiveTests COMMAND FastFileMainWndRegressionTests --explorer-live-only)
   set_tests_properties(FastFileExplorerTakeoverLiveTests PROPERTIES TIMEOUT 90)
+  add_test(NAME FastFileExplorerAgentLiveTests COMMAND FastFileMainWndRegressionTests --agent-live-only)
+  set_tests_properties(FastFileExplorerAgentLiveTests PROPERTIES TIMEOUT 100)
   add_executable(FastFileFavoritesTests tests/FavoritesTests.cpp)
   target_include_directories(FastFileFavoritesTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_link_libraries(FastFileFavoritesTests PRIVATE duilib gdiplus)

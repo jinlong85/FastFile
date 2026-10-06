@@ -1,4 +1,4 @@
-﻿#include "ShellBrowserHost.h"
+#include "ShellBrowserHost.h"
 #include "ShellPresentation.h"
 #include <algorithm>
 
@@ -20,6 +20,15 @@
 namespace {
 
 constexpr wchar_t kThisPcPath[] = L"::ThisPC";
+
+void EnsureBufferedList(HWND list)
+{
+    // Refresh/sort invalidates several rows together. Commit the complete native
+    // custom-draw frame instead of exposing its erase/icon/text intermediate steps.
+    if(list && !(ListView_GetExtendedListViewStyle(list)&LVS_EX_DOUBLEBUFFER))
+        ListView_SetExtendedListViewStyleEx(list,LVS_EX_DOUBLEBUFFER,LVS_EX_DOUBLEBUFFER);
+}
+
 
 std::wstring TrimFolderTerminator(std::wstring path)
 {
@@ -186,7 +195,23 @@ public:
         return refs;
     }
 
-    HRESULT STDMETHODCALLTYPE OnNavigationPending(PCIDLIST_ABSOLUTE) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnNavigationPending(PCIDLIST_ABSOLUTE folder) override
+    {
+        const auto path=ShellPathFromPidl(folder);
+        if(m_owner && !path.empty()) {
+            if(!m_owner->m_pendingNavigation.empty()
+                && _wcsicmp(path.c_str(),m_owner->m_pendingNavigation.c_str())!=0) {
+                m_owner->TraceNavigation(L"stale-pending");
+                return S_OK;
+            }
+            if(!m_owner->m_navigationQueued)m_owner->m_lastNavigation=path;
+            m_owner->m_pendingNavigation=path;
+            m_owner->m_navigationFailed=false;
+            if(!m_owner->m_navigationDeadline)m_owner->m_navigationDeadline=GetTickCount64()+15000;
+            m_owner->TraceNavigation(L"pending");
+        }
+        return S_OK;
+    }
     HRESULT STDMETHODCALLTYPE OnViewCreated(IShellView* view) override
     {
         if (m_owner) {
@@ -203,8 +228,7 @@ public:
     HRESULT STDMETHODCALLTYPE OnNavigationComplete(PCIDLIST_ABSOLUTE folder) override
     {
         std::wstring shellPath = ShellPathFromPidl(folder);
-        if (m_owner && !shellPath.empty())
-            m_owner->m_lastNavigation = shellPath;
+        if (!m_owner || !m_owner->FinishNavigation(shellPath,false))return S_OK;
         if (m_owner) m_owner->SetVisible(m_owner->m_visible);
         auto* path = new (std::nothrow) std::wstring(std::move(shellPath));
         if (!path || !::PostMessageW(m_parent, m_navigationMessage, 0,
@@ -213,7 +237,14 @@ public:
         }
         return S_OK;
     }
-    HRESULT STDMETHODCALLTYPE OnNavigationFailed(PCIDLIST_ABSOLUTE) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnNavigationFailed(PCIDLIST_ABSOLUTE folder) override
+    {
+        const auto path=ShellPathFromPidl(folder);
+        if(!m_owner || !m_owner->FinishNavigation(path,true))return S_OK;
+        auto* failed=new (std::nothrow) std::wstring(path);
+        if(!failed || !PostMessageW(m_parent,m_navigationMessage,1,reinterpret_cast<LPARAM>(failed)))delete failed;
+        return S_OK;
+    }
     HRESULT STDMETHODCALLTYPE GetTypeInfoCount(UINT* count) override { if (count) *count = 0; return S_OK; }
     HRESULT STDMETHODCALLTYPE GetTypeInfo(UINT, LCID, ITypeInfo**) override { return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE GetIDsOfNames(REFIID, LPOLESTR*, UINT, LCID, DISPID*) override { return E_NOTIMPL; }
@@ -326,6 +357,10 @@ void ShellBrowserHost::Destroy()
     }
     m_parent = nullptr;
     m_lastNavigation.clear();
+    m_pendingNavigation.clear();
+    m_navigationFailed=false;
+    m_navigationQueued=false;m_navigationDeadline=0;
+    m_observedList=nullptr;m_observedItems=-2;m_observedVisible=m_observedRedraw=-1;
     m_filterText.clear();
     m_visible = true;
 }
@@ -334,23 +369,53 @@ void ShellBrowserHost::SetBounds(const RECT& bounds)
 {
     if (m_browser)
         m_browser->SetRect(nullptr, bounds);
+    // SetRect can be a no-op when the outer rectangle is unchanged. A newly
+    // created/cached DefView may still be zero-sized despite populated items.
+    // Ask its existing container to run its normal layout once in that state.
+    if(m_browser && bounds.right>bounds.left && bounds.bottom>bounds.top) {
+        IShellView* view=nullptr;HWND root=nullptr;
+        if(SUCCEEDED(m_browser->GetCurrentView(IID_PPV_ARGS(&view))) && view) {
+            view->GetWindow(&root);view->Release();
+        }
+        RECT inner{},outer{};const HWND container=root?GetParent(root):nullptr;
+        if(root && container && IsChild(m_parent,root) && GetClientRect(root,&inner)
+            && (inner.right<=0 || inner.bottom<=0) && GetClientRect(container,&outer)
+            && outer.right>0 && outer.bottom>0) {
+            SendMessageW(container,WM_SIZE,SIZE_RESTORED,MAKELPARAM(outer.right,outer.bottom));
+            TraceNavigation(L"zero-size-relayout");
+        }
+    }
+    ObserveViewState();
 }
 
-bool ShellBrowserHost::Navigate(const std::wstring& path)
+bool ShellBrowserHost::Navigate(const std::wstring& path, bool retryPending)
 {
-    // Drop queued thumbnails of the old folder; cached ones stay (keyed by item + size).
-    CancelThumbRequests();
     if (!m_browser || path.empty())
         return false;
     const std::wstring target = _wcsicmp(path.c_str(), kThisPcPath) == 0
         ? std::wstring(kThisPcPath) : TrimFolderTerminator(path);
-    if (_wcsicmp(target.c_str(), m_lastNavigation.c_str()) == 0)
+    if (IsAtPath(target))
         return true;
+    if(!retryPending && !m_navigationFailed && !m_navigationQueued && _wcsicmp(target.c_str(),m_pendingNavigation.c_str())==0)
+        return true; // coalesce an accepted request; this is not proof of completion
+    m_lastNavigation=target;
+    if(!m_pendingNavigation.empty()) {
+        m_navigationQueued=true;
+        if(!m_navigationDeadline)m_navigationDeadline=GetTickCount64()+15000;
+        TraceNavigation(L"queued");
+        return true;
+    }
+    // Drop queued thumbnails of the old folder; cached ones stay (keyed by item + size).
+    CancelThumbRequests();
 
     // OnViewCreated may run inside BrowseToObject. Its grouping snapshot and
     // details-column setup must describe the destination, not the old folder.
-    const auto previousPath=m_lastNavigation;
     m_lastNavigation=target;
+    m_pendingNavigation=target;
+    m_navigationFailed=false;
+    m_navigationQueued=false;
+    if(!m_navigationDeadline)m_navigationDeadline=GetTickCount64()+15000;
+    TraceNavigation(L"request");
     HRESULT hr = E_FAIL;
     if (_wcsicmp(target.c_str(), kThisPcPath) == 0) {
         PIDLIST_ABSOLUTE pidl = nullptr;
@@ -367,9 +432,28 @@ bool ShellBrowserHost::Navigate(const std::wstring& path)
             item->Release();
         }
     }
-    if (FAILED(hr))
-        m_lastNavigation = previousPath;
+    if(hr==HRESULT_FROM_WIN32(ERROR_BUSY) || hr==E_PENDING) {
+        m_pendingNavigation.clear();m_navigationQueued=true;
+        TraceNavigation(L"busy-retry",hr);
+        return true; // accepted into our queue; not a successful Shell navigation
+    }
+    if (FAILED(hr))FinishNavigation(target,true);
+    TraceNavigation(L"submitted",hr);
     return SUCCEEDED(hr);
+}
+
+void ShellBrowserHost::PollNavigation()
+{
+    if(!m_browser || (!m_navigationQueued && m_pendingNavigation.empty()))return;
+    if(m_navigationDeadline && GetTickCount64()>=m_navigationDeadline) {
+        m_pendingNavigation.clear();m_navigationQueued=false;m_navigationDeadline=0;
+        m_navigationFailed=true;
+        TraceNavigation(L"timeout",HRESULT_FROM_WIN32(ERROR_TIMEOUT));
+        auto* path=new (std::nothrow) std::wstring(m_lastNavigation);
+        if(!path || !PostMessageW(m_parent,m_navigationMessage,1,reinterpret_cast<LPARAM>(path)))delete path;
+        return;
+    }
+    if(m_navigationQueued && m_pendingNavigation.empty())Navigate(m_lastNavigation,true);
 }
 
 void ShellBrowserHost::Refresh()
@@ -377,10 +461,17 @@ void ShellBrowserHost::Refresh()
     ++m_counters.refreshes;
     if (!m_browser)
         return;
+    if(!m_lastNavigation.empty() && !IsAtPath(m_lastNavigation)) {
+        TraceNavigation(L"refresh-retry");
+        Navigate(m_lastNavigation,true);
+        return;
+    }
     IShellView* view = nullptr;
     if (SUCCEEDED(m_browser->GetCurrentView(IID_PPV_ARGS(&view))) && view) {
-        view->Refresh();
+        EnsureBufferedList(m_listWindow);
+        const HRESULT result=view->Refresh();
         view->Release();
+        TraceNavigation(L"refresh",result);
     }
 }
 
@@ -593,20 +684,98 @@ HRESULT ShellBrowserHost::TranslateAccelerator(MSG* message)
 
 bool ShellBrowserHost::IsAtPath(const std::wstring& path) const
 {
-    return !path.empty() && _wcsicmp(path.c_str(), m_lastNavigation.c_str()) == 0;
+    return !m_navigationFailed && !m_navigationQueued && m_pendingNavigation.empty() && !path.empty()
+        && _wcsicmp(TrimFolderTerminator(path).c_str(),m_lastNavigation.c_str())==0
+        && _wcsicmp(TrimFolderTerminator(path).c_str(),ActualViewPath().c_str())==0;
 }
 bool ShellBrowserHost::IsNavigationCompleteAt(const std::wstring& path) const
 {
-    if(!m_browser || path.empty())return false;
+    return IsAtPath(path);
+}
+
+std::wstring ShellBrowserHost::ActualViewPath() const
+{
+    if(!m_browser)return {};
     IFolderView* view=nullptr;IPersistFolder2* folder=nullptr;PIDLIST_ABSOLUTE location=nullptr;
-    wchar_t actual[32768]{};bool complete=false;
+    std::wstring actual;
     if(SUCCEEDED(m_browser->GetCurrentView(IID_PPV_ARGS(&view)))
         && SUCCEEDED(view->GetFolder(IID_PPV_ARGS(&folder)))
         && SUCCEEDED(folder->GetCurFolder(&location)))
-        complete=SHGetPathFromIDListEx(location,actual,_countof(actual),GPFIDL_DEFAULT)
-            && _wcsicmp(actual,path.c_str())==0;
+        actual=ShellPathFromPidl(location);
     if(location)CoTaskMemFree(location);if(folder)folder->Release();if(view)view->Release();
-    return complete;
+    return actual;
+}
+
+bool ShellBrowserHost::FinishNavigation(const std::wstring& path,bool failed)
+{
+    // A slow callback for A must never commit/cancel the newer request for B.
+    const auto& expected=m_pendingNavigation.empty()?m_lastNavigation:m_pendingNavigation;
+    if(path.empty() || (!expected.empty() && _wcsicmp(path.c_str(),expected.c_str())!=0)) {
+        TraceNavigation(failed?L"stale-failure":L"stale-complete");
+        return false;
+    }
+    if(m_navigationQueued || (!m_lastNavigation.empty() && _wcsicmp(path.c_str(),m_lastNavigation.c_str())!=0)) {
+        // This finishes the in-flight request, not the newer target. Submit the
+        // latest target on the next timer tick, outside the Shell callback.
+        m_pendingNavigation.clear();m_navigationQueued=true;m_navigationFailed=false;
+        if(!m_navigationDeadline)m_navigationDeadline=GetTickCount64()+15000;
+        TraceNavigation(failed?L"superseded-failure":L"superseded-complete");
+        return false;
+    }
+    m_lastNavigation=path;
+    m_pendingNavigation.clear();
+    m_navigationFailed=failed;
+    m_navigationQueued=false;m_navigationDeadline=0;
+    TraceNavigation(failed?L"failed":L"complete",failed?E_FAIL:S_OK);
+    return true;
+}
+
+void ShellBrowserHost::TraceNavigation(const wchar_t* event,HRESULT result) const
+{
+    // Bounded per-user log, also isolated by the tests' APPDATA. No file-content reads.
+    wchar_t root[32768]{};
+    std::wstring file;
+    DWORD length=GetEnvironmentVariableW(L"FASTFILE_NAV_LOG",root,_countof(root));
+    if(length && length<_countof(root))file=root;
+    else {
+        length=GetEnvironmentVariableW(L"APPDATA",root,_countof(root));
+        if(!length || length>=_countof(root))return;
+        file=std::wstring(root)+L"\\FastFile";CreateDirectoryW(file.c_str(),nullptr);
+        file+=L"\\navigation.log";
+    }
+    int count=-1;IFolderView* view=nullptr;
+    if(m_browser && SUCCEEDED(m_browser->GetCurrentView(IID_PPV_ARGS(&view)))) {
+        view->ItemCount(SVGIO_ALLVIEW,&count);view->Release();
+    }
+    RECT bounds{};if(m_listWindow)GetWindowRect(m_listWindow,&bounds);
+    wchar_t values[512]{};SYSTEMTIME now{};GetLocalTime(&now);
+    swprintf_s(values,L"%04u-%02u-%02u %02u:%02u:%02u.%03u pid=%lu tick=%llu event=%s hr=%08lX count=%d listCount=%d visible=%d redrawOff=%d rect=%ld,%ld,%ld,%ld ",
+        now.wYear,now.wMonth,now.wDay,now.wHour,now.wMinute,now.wSecond,now.wMilliseconds,
+        GetCurrentProcessId(),GetTickCount64(),event,static_cast<DWORD>(result),count,
+        m_listWindow?ListView_GetItemCount(m_listWindow):-1,
+        m_listWindow?IsWindowVisible(m_listWindow):0,m_listWindow && GetPropW(m_listWindow,L"SysSetRedraw")!=nullptr,
+        bounds.left,bounds.top,bounds.right,bounds.bottom);
+    const std::wstring line=std::wstring(values)+L"target="+m_lastNavigation+L" pending="+m_pendingNavigation
+        +L" actual="+ActualViewPath()+L"\r\n";
+    const int bytes=WideCharToMultiByte(CP_UTF8,0,line.data(),int(line.size()),nullptr,0,nullptr,nullptr);
+    if(bytes<=0)return;
+    std::string utf8(bytes,'\0');WideCharToMultiByte(CP_UTF8,0,line.data(),int(line.size()),utf8.data(),bytes,nullptr,nullptr);
+    HANDLE log=CreateFileW(file.c_str(),GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+    if(log==INVALID_HANDLE_VALUE)return;
+    LARGE_INTEGER size{},zero{};GetFileSizeEx(log,&size);
+    if(size.QuadPart>2*1024*1024) {SetFilePointerEx(log,zero,nullptr,FILE_BEGIN);SetEndOfFile(log);}
+    SetFilePointerEx(log,zero,nullptr,FILE_END);DWORD written=0;
+    WriteFile(log,utf8.data(),DWORD(utf8.size()),&written,nullptr);CloseHandle(log);
+}
+
+void ShellBrowserHost::ObserveViewState()
+{
+    const int count=m_listWindow?ListView_GetItemCount(m_listWindow):-1;
+    const int visible=m_listWindow?IsWindowVisible(m_listWindow):0;
+    const int redraw=m_listWindow && GetPropW(m_listWindow,L"SysSetRedraw")!=nullptr;
+    if(m_observedList==m_listWindow && m_observedItems==count && m_observedVisible==visible && m_observedRedraw==redraw)return;
+    m_observedList=m_listWindow;m_observedItems=count;m_observedVisible=visible;m_observedRedraw=redraw;
+    TraceNavigation(L"view-state");
 }
 
 bool ShellBrowserHost::SetVisible(bool visible)
@@ -838,6 +1007,7 @@ void ShellBrowserHost::StyleNativeView(IFolderView2* view)
             SetWindowSubclass(m_viewWindow, ViewSubclass, reinterpret_cast<UINT_PTR>(this), reinterpret_cast<DWORD_PTR>(this));
         }
     }
+    EnsureBufferedList(list);
     if (list && m_iconSlot) {
         // The Vista Shell list scales LVM_SETICONSPACING internally. Its input
         // is a 96-DPI value; thumbnail requests and painting remain physical.
@@ -851,8 +1021,6 @@ void ShellBrowserHost::StyleNativeView(IFolderView2* view)
             ListView_SetIconSpacing(list, slot + 16, slot + 36);
             m_spacingList = list; m_spacingSlot = slot;
             m_appliedSpacing = static_cast<DWORD>(ListView_GetItemSpacing(list, FALSE));
-            if (!(ListView_GetExtendedListViewStyle(list) & LVS_EX_DOUBLEBUFFER))
-                ListView_SetExtendedListViewStyleEx(list, LVS_EX_DOUBLEBUFFER, LVS_EX_DOUBLEBUFFER);
             if (m_redrawBatch != list) InvalidateRect(list, nullptr, FALSE);
         }
     }
@@ -1558,7 +1726,10 @@ LRESULT CALLBACK ShellBrowserHost::ListSubclass(HWND window, UINT msg, WPARAM wp
         const HIMAGELIST images=ListView_GetImageList(window,LVSIL_SMALL);
         // Shell can replace its image list internally after sorting/enumeration,
         // without sending LVM_SETIMAGELIST through the subclass chain.
-        if(host->m_listSpacer && ImageList_GetIconSize(images,&w,&h) && h<MulDiv(26,host->m_dpi,96)) {
+        if(host->m_listSpacer && images!=host->m_listSpacer
+            && ImageList_GetIconSize(images,&w,&h)) {
+            // A refreshed Shell list can retain a tall row image list. Height is
+            // not an identity check: its new item indices belong to this handle.
             if(ImageList_GetImageCount(images)>1)host->m_shellSmallImages=images;
             ListView_SetImageList(window,host->m_listSpacer,LVSIL_SMALL);
         }
@@ -1614,6 +1785,7 @@ bool ShellBrowserHost::SetSort(int column, bool ascending)
         return true;
     }
     ++m_counters.sortSets;
+    EnsureBufferedList(m_listWindow);
     const HRESULT hr = view->SetSortColumns(&sort, 1);
     view->Release();
     return SUCCEEDED(hr);
@@ -1723,4 +1895,21 @@ bool ShellBrowserHost::GetSelection(std::vector<std::pair<std::wstring, bool>>& 
     }
     selection->Release();
     return true;
+}
+
+bool ShellBrowserHost::HasVisibleViewBounds() const {
+    if(!m_visible || !m_browser)return false;
+    IShellView* view=nullptr;HWND root=nullptr;
+    if(FAILED(m_browser->GetCurrentView(IID_PPV_ARGS(&view))) || !view)return false;
+    const auto result=view->GetWindow(&root);view->Release();
+    if(FAILED(result) || !root || !IsWindowVisible(root))return false;
+    HWND list=nullptr;
+    EnumChildWindows(root,[](HWND child,LPARAM value)->BOOL {
+        wchar_t name[64]{};GetClassNameW(child,name,_countof(name));
+        if(!wcscmp(name,L"SysListView32") && IsWindowVisible(child)) {
+            *reinterpret_cast<HWND*>(value)=child;return FALSE;
+        }return TRUE;
+    },reinterpret_cast<LPARAM>(&list));
+    RECT bounds{};
+    return list && GetClientRect(list,&bounds) && bounds.right>0 && bounds.bottom>0;
 }

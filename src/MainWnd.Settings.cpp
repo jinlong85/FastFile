@@ -1,5 +1,6 @@
 // FastFile - preferences, native Win32 settings dialog, live appearance.
 #include "MainWndInternal.h"
+#include "FastFileAbout.h"
 #include <functional>
 #include <algorithm>
 
@@ -55,14 +56,27 @@ bool FastFileSettings::Save(const std::wstring& path) const {
 namespace {
 enum { Startup=110,StartupPath,External,Reuse,ClosePrompt,Density,Font,TabHeight,FavHeight,TabWidth,Scrollbar,
        View,Remember,Sort,Ascending,Grouping,Context,DefaultFolders,DefaultComputer,ExplorerTakeover,
-       Browse=190,RestoreWindows,DetectIntegration,RepairIntegration,IntegrationDetails };
+       Browse=190,RestoreWindows,DetectIntegration,RepairIntegration,IntegrationDetails,ConfigureManager,
+       AboutSummary,AboutPath,AboutRefresh,AboutInstall,AboutLogs,AboutCopy,AboutProject,AboutChanges,AboutFeedback,AboutLicense,AboutResult };
 struct SettingsDialog {
     struct Control { HWND window;RECT bounds;int page; };
     FastFileSettings draft;std::function<bool(FastFileSettings)> save;
-    std::function<bool(const FastFileSettings&)> repair;
-    std::function<std::wstring()> monitorStatus;
+    std::function<void(HWND)> configure;
+    std::function<void(const std::wstring&)> openFolder;
+    FastFileAbout::Info about;
     HWND dialog=nullptr,tab=nullptr;HFONT font=nullptr;UINT dpi=96;int page=0;
     std::vector<Control> controls;
+    void RefreshAbout() {
+        about=FastFileAbout::Collect(dialog);
+        const auto text=L"FastFile · 多标签 Windows 文件管理器\r\n\r\n"+about.Diagnostics();
+        SetWindowTextW(Item(AboutSummary),text.c_str());
+        SetWindowTextW(Item(AboutPath),about.executable.c_str());
+    }
+    void OpenProjectLink(const wchar_t* url) {
+        SHELLEXECUTEINFOW command{};command.cbSize=sizeof(command);command.hwnd=dialog;
+        command.lpFile=url;command.nShow=SW_SHOWNORMAL;
+        if(!ShellExecuteExW(&command))SetWindowTextW(Item(AboutResult),L"无法打开链接，请检查默认浏览器。");
+    }
     void Detect() {
         const auto status=CMainWnd::DetectSystemIntegration();
         const auto desired=Read();
@@ -70,11 +84,9 @@ struct SettingsDialog {
             && (!desired.defaultComputer || status.computerReady) && (!desired.contextMenu || status.menuReady);
         const bool selected=desired.defaultFolders || desired.defaultComputer || desired.contextMenu;
         FastFileSettings applied;CMainWnd::ReadSystemIntegration(applied);
-        const std::wstring heading=!selected?L"关联检测：未选择默认关联接管。\r\n":ready?
-            L"关联检测：所选入口已生效。\r\n":L"关联检测：所选入口尚未生效，请点击修复。\r\n";
-        const std::wstring monitor=(monitorStatus?monitorStatus():L"窗口转交：未启用。")+L"\r\n";
-        const std::wstring pending=desired.explorerWindowTakeover!=applied.explorerWindowTakeover?L"窗口转交选项的变化尚未保存。\r\n":L"";
-        const std::wstring text=heading+monitor+pending+status.details;
+        const std::wstring text=!selected?L"当前状态：未设为默认。":
+            ready && status.backgroundReady && applied.defaultFolders && applied.defaultComputer && applied.explorerWindowTakeover?
+            L"当前状态：已设为默认。":L"当前状态：保存后应用默认打开方式。";
         SetWindowTextW(Item(IntegrationDetails),text.c_str());
     }
     HWND Item(int id) const {return GetDlgItem(dialog,id);}
@@ -100,7 +112,7 @@ struct SettingsDialog {
     }
     void Build() {
         tab=Add(WC_TABCONTROLW,L"",100,16,16,608,38,WS_TABSTOP,-1);
-        for(const auto* title:{L"常规与标签",L"外观",L"浏览",L"系统集成"}) {
+        for(const auto* title:{L"常规与标签",L"外观",L"浏览",L"系统集成",L"关于 FastFile"}) {
             TCITEMW item{};item.mask=TCIF_TEXT;item.pszText=const_cast<wchar_t*>(title);
             TabCtrl_InsertItem(tab,TabCtrl_GetItemCount(tab),&item);
         }
@@ -123,15 +135,24 @@ struct SettingsDialog {
         Combo(Sort,L"默认排序",164,2,{L"名称",L"修改日期",L"类型",L"大小"},draft.sortColumn);
         Combo(Ascending,L"排序方向",206,2,{L"升序",L"降序"},draft.sortAscending?0:1);
         Combo(Grouping,L"默认分组",248,2,{L"遵循 Windows 文件夹设置",L"不分组",L"修改日期",L"类型"},draft.grouping+1);
-        Check(Context,L"添加右键“使用 FastFile 打开”",74,3,draft.contextMenu);
-        Check(DefaultFolders,L"使用 FastFile 默认打开文件夹和磁盘",116,3,draft.defaultFolders);
-        Check(DefaultComputer,L"使用 FastFile 打开桌面“此电脑”",158,3,draft.defaultComputer);
-        Check(ExplorerTakeover,L"自动转交新打开的资源管理器文件夹（需保持 FastFile 运行）",200,3,draft.explorerWindowTakeover);
-        Add(L"STATIC",L"仅影响当前用户。原设置可恢复；不关闭已有窗口、其他管理器或多标签窗口。",0,30,238,566,34,SS_LEFT,3);
-        Add(L"BUTTON",L"检测接管状态",DetectIntegration,30,280,166,32,WS_TABSTOP|BS_PUSHBUTTON,3);
-        Add(L"BUTTON",L"修复并应用接管",RepairIntegration,208,280,166,32,WS_TABSTOP|BS_PUSHBUTTON,3);
-        Add(L"EDIT",L"",IntegrationDetails,30,322,566,126,ES_MULTILINE|ES_READONLY|WS_VSCROLL|WS_TABSTOP,3);
-        Add(L"BUTTON",L"恢复 Windows 打开方式",RestoreWindows,30,462,220,32,WS_TABSTOP|BS_PUSHBUTTON,3);
+        Check(DefaultFolders,L"默认使用 FastFile",74,3,draft.defaultFolders);
+        Add(L"STATIC",L"通过 FastFile 打开文件夹、磁盘和“此电脑”，并接收其他应用的打开文件夹请求。",0,30,118,566,52,SS_LEFT,3);
+        Add(L"STATIC",L"开启后，独立代理随登录启动；关闭窗口会退出界面进程。直接调用资源管理器的应用可能短暂显示原窗口，确认目录加载成功后自动转交。",0,30,182,566,76,SS_LEFT,3);
+        Add(L"STATIC",L"取消勾选并保存，恢复原打开方式并停止后台检测。",0,30,272,566,44,SS_LEFT,3);
+        Add(L"BUTTON",L"检测默认文件管理器…",ConfigureManager,30,330,220,32,WS_TABSTOP|BS_PUSHBUTTON,3);
+        Add(L"STATIC",L"",IntegrationDetails,30,388,566,72,SS_LEFT,3);
+        Add(L"EDIT",L"",AboutSummary,30,74,566,224,ES_MULTILINE|ES_READONLY|WS_VSCROLL|WS_TABSTOP,4);
+        Add(L"STATIC",L"当前程序位置",0,30,310,566,22,SS_LEFT,4);
+        Add(L"EDIT",L"",AboutPath,30,334,566,28,ES_READONLY|ES_AUTOHSCROLL|WS_TABSTOP,4);
+        Add(L"BUTTON",L"刷新信息",AboutRefresh,30,382,132,32,WS_TABSTOP|BS_PUSHBUTTON,4);
+        Add(L"BUTTON",L"打开安装目录",AboutInstall,174,382,132,32,WS_TABSTOP|BS_PUSHBUTTON,4);
+        Add(L"BUTTON",L"打开日志目录",AboutLogs,318,382,132,32,WS_TABSTOP|BS_PUSHBUTTON,4);
+        Add(L"BUTTON",L"复制诊断信息",AboutCopy,462,382,134,32,WS_TABSTOP|BS_PUSHBUTTON,4);
+        Add(L"BUTTON",L"项目主页",AboutProject,30,426,132,32,WS_TABSTOP|BS_PUSHBUTTON,4);
+        Add(L"BUTTON",L"更新日志",AboutChanges,174,426,132,32,WS_TABSTOP|BS_PUSHBUTTON,4);
+        Add(L"BUTTON",L"反馈问题",AboutFeedback,318,426,132,32,WS_TABSTOP|BS_PUSHBUTTON,4);
+        Add(L"BUTTON",L"许可与组件",AboutLicense,462,426,134,32,WS_TABSTOP|BS_PUSHBUTTON,4);
+        Add(L"STATIC",L"诊断信息不包含浏览路径或文件名，也不包含程序及日志位置。",AboutResult,30,472,566,28,SS_LEFT,4);
         Add(L"BUTTON",L"恢复默认设置",IDRETRY,24,508,130,32,WS_TABSTOP|BS_PUSHBUTTON,-1);
         Add(L"BUTTON",L"保存",IDOK,428,508,88,32,WS_TABSTOP|BS_DEFPUSHBUTTON,-1);
         Add(L"BUTTON",L"取消",IDCANCEL,532,508,88,32,WS_TABSTOP|BS_PUSHBUTTON,-1);
@@ -148,6 +169,7 @@ struct SettingsDialog {
         if(font)DeleteObject(font);font=next;
     }
     void SelectPage(int p) {
+        if(p==4)RefreshAbout();
         page=p;for(const auto& c:controls)ShowWindow(c.window,c.page==-1 || c.page==p ? SW_SHOW : SW_HIDE);
         TabCtrl_SetCurSel(tab,p);
         EnableWindow(Item(StartupPath),SendMessageW(Item(Startup),CB_GETCURSEL,0,0)==2);
@@ -163,8 +185,7 @@ struct SettingsDialog {
         s.favoritesHeight=24+Choice(FavHeight);s.tabWidthPercent=100+50*Choice(TabWidth);s.navigationScrollbar=6+Choice(Scrollbar);
         s.defaultView=Choice(View);s.rememberViews=Checked(Remember);s.sortColumn=Choice(Sort);
         s.sortAscending=Choice(Ascending)==0;s.grouping=Choice(Grouping)-1;
-        s.contextMenu=Checked(Context);s.defaultFolders=Checked(DefaultFolders);s.defaultComputer=Checked(DefaultComputer);
-        s.explorerWindowTakeover=Checked(ExplorerTakeover);
+        s.SetDefaultManager(Checked(DefaultFolders));
         s.Normalize();return s;
     }
     void BrowseFolder() {
@@ -209,17 +230,26 @@ struct SettingsDialog {
                 SendMessageW(self->Item(TabHeight),CB_SETCURSEL,height-24,0);SendMessageW(self->Item(FavHeight),CB_SETCURSEL,height-24,0);return TRUE;
             }
             if(id==Browse) {self->BrowseFolder();return TRUE;}
-            if(id==DetectIntegration) {self->Detect();return TRUE;}
-            if(id==RepairIntegration) {
-                if(self->repair(self->Read()))self->Detect();
-                return TRUE;
+            if(id==AboutRefresh) {self->RefreshAbout();return TRUE;}
+            if(id==AboutCopy) {
+                self->RefreshAbout();
+                SetWindowTextW(self->Item(AboutResult),FastFileAbout::CopyDiagnostics(window,self->about)?L"已复制诊断信息，不包含路径和文件名。":L"复制失败，请稍后重试。");return TRUE;
             }
-            if(id==RestoreWindows) {
-                for(int item:{Context,DefaultFolders,DefaultComputer,ExplorerTakeover})SendMessageW(self->Item(item),BM_SETCHECK,BST_UNCHECKED,0);
-                self->Detect();
-                return TRUE;
+            if(id==AboutInstall || id==AboutLogs) {
+                const auto path=FastFileAbout::Directory(id==AboutInstall?FastFileAbout::ExecutablePath():FastFileSettings::FilePath());
+                if(!path.empty()){self->openFolder(path);SetWindowTextW(self->Item(AboutResult),L"已在主窗口打开目录。");}return TRUE;
             }
-            if(id>=Context && id<=ExplorerTakeover && HIWORD(w)==BN_CLICKED){self->Detect();return TRUE;}
+            if(id==AboutProject){self->OpenProjectLink(L"https://github.com/jinlong85/FastFile");return TRUE;}
+            if(id==AboutChanges){self->OpenProjectLink(L"https://github.com/jinlong85/FastFile/blob/main/CHANGELOG.md");return TRUE;}
+            if(id==AboutFeedback){self->OpenProjectLink(L"https://github.com/jinlong85/FastFile/issues/new/choose");return TRUE;}
+            if(id==AboutLicense){const auto text=FastFileAbout::LicenseText();MessageBoxW(window,text.c_str(),L"许可与组件",MB_OK);return TRUE;}
+            if(id==ConfigureManager) {
+                self->configure(window);
+                FastFileSettings applied;CMainWnd::ReadSystemIntegration(applied);
+                SendMessageW(self->Item(DefaultFolders),BM_SETCHECK,applied.defaultFolders?BST_CHECKED:BST_UNCHECKED,0);
+                self->Detect();return TRUE;
+            }
+            if(id==DefaultFolders && HIWORD(w)==BN_CLICKED){self->Detect();return TRUE;}
             if(id==IDRETRY) {
                 self->draft=FastFileSettings{};for(const auto& c:self->controls)DestroyWindow(c.window);self->controls.clear();self->Build();return TRUE;
             }
@@ -233,12 +263,65 @@ struct SettingsDialog {
 void CMainWnd::ShowSettings() {
     SettingsDialog state;state.draft=m_settings;ReadSystemIntegration(state.draft);
     state.save=[this](FastFileSettings settings){return CommitSettings(settings);};
-    state.repair=[this](const FastFileSettings& settings){return CommitIntegrationSettings(settings);};
-    state.monitorStatus=[this]{return ExplorerTakeoverStatus();};
+    state.configure=[this](HWND owner){ConfigureDefaultManager(owner);};
+    state.openFolder=[this](const std::wstring& path){AddTab(path,true);};
     struct Template {DLGTEMPLATE dialog;WORD menu=0,cls=0;wchar_t title[4]=L"设置";} layout{};
     layout.dialog.style=WS_POPUP|WS_CAPTION|WS_SYSMENU|DS_MODALFRAME;
     layout.dialog.dwExtendedStyle=WS_EX_CONTROLPARENT;layout.dialog.cx=440;layout.dialog.cy=320;
     DialogBoxIndirectParamW(GetModuleHandleW(nullptr),&layout.dialog,m_hWnd,SettingsDialog::Proc,reinterpret_cast<LPARAM>(&state));
+}
+bool CMainWnd::ApplyDefaultManagerChoice(DefaultManagerChoice choice) {
+    if(choice==DefaultManagerChoice::KeepCurrent)return true;
+    FastFileSettings next=m_settings;
+    next.SetDefaultManager(choice==DefaultManagerChoice::UseFastFile);
+    if(!ApplySystemIntegration(next))return false;
+    m_settings.contextMenu=next.contextMenu;m_settings.defaultFolders=next.defaultFolders;
+    m_settings.defaultComputer=next.defaultComputer;m_settings.explorerWindowTakeover=next.explorerWindowTakeover;
+    UpdateShellWindowRegistration();UpdateExplorerTakeover();
+    return true;
+}
+void CMainWnd::ConfigureDefaultManager(HWND owner) {
+    const auto before=DetectSystemIntegration();
+    const std::wstring content=before.summary+
+        L"\r\n设置为默认后，统一文件夹、磁盘、此电脑及新窗口入口。关闭窗口会退出界面进程，独立代理继续接收请求并随登录启动。";
+    const TASKDIALOG_BUTTON choices[]={
+        {2001,L"设为默认并修复\n默认使用 FastFile，统一打开入口和后台检测。"},
+        {2002,L"保留当前设置\n仅查看检测结果，不修改打开方式。"},
+        {2003,L"恢复原打开方式\n恢复 FastFile 接管前的设置，关闭后台检测和登录启动。"}};
+    TASKDIALOGCONFIG prompt{};prompt.cbSize=sizeof(prompt);prompt.hwndParent=owner;
+    prompt.dwFlags=TDF_USE_COMMAND_LINKS|TDF_ALLOW_DIALOG_CANCELLATION|TDF_SIZE_TO_CONTENT;
+    prompt.pszWindowTitle=L"默认文件管理器";prompt.pszMainInstruction=L"是否默认使用 FastFile？";
+    prompt.pszContent=content.c_str();prompt.pszExpandedInformation=before.details.c_str();
+    prompt.pszExpandedControlText=L"查看各打开入口";prompt.cButtons=_countof(choices);prompt.pButtons=choices;
+    prompt.nDefaultButton=2002;int selected=IDCANCEL;
+    if(FAILED(TaskDialogIndirect(&prompt,&selected,nullptr,nullptr)) || selected==IDCANCEL)return;
+    const auto choice=selected==2001?DefaultManagerChoice::UseFastFile:
+        selected==2003?DefaultManagerChoice::RestorePrevious:DefaultManagerChoice::KeepCurrent;
+    const bool applied=ApplyDefaultManagerChoice(choice);
+    const auto after=DetectSystemIntegration();FastFileSettings actual;ReadSystemIntegration(actual);
+    const bool ready=applied && after.foldersReady && after.computerReady && after.menuReady && after.backgroundReady
+        && actual.defaultFolders && actual.defaultComputer && actual.explorerWindowTakeover;
+    std::wstring title,report=after.summary;
+    if(choice==DefaultManagerChoice::KeepCurrent) {
+        title=L"已保留当前打开方式";report+=L"\r\n"+after.recommendations;
+    } else if(!applied) {
+        title=L"未能应用所选设置";
+        report+=L"\r\n建议检查当前用户写入权限，以及 FastFile 专用入口或登录启动项是否被其他程序占用。原设置已尝试回滚，请重新检测。\r\n"+after.recommendations;
+    } else if(choice==DefaultManagerChoice::RestorePrevious) {
+        title=L"已恢复原打开方式";
+        report+=L"\r\n已关闭 FastFile 默认接管、后台检测和登录启动。后来由其他程序修改的入口会保留。";
+    } else if(ready) {
+        title=L"FastFile 已设为默认文件管理器";
+        report+=L"\r\n文件夹、磁盘、此电脑和标准打开入口已核对生效。建议关闭旧文件管理器窗口，再从原应用重新打开文件夹验证。";
+    } else {
+        title=L"设置已保存，部分入口仍需修复";
+        report+=L"\r\n"+after.recommendations+L"\r\n建议关闭其他管理器的默认接管，再选择“设为默认并修复”重新检测。";
+    }
+    TASKDIALOGCONFIG result{};result.cbSize=sizeof(result);result.hwndParent=owner;
+    result.dwFlags=TDF_ALLOW_DIALOG_CANCELLATION|TDF_SIZE_TO_CONTENT;result.dwCommonButtons=TDCBF_OK_BUTTON;
+    result.pszWindowTitle=L"默认文件管理器检查结果";result.pszMainInstruction=title.c_str();result.pszContent=report.c_str();
+    result.pszExpandedInformation=after.details.c_str();result.pszExpandedControlText=L"查看检测详情";
+    TaskDialogIndirect(&result,nullptr,nullptr,nullptr);
 }
 bool CMainWnd::CommitSettings(FastFileSettings next) {
     next.Normalize();

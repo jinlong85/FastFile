@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <Windows.h>
 #include <shlobj.h>
 #include <propkey.h>
@@ -10,28 +10,13 @@
 #include <algorithm>
 
 namespace ShellPresentation {
-// Resolve the effective Windows association, including per-user/packaged
-// handlers, without reading or modifying protected UserChoice registry data.
-inline std::wstring DefaultFileAssociation(const std::wstring& path) {
-    const wchar_t* extension=PathFindExtensionW(path.c_str());
-    if(!extension || !*extension)return {};
-    IApplicationAssociationRegistration* registration=nullptr;
-    PWSTR progid=nullptr;std::wstring result;
-    if(SUCCEEDED(CoCreateInstance(CLSID_ApplicationAssociationRegistration,nullptr,
-        CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&registration)))) {
-        if(SUCCEEDED(registration->QueryCurrentDefault(extension,AT_FILEEXTENSION,AL_EFFECTIVE,&progid)) && progid)
-            result=progid;
-        CoTaskMemFree(progid);registration->Release();
-    }
-    return result;
-}
 inline bool OpenDefaultFile(HWND owner, const std::wstring& path,
     BOOL (WINAPI *execute)(SHELLEXECUTEINFOW*) = ShellExecuteExW) {
-    const std::wstring association=DefaultFileAssociation(path);
     SHELLEXECUTEINFOW info{};
     info.cbSize=sizeof(info); info.hwnd=owner; info.lpFile=path.c_str();
-    info.fMask=SEE_MASK_NOASYNC; info.nShow=SW_SHOWNORMAL;
-    if(!association.empty()) {info.lpClass=association.c_str();info.fMask|=SEE_MASK_CLASSNAME;}
+    // Use the item's native default verb, including modern per-user delegates.
+    // Forcing lpClass bypasses that route and can launch a stale class command.
+    info.fMask=SEE_MASK_NOASYNC|SEE_MASK_INVOKEIDLIST; info.nShow=SW_SHOWNORMAL;
     return execute(&info)!=FALSE;
 }
 inline std::wstring LocalizedTypeName(const std::wstring& path) {

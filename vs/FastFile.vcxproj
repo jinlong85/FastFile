@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32"><Configuration>Debug</Configuration><Platform>Win32</Platform></ProjectConfiguration>
@@ -42,11 +42,13 @@
     <OutDir>$(SolutionDir)bin\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(SolutionDir)obj\FastFile\$(Platform)\$(Configuration)\</IntDir>
     <TargetName>FastFile</TargetName>
+    <TargetName Condition="'$(FastFileAgentMode)'=='true'">FastFileAgent</TargetName>
+    <IntDir Condition="'$(FastFileAgentMode)'=='true'">$(SolutionDir)obj\FastFileAgent\$(Platform)\$(Configuration)\</IntDir>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
       <PreprocessorDefinitions>WIN32;_WINDOWS;UILIB_STATIC;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\src;..\third_party\duilib\DuiLib;..\third_party\duilib\DuiLib\Control;..\third_party\duilib\DuiLib\Core;..\third_party\duilib\DuiLib\Layout;..\third_party\duilib\DuiLib\Utils;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(IntDir)generated;..\src;..\third_party\duilib\DuiLib;..\third_party\duilib\DuiLib\Control;..\third_party\duilib\DuiLib\Core;..\third_party\duilib\DuiLib\Layout;..\third_party\duilib\DuiLib\Utils;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>false</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
@@ -55,7 +57,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
-      <AdditionalDependencies>comctl32.lib;gdiplus.lib;msimg32.lib;imm32.lib;ole32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>version.lib;comctl32.lib;gdiplus.lib;msimg32.lib;imm32.lib;ole32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalManifestFiles>..\cmake\FastFile.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
     </Link>
@@ -90,6 +92,7 @@
     <ClCompile Include="..\src\ShellFileOperation.cpp" />
     <ClCompile Include="..\src\TabStripUI.cpp" />
     <ClCompile Include="..\src\FluentScrollBarUI.cpp" />
+    <ClInclude Include="..\src\ExplorerAgentProtocol.h" />
     <ClInclude Include="..\src\MainWnd.h" />
     <ClInclude Include="..\src\MainWndInternal.h" />
     <ClInclude Include="..\src\ShellBrowserHost.h" />
@@ -103,7 +106,7 @@
     <ClInclude Include="..\src\TabStripUI.h" />
     <ClInclude Include="..\src\FluentScrollBarUI.h" />
     <ResourceCompile Include="..\res\FastFile.rc">
-      <AdditionalIncludeDirectories>..\res;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(IntDir)generated;..\res;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
   </ItemGroup>
   <ItemGroup>
@@ -118,10 +121,20 @@
       <Project>{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}</Project>
     </ProjectReference>
   </ItemGroup>
+  <ItemGroup><ClInclude Include="..\src\FastFileAbout.h" /></ItemGroup>
+  <Target Name="GenerateFastFileBuildInfo" BeforeTargets="ClCompile;ResourceCompile">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)..\tools\GenerateBuildInfo.ps1&quot; -OutputDirectory &quot;$(IntDir)generated&quot;" />
+  </Target>
   <!-- Copy skin next to exe -->
   <Target Name="CopySkin" AfterTargets="Build">
     <MakeDir Directories="$(OutDir)skin" />
     <Copy SourceFiles="..\skin\main.xml" DestinationFolder="$(OutDir)skin" SkipUnchangedFiles="true" />
+  </Target>
+  <ItemDefinitionGroup Condition="'$(FastFileAgentMode)'=='true'">
+    <ClCompile><PreprocessorDefinitions>FASTFILE_AGENT_EXECUTABLE;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+  </ItemDefinitionGroup>
+  <Target Name="BuildExplorerAgent" AfterTargets="Build" Condition="'$(FastFileAgentMode)'!='true'">
+    <MSBuild Projects="$(MSBuildProjectFullPath)" Targets="Build" Properties="FastFileAgentMode=true;Configuration=$(Configuration);Platform=$(Platform)" />
   </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

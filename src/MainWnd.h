@@ -51,6 +51,12 @@ public:
     // Paths supplied by a Shell folder-open invocation.  The main window consumes these
     // after its controls and initial tab have been created.
     void SetStartupOpenPaths(std::vector<std::wstring> paths);
+    void EnableExplorerAgent() { m_explorerAgentAllowed=true; }
+    static std::wstring ExplorerAgentPath();
+    static std::wstring ExplorerAgentInterfacePath();
+    static bool StartExplorerAgent();
+    static int RunExplorerAgent();
+    LRESULT HandleExplorerAgentMessage(const COPYDATASTRUCT& data);
     static bool RestoreNativeFolderHandlers();
     static void ReadSystemIntegration(FastFileSettings& settings);
     static bool ApplySystemIntegration(const FastFileSettings& settings);
@@ -58,9 +64,13 @@ public:
     struct IntegrationStatus {
         bool foldersReady=false, computerReady=false, menuReady=false;
         bool otherManager=false;
-        std::wstring details;
+        bool backgroundReady=false;
+        std::wstring details,summary,recommendations;
     };
     static IntegrationStatus DetectSystemIntegration();
+    enum class DefaultManagerChoice { UseFastFile, KeepCurrent, RestorePrevious };
+    bool ApplyDefaultManagerChoice(DefaultManagerChoice choice);
+    void ConfigureDefaultManager(HWND owner);
     struct ExplorerSnapshot {
         HWND window=nullptr;DWORD processId=0;
         std::wstring path;
@@ -758,6 +768,8 @@ private:
     int m_thisPcTilesLayoutW = 0;                         // physical central viewport width
     int m_paneDragKind = 0;          // 0 = none, 1 = sidebar, 2 = preview
     bool m_closeConfirmed = false;   // user already answered the multi-tab close prompt
+    bool m_explorerAgentAllowed = false;
+    HANDLE m_integrationMonitorMutex = nullptr;
     int m_paneDragStartX = 0;
     int m_paneDragStartLeft = 0;
     int m_paneDragStartPreview = 0;
@@ -1014,6 +1026,9 @@ private:
     // Test injection and root filter never set by the application.
     static bool (*s_closeExplorerForTest)(const ExplorerSnapshot&);
     static std::wstring s_explorerTestRoot;
+    static std::wstring s_agentInterfaceForTest;
+    static std::wstring s_agentArgumentsForTest;
+    static HDESK s_agentDesktopForTest;
     static_assert(kMsgPreviewIconReady != kMsgThumbReady && kMsgPreviewIconReady != kMsgFileOpFinished
         && kMsgPreviewIconReady != kMsgShellContextMenu, "private window messages must be unique");
     static constexpr int kDetailsVirtOverscan = 8;

@@ -6,10 +6,100 @@
 #include <objbase.h>
 
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <propkey.h>
 
 struct ShellBrowserHostTestAccess {
+    static bool NavigationRecovery(HWND parent, const std::wstring& folder) {
+        ShellBrowserHost host;
+        if(!host.Create(parent,{0,0,640,480},WM_APP+1,WM_APP+2))return false;
+        int failures=0;
+        auto check=[&](bool ok,const char* message) {
+            if(!ok){++failures;std::cerr<<"navigation recovery: "<<message<<'\n';}
+        };
+        auto pump=[&]() {
+            host.PollNavigation();
+            MSG message{};
+            while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)) {
+                if(message.message==WM_APP+1){delete reinterpret_cast<std::wstring*>(message.lParam);continue;}
+                TranslateMessage(&message);DispatchMessageW(&message);
+            }
+        };
+        auto settled=[&](const std::wstring& path,int expectedCount=1) {
+            const ULONGLONG until=GetTickCount64()+3000;
+            do {
+                pump();
+                IFolderView2* view=nullptr;int count=0;
+                if(SUCCEEDED(host.m_browser->GetCurrentView(IID_PPV_ARGS(&view)))) {
+                    view->ItemCount(SVGIO_ALLVIEW,&count);view->Release();
+                }
+                if(host.IsNavigationCompleteAt(path) && count==expectedCount)return true;
+                Sleep(5);
+            }while(GetTickCount64()<until);
+            return false;
+        };
+        // EventSink's first base is IExplorerBrowserEvents. Exercise the same COM
+        // callbacks as ExplorerBrowser without relying on a machine-specific delay.
+        auto* events=reinterpret_cast<IExplorerBrowserEvents*>(host.m_events);
+        PIDLIST_ABSOLUTE target=nullptr;SHParseDisplayName(folder.c_str(),nullptr,&target,0,nullptr);
+        host.m_lastNavigation=folder; // request submitted, but no Shell view exists
+        events->OnNavigationPending(target);
+        check(!host.IsAtPath(folder),"a requested path must not count as a displayed folder");
+        events->OnNavigationFailed(target);
+        check(!host.IsAtPath(folder),"failed navigation must not count as successful");
+        check(host.Navigate(folder),"same-path retry is accepted after failure");
+        check(settled(folder),"same-path retry must actually enumerate the file");
+
+        const std::wstring next=folder+L"\\retry";
+        CreateDirectoryW(next.c_str(),nullptr);
+        CopyFileW((folder+L"\\native-view.txt").c_str(),(next+L"\\native-view.txt").c_str(),FALSE);
+        PIDLIST_ABSOLUTE nextTarget=nullptr;SHParseDisplayName(next.c_str(),nullptr,&nextTarget,0,nullptr);
+        host.m_lastNavigation=next;
+        events->OnNavigationPending(nextTarget);
+        events->OnNavigationComplete(target); // late callback from the old request
+        check(host.CurrentPath()==next,"old completion must not replace the newer target");
+        events->OnNavigationFailed(target); // old failure must not cancel the newer request
+        check(host.CurrentPath()==next,"old failure must not replace the newer target");
+        events->OnNavigationFailed(nextTarget);
+        host.Refresh();
+        check(settled(next),"refresh recovers and enumerates the actual target after failure");
+        bool accepted=true;
+        for(int i=0;i<12;++i)accepted=host.Navigate(i%2?next:folder) && accepted;
+        check(accepted && settled(next),"rapid requests are serialized and the latest target is populated");
+        host.m_pendingNavigation=next;host.m_navigationDeadline=GetTickCount64()-1;
+        host.PollNavigation();
+        check(host.m_navigationFailed && !host.IsAtPath(next),"timed-out requests become retryable failures");
+        host.Refresh();check(settled(next),"refresh recovers after a navigation timeout");
+        host.SetBounds({0,0,640,480});
+        IShellView* sizedView=nullptr;HWND nativeRoot=nullptr;
+        if(SUCCEEDED(host.m_browser->GetCurrentView(IID_PPV_ARGS(&sizedView)))) {
+            sizedView->GetWindow(&nativeRoot);sizedView->Release();
+        }
+        check(nativeRoot!=nullptr,"loaded native view is available for zero-size regression");
+        if(nativeRoot) {
+            SetWindowPos(nativeRoot,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+            RECT collapsed{};GetClientRect(nativeRoot,&collapsed);
+            check(collapsed.right==0 && collapsed.bottom==0 && !host.HasVisibleViewBounds(),"zero-sized native view cannot confirm handoff");
+            host.SetBounds({0,0,640,480});pump();
+            RECT restored{};GetClientRect(nativeRoot,&restored);
+            check(restored.right>0 && restored.bottom>0,
+                "unchanged outer bounds must relayout a newly zero-sized inner Shell view");
+            check(!host.HasVisibleViewBounds(),"hidden parent cannot confirm even after bounds recover");
+            check(host.IsNavigationCompleteAt(next),"layout recovery preserves completed navigation");
+        }
+        wchar_t logPath[32768]{};GetEnvironmentVariableW(L"FASTFILE_NAV_LOG",logPath,_countof(logPath));
+        std::ifstream log(logPath,std::ios::binary);
+        const std::string trace((std::istreambuf_iterator<char>(log)),std::istreambuf_iterator<char>());
+        check(trace.find("event=failed")!=std::string::npos && trace.find("event=stale-complete")!=std::string::npos
+            && trace.find("event=refresh-retry")!=std::string::npos && trace.find("event=timeout")!=std::string::npos
+            && trace.find("listCount=1")!=std::string::npos,"diagnostics record failure, retry, timeout and actual populated view");
+        log.close();
+        host.Destroy();pump();
+        CoTaskMemFree(target);CoTaskMemFree(nextTarget);
+        DeleteFileW((next+L"\\native-view.txt").c_str());RemoveDirectoryW(next.c_str());
+        return failures==0;
+    }
     static inline int menuRequests=0;
     static LRESULT CALLBACK MenuProbe(HWND window,UINT message,WPARAM wp,LPARAM lp,UINT_PTR,DWORD_PTR) {
         if(message==WM_APP+4) {++menuRequests;return 1;}
@@ -88,27 +178,22 @@ struct ShellBrowserHostTestAccess {
     }
     static inline std::vector<std::wstring> launched;
     static inline bool launchInfoValid=true, launchSucceeds=true;
-    static inline std::wstring expectedAssociation;
     static BOOL WINAPI RecordDefaultOpen(SHELLEXECUTEINFOW* info) {
         launchInfoValid=launchInfoValid && info && info->cbSize==sizeof(*info)
             && !info->lpVerb && !info->hkeyClass && info->nShow==SW_SHOWNORMAL
-            && (expectedAssociation.empty() ? !info->lpClass && info->fMask==SEE_MASK_NOASYNC
-                : info->lpClass && expectedAssociation==info->lpClass
-                    && info->fMask==(SEE_MASK_NOASYNC|SEE_MASK_CLASSNAME));
+            && !info->lpClass && info->fMask==(SEE_MASK_NOASYNC|SEE_MASK_INVOKEIDLIST);
         if(info && info->lpFile)launched.emplace_back(info->lpFile);
         SetLastError(ERROR_CANCELLED);
         return launchSucceeds;
     }
     static bool MissingAssociationFallback() {
         const std::wstring path=L"C:\\中文 folder\\image.ffunregistered"+std::to_wstring(GetCurrentProcessId());
-        launched.clear();launchInfoValid=true;launchSucceeds=true;expectedAssociation.clear();
-        return ShellPresentation::DefaultFileAssociation(path).empty()
-            && ShellPresentation::OpenDefaultFile(nullptr,path,RecordDefaultOpen)
+        launched.clear();launchInfoValid=true;launchSucceeds=true;
+        return ShellPresentation::OpenDefaultFile(nullptr,path,RecordDefaultOpen)
             && launchInfoValid && launched.size()==1 && launched.front()==path;
     }
     static bool DefaultOpen(ShellBrowserHost& host,const std::wstring& expected,bool succeeds=true) {
         launched.clear();launchInfoValid=true;launchSucceeds=succeeds;
-        expectedAssociation=ShellPresentation::DefaultFileAssociation(expected);
         IShellView* view=nullptr;
         if(FAILED(host.m_browser->GetCurrentView(IID_PPV_ARGS(&view))))return false;
         const HRESULT result=host.DefaultCommand(view,RecordDefaultOpen);
@@ -127,9 +212,48 @@ struct ShellBrowserHostTestAccess {
         }
         return result==S_OK && launched.empty() && matched;
     }
+    static bool ReapplyListBuffer(ShellBrowserHost& host) {
+        // Shell can recreate/reset list styles without entering an icon view first.
+        ListView_SetExtendedListViewStyleEx(host.m_listWindow,LVS_EX_DOUBLEBUFFER,0);
+        IFolderView2* view=nullptr;
+        if(FAILED(host.m_browser->GetCurrentView(IID_PPV_ARGS(&view))))return false;
+        host.StyleNativeView(view); view->Release();
+        if(!(ListView_GetExtendedListViewStyle(host.m_listWindow)&LVS_EX_DOUBLEBUFFER))return false;
+        ListView_SetExtendedListViewStyleEx(host.m_listWindow,LVS_EX_DOUBLEBUFFER,0);
+        host.Refresh();
+        auto waitForItems=[&]() {
+            const ULONGLONG deadline=GetTickCount64()+3000;
+            ULONGLONG stableSince=0;
+            do {
+                MSG message{};
+                while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)) {
+                    if(message.message==WM_APP+1) {delete reinterpret_cast<std::wstring*>(message.lParam);continue;}
+                    TranslateMessage(&message);DispatchMessageW(&message);
+                }
+                LVITEMW item{};item.mask=LVIF_IMAGE;item.iItem=0;
+                if(ListView_GetItemCount(host.m_listWindow)>0 && ListView_GetItem(host.m_listWindow,&item) && item.iImage>=0) {
+                    if(!stableSince)stableSince=GetTickCount64();
+                    if(GetTickCount64()-stableSince>=100)return true;
+                } else stableSince=0;
+                Sleep(5);
+            }while(GetTickCount64()<deadline);
+            return false;
+        };
+        // Both native refresh and sort return before asynchronous rows are ready.
+        if(!waitForItems())return false;
+        if(!(ListView_GetExtendedListViewStyle(host.m_listWindow)&LVS_EX_DOUBLEBUFFER))return false;
+        ListView_SetExtendedListViewStyleEx(host.m_listWindow,LVS_EX_DOUBLEBUFFER,0);
+        host.SetSort(0,false);host.SetSort(0,true);
+        if(!waitForItems())return false;
+        // Exercise the subclass synchronization used by a real repaint even
+        // though this test keeps its parent hidden.
+        SendMessageW(host.m_listWindow,WM_PAINT,0,0);
+        return (ListView_GetExtendedListViewStyle(host.m_listWindow)&LVS_EX_DOUBLEBUFFER)!=0;
+    }
     static bool ListIconVisible(ShellBrowserHost& host) {
+        if(!(ListView_GetExtendedListViewStyle(host.m_listWindow)&LVS_EX_DOUBLEBUFFER))return false;
         int w=0,h=0;
-        if(!ImageList_GetIconSize(host.m_shellSmallImages,&w,&h) || h!=MulDiv(16,host.m_dpi,96))return false;
+        if(!ImageList_GetIconSize(host.m_shellSmallImages,&w,&h) || h!=MulDiv(16,host.m_dpi,96)){std::cerr<<"icon size "<<w<<","<<h<<" items="<<ListView_GetItemCount(host.m_listWindow)<<"\n";return false;}
         HDC screen=GetDC(nullptr),dc=CreateCompatibleDC(screen);
         HBITMAP bitmap=CreateCompatibleBitmap(screen,640,480);auto old=SelectObject(dc,bitmap);
         RECT canvas{0,0,640,480};FillRect(dc,&canvas,reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
@@ -144,7 +268,28 @@ struct ShellBrowserHostTestAccess {
         for(int y=row.top;y<row.bottom;++y)for(int x=icon.left;x<icon.left+w;++x)
             colored+=GetPixel(dc,x,y)!=RGB(255,255,255);
         SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);ReleaseDC(nullptr,screen);
+        LVITEMW probe{};probe.mask=LVIF_IMAGE;probe.iItem=0;ListView_GetItem(host.m_listWindow,&probe);
+        if(colored<=10)std::cerr<<"index="<<probe.iImage<<" sourceCount="<<ImageList_GetImageCount(host.m_shellSmallImages)<<" currentCount="<<ImageList_GetImageCount(ListView_GetImageList(host.m_listWindow,LVSIL_SMALL))<<" icon pixels="<<colored<<" row="<<row.left<<","<<row.top<<","<<row.right<<","<<row.bottom<<" items="<<ListView_GetItemCount(host.m_listWindow)<<"\n";
         return colored>10;
+    }
+    static bool TallImageRefresh(ShellBrowserHost& host) {
+        const HIMAGELIST original=host.m_shellSmallImages;
+        HIMAGELIST replacement=ImageList_Create(16,MulDiv(26,host.m_dpi,96),ILC_COLOR32,2,1);
+        if(!replacement)return false;
+        ImageList_SetImageCount(replacement,2);
+        const UINT_PTR id=reinterpret_cast<UINT_PTR>(&host);
+        auto replaceInternally=[&](HIMAGELIST images) {
+            RemoveWindowSubclass(host.m_listWindow,ShellBrowserHost::ListSubclass,id);
+            ListView_SetImageList(host.m_listWindow,images,LVSIL_SMALL);
+            SetWindowSubclass(host.m_listWindow,ShellBrowserHost::ListSubclass,id,reinterpret_cast<DWORD_PTR>(&host));
+            SendMessageW(host.m_listWindow,WM_PAINT,0,0);
+        };
+        replaceInternally(replacement);
+        const bool ok=host.m_shellSmallImages==replacement
+            && ListView_GetImageList(host.m_listWindow,LVSIL_SMALL)==host.m_listSpacer;
+        replaceInternally(original); // restore before deleting our owned image list
+        ImageList_Destroy(replacement);
+        return ok;
     }
     static bool InternalImageRefresh(ShellBrowserHost& host) {
         HIMAGELIST original=host.m_shellSmallImages;
@@ -247,6 +392,7 @@ int Fail(const char* message, ShellBrowserHost* host = nullptr, HWND parent = nu
     if (host) host->Destroy();
     if (parent) ::DestroyWindow(parent);
     if (!file.empty()) ::DeleteFileW(file.c_str());
+    if (!folder.empty()) ::DeleteFileW((folder+L".navigation.log").c_str());
     if (!folder.empty()) ::RemoveDirectoryW(folder.c_str());
     std::cerr << "FAIL " << message << '\n';
     return 1;
@@ -346,6 +492,8 @@ int main()
         ::CoUninitialize();
         return Fail("CreateDirectoryW failed");
     }
+    // Keep the diagnostic file outside the folder whose item count is asserted.
+    SetEnvironmentVariableW(L"FASTFILE_NAV_LOG",(folder+L".navigation.log").c_str());
     const std::wstring file = folder + L"\\native-view.txt";
     HANDLE fixture = ::CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
         FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -385,6 +533,9 @@ int main()
         return result;
     }
     ::ShowWindow(parent, SW_HIDE);
+
+    if(!ShellBrowserHostTestAccess::NavigationRecovery(parent,folder))
+        return Fail("navigation state and same-path recovery",nullptr,parent,folder,file);
 
     ShellBrowserHost host;
     const RECT bounds = { 0, 0, 640, 480 };
@@ -489,14 +640,20 @@ int main()
     RECT listRow{};ListView_GetItemRect(ShellBrowserHostTestAccess::List(host),0,&listRow,LVIR_BOUNDS);
     if(abs(listRow.bottom-listRow.top-MulDiv(26,dpi,96))>1)
         return Fail("list rows must reserve 26 logical pixels at window DPI",&host,parent,folder,file);
+    if(!ShellBrowserHostTestAccess::ReapplyListBuffer(host))
+        return Fail("list/details repaint stays buffered after native style reset",&host,parent,folder,file);
     if(!ShellBrowserHostTestAccess::ListIconVisible(host))
         return Fail("roomier list rows retain real Shell icons at their original physical size",&host,parent,folder,file);
+    if(!ShellBrowserHostTestAccess::TallImageRefresh(host))
+        return Fail("a tall replacement Shell image list updates the icon source by identity",&host,parent,folder,file);
     if(!ShellBrowserHostTestAccess::InternalImageRefresh(host))
         return Fail("internal Shell image refresh must retain spacing and original icon source",&host,parent,folder,file);
     host.SetViewMode(FVM_DETAILS);
     RECT detailsRow{};ListView_GetItemRect(ShellBrowserHostTestAccess::List(host),0,&detailsRow,LVIR_BOUNDS);
     if(abs(detailsRow.bottom-detailsRow.top-MulDiv(26,dpi,96))>1)
         return Fail("details and list must share non-compact row spacing",&host,parent,folder,file);
+    if(!ShellBrowserHostTestAccess::ReapplyListBuffer(host))
+        return Fail("list/details repaint stays buffered after native style reset",&host,parent,folder,file);
     if(!ShellBrowserHostTestAccess::ListIconVisible(host))
         return Fail("non-compact details retain original Shell icons",&host,parent,folder,file);
     const auto spacer=ListView_GetImageList(ShellBrowserHostTestAccess::List(host),LVSIL_SMALL);
@@ -616,6 +773,7 @@ int main()
     host.Destroy();
     ::DestroyWindow(parent);
     ::DeleteFileW(file.c_str());
+    ::DeleteFileW((folder+L".navigation.log").c_str());
     ::RemoveDirectoryW(folder.c_str());
     ::CoUninitialize();
     std::cout << "ShellBrowserHostTests: native browser creation/navigation/view operations passed\n";

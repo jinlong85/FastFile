@@ -92,6 +92,12 @@ bool WriteRegDword(HKEY root, const std::wstring& subKey, const wchar_t* valueNa
     return write == ERROR_SUCCESS;
 }
 
+bool IsAgentRunCommand(const std::wstring& command) {
+    if(command.empty())return false;
+    int count=0;auto args=CommandLineToArgvW(command.c_str(),&count);
+    const bool owned=args && count==1 && !_wcsicmp(args[0],CMainWnd::ExplorerAgentPath().c_str());
+    LocalFree(args);return owned;
+}
 bool IsFastFileCommand(const std::wstring& command)
 {
     int argc = 0;
@@ -272,6 +278,7 @@ void CMainWnd::FinishExternalOpen(ExternalOpenJob* job)
             targets.push_back(target);
     }
     if (targets.empty()) {
+        if(m_currentPath.empty() && m_activeTab>=0)ActivateTab(m_activeTab);
         UpdateStatus(_T("没有可打开的文件夹"));
         return;
     }
@@ -293,7 +300,7 @@ void CMainWnd::FinishExternalOpen(ExternalOpenJob* job)
 
     m_openingExternalPaths=false;
     CDuiString status;
-    status.Format(_T("已用 FastFile 打开 %d 个文件夹"), static_cast<int>(targets.size()));
+    status.Format(_T("已接收 %d 个文件夹，正在加载文件列表…"), static_cast<int>(targets.size()));
     UpdateStatus(status.GetData());
 }
 
@@ -531,9 +538,16 @@ CMainWnd::IntegrationStatus CMainWnd::DetectSystemIntegration() {
         } else if(_wcsicmp(PathFindFileNameW(path.c_str()),L"explorer.exe")==0)owner=L"Windows 资源管理器";
         else if(!path.empty() && _wcsicmp(path.c_str(),executable)==0)owner=L"FastFile（启动参数异常，请修复）";
         else if(_wcsicmp(PathFindFileNameW(path.c_str()),L"FastFile.exe")==0)owner=L"FastFile（其他路径，请修复）";
-        else if(!path.empty()) {owner=L"其他文件管理程序："+path;status.otherManager=true;}
+        else if(!path.empty()) {
+            const auto name=PathFindFileNameW(path.c_str());
+            owner=(_wcsicmp(name,L"360FileBrowser64.exe")==0 || _wcsicmp(name,L"360FileBrowser.exe")==0)?
+                L"360 文件管理器":L"其他文件管理程序："+std::wstring(name);
+            status.otherManager=true;
+        }
         else owner=L"未找到可用打开入口";
         status.details+=std::wstring(label)+L"："+owner+L"\r\n";
+        if(action.empty())status.summary+=std::wstring(label)+L"："+owner+L"\r\n";
+        if(!ours && action!=kSettingsVerb)status.recommendations+=L"• "+std::wstring(label)+L"仍由“"+owner+L"”处理。\r\n";
         return ours;
     };
     bool ready=true;
@@ -551,6 +565,14 @@ CMainWnd::IntegrationStatus CMainWnd::DetectSystemIntegration() {
     for(const auto* cls:{L"Folder",L"Directory",L"Drive"})
         status.menuReady=inspect(wcscmp(cls,L"Folder")==0?L"通用文件夹右键入口":wcscmp(cls,L"Directory")==0?
             L"文件夹右键入口":L"磁盘右键入口",cls,kSettingsVerb,false) && status.menuReady;
+    std::wstring run;
+    ReadRegString(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",L"FastFile.DefaultManager",run);
+    int runCount=0;auto runArgs=CommandLineToArgvW(run.c_str(),&runCount);
+    status.backgroundReady=runArgs && runCount==1 && _wcsicmp(runArgs[0],ExplorerAgentPath().c_str())==0;
+    LocalFree(runArgs);
+    if(!status.foldersReady || !status.computerReady)status.recommendations+=
+        L"建议选择“设为默认并修复”，统一文件夹、磁盘、此电脑及新窗口打开入口。若其他管理器重新接管，请在其设置中关闭默认接管，再重新检测。\r\n";
+    if(!status.backgroundReady)status.recommendations+=L"后台登录启动尚未配置；设为默认时一并启用，用于接收直接启动资源管理器的请求。\r\n";
     status.details+=L"直接启动资源管理器的请求需要窗口检测转交；其他文件管理器的独立窗口不会被关闭。";
     return status;
 }
@@ -578,6 +600,10 @@ bool CMainWnd::RepairOwnedSystemIntegration() {
     return true;
 }
 bool CMainWnd::ApplySystemIntegration(const FastFileSettings& settings) {
+    if(settings.explorerWindowTakeover) {
+        const auto attributes=GetFileAttributesW(ExplorerAgentPath().c_str());
+        if(attributes==INVALID_FILE_ATTRIBUTES || (attributes&FILE_ATTRIBUTE_DIRECTORY))return false;
+    }
     FastFileSettings old;ReadSystemIntegration(old);
     const bool disabling=!settings.contextMenu && !settings.defaultFolders && !settings.defaultComputer && !settings.explorerWindowTakeover;
     bool recoveryNeeded=false;
@@ -585,6 +611,11 @@ bool CMainWnd::ApplySystemIntegration(const FastFileSettings& settings) {
         recoveryNeeded=recoveryNeeded || OwnSettingsVerb(ClassShellKey(cls.cls)+L"\\"+kSettingsVerb)
             || KeyExists(std::wstring(kIntegrationRoot)+L"\\"+cls.id);
     if(disabling)recoveryNeeded=recoveryNeeded || KeyExists(std::wstring(kIntegrationRoot)+L"\\Actions");
+    std::wstring staleRun;
+    if(disabling && ReadRegString(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+        L"FastFile.DefaultManager",staleRun) && IsFastFileCommand(staleRun)
+        && staleRun.find(L"--background")!=std::wstring::npos)recoveryNeeded=true;
+    if(disabling && IsAgentRunCommand(staleRun))recoveryNeeded=true;
     // Enabled flags alone do not prove the effective default verbs or executable
     // commands are intact. Saving enabled settings must revalidate and reapply them.
     if(disabling && !recoveryNeeded && old.contextMenu==settings.contextMenu
@@ -595,6 +626,13 @@ bool CMainWnd::ApplySystemIntegration(const FastFileSettings& settings) {
     struct DefaultSnapshot {std::wstring shell;RegistryValue value;};std::vector<DefaultSnapshot> defaults;
     const wchar_t* flagNames[]={L"IntegrationMenu",L"IntegrationFolders",L"IntegrationComputer",L"IntegrationExplorerWindows"};
     RegistryValue flags[4];for(int i=0;i<4;++i)flags[i]=GetRaw(L"Software\\FastFile",flagNames[i]);
+    const std::wstring runKey=L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    const wchar_t* runName=L"FastFile.DefaultManager";
+    const auto runBefore=GetRaw(runKey,runName);
+    std::wstring runCommand;ReadRegString(HKEY_CURRENT_USER,runKey,runName,runCommand);
+    const bool ownedRun=IsAgentRunCommand(runCommand) || (!runCommand.empty() && IsFastFileCommand(runCommand)
+        && runCommand.find(L"--background")!=std::wstring::npos);
+    if(settings.explorerWindowTakeover && runBefore.exists && !ownedRun)return false;
     // Validate all private verb keys before mutating anything; a foreign same-name entry
     // is never overwritten, even when the user asks to enable the handler.
     for(const auto& cls:integrationClasses) {
@@ -612,6 +650,7 @@ bool CMainWnd::ApplySystemIntegration(const FastFileSettings& settings) {
         for(auto it=trees.rbegin();it!=trees.rend();++it)it->Restore();
         for(const auto& entry:defaults)PutRaw(entry.shell,nullptr,entry.value);
         for(int i=0;i<4;++i)PutRaw(L"Software\\FastFile",flagNames[i],flags[i]);
+        PutRaw(runKey,runName,runBefore);
         NotifyAssociationChanged();return false;
     };
     for(const auto& cls:integrationClasses) {
@@ -647,6 +686,9 @@ bool CMainWnd::ApplySystemIntegration(const FastFileSettings& settings) {
         || !WriteRegDword(HKEY_CURRENT_USER,L"Software\\FastFile",flagNames[1],settings.defaultFolders)
         || !WriteRegDword(HKEY_CURRENT_USER,L"Software\\FastFile",flagNames[2],settings.defaultComputer)
         || !WriteRegDword(HKEY_CURRENT_USER,L"Software\\FastFile",flagNames[3],settings.explorerWindowTakeover))return rollback();
+    if(settings.explorerWindowTakeover) {
+        if(!WriteRegString(HKEY_CURRENT_USER,runKey,runName,L"\""+ExplorerAgentPath()+L"\""))return rollback();
+    } else if(ownedRun && !PutRaw(runKey,runName,RegistryValue{}))return rollback();
     NotifyAssociationChanged();return true;
 }
 
