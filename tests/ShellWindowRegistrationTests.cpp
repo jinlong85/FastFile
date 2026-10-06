@@ -330,7 +330,11 @@ int wmain(int argc, wchar_t** argv)
             if (in >> value >> ms) hr = static_cast<HRESULT>(value);
         }
         DeleteFileW(resultFile.c_str());
-        for (int i = 0; i < 40 && selected.empty(); ++i) { Pump(); Sleep(25); }
+        // SHOpenFolderAndSelectItems may acknowledge before its cross-process
+        // SelectItem callback is dispatched, especially on a hosted desktop.
+        // Wait for the real selection, retaining the caller's separate 5s bound.
+        const DWORD selectionDeadline = GetTickCount() + 5000;
+        while (selected.empty() && GetTickCount() < selectionDeadline) { Pump(); Sleep(25); }
         std::cerr << "  " << label << ": hr=0x" << std::hex << hr << std::dec << " ms=" << ms
                   << " selectFlags=0x" << std::hex << selectFlags << std::dec << "\n";
         Check(hr == S_OK, "show-in-folder succeeds instead of timing out (E_ABORT)");
