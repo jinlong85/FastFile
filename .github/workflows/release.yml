@@ -41,6 +41,18 @@ jobs:
         run: ./tests/CheckReleasePreparation.ps1
       - name: Configure Release x64
         run: cmake -S . -B build-release -A x64 -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+      - name: Build Shell registration preflight
+        run: cmake --build build-release --config Release --target FastFileShellWindowTests --parallel 4
+      - name: Check cross-process Shell registration
+        env:
+          FASTFILE_SHELLWINDOW_TRACE: ${{ github.workspace }}\shell-window-trace.log
+        run: |
+          ctest --test-dir build-release -C Release -R '^FastFileShellWindowTests$' --output-on-failure
+          $testExit = $LASTEXITCODE
+          if ($testExit -ne 0 -and (Test-Path shell-window-trace.log)) {
+            Get-Content shell-window-trace.log -Encoding Unicode -Tail 140
+          }
+          exit $testExit
       - name: Build
         run: |
           cmake --build build-release --config Release --parallel 4 *> build-output.log
@@ -99,4 +111,5 @@ jobs:
           name: FastFile-Verification-Logs
           path: |
             build-output.log
+            shell-window-trace.log
             build-release/Testing/Temporary/*.log
