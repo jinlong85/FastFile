@@ -36,6 +36,17 @@ jobs:
           $advanced = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
           New-Item -Path $advanced -Force | Out-Null
           New-ItemProperty -Path $advanced -Name HideFileExt -Value 0 -PropertyType DWord -Force | Out-Null
+      - name: Initialize Explorer desktop Shell
+        run: |
+          Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class DesktopShell { [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title); }'
+          if ([DesktopShell]::FindWindow('Shell_TrayWnd', $null) -eq [IntPtr]::Zero) {
+            Start-Process -FilePath "$env:WINDIR\explorer.exe" -WindowStyle Hidden
+            $deadline = [DateTime]::UtcNow.AddSeconds(15)
+            while ([DesktopShell]::FindWindow('Shell_TrayWnd', $null) -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline) {
+              Start-Sleep -Milliseconds 250
+            }
+          }
+          Write-Host ('Explorer desktop Shell handle: ' + [DesktopShell]::FindWindow('Shell_TrayWnd', $null))
       - name: Check release preparation
         shell: powershell
         run: ./tests/CheckReleasePreparation.ps1
