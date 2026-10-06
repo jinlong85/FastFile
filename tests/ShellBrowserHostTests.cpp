@@ -520,8 +520,11 @@ int main()
     if (withFolder.folders != 1 || withFolder.files != 1 || emptyFolder.folders || emptyFolder.files || emptyFolder.error)
         return Fail("folder counts must distinguish non-empty and truly empty folders", nullptr, nullptr, folder, file);
     const auto props = ShellPresentation::ReadProperties(file);
-    if (props.name != L"native-view.txt" || props.type.empty() || !props.hasSize)
+    if (props.name != L"native-view.txt" || props.type.empty() || !props.hasSize) {
+        std::wcerr << L"Shell properties: name=" << props.name << L" type=" << props.type
+            << L" hasSize=" << props.hasSize << L'\n';
         return Fail("selected object Shell properties missing", nullptr, nullptr, folder, file);
+    }
     if (!ShellPresentation::CountChildren(folder + L"\\missing", false).error)
         return Fail("missing folder must not appear empty", nullptr, nullptr, folder, file);
 

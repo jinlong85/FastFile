@@ -30,6 +30,11 @@ jobs:
           "TEMP=$testTemp" >> $env:GITHUB_ENV
           "TMP=$testTemp" >> $env:GITHUB_ENV
           Write-Host "Native Shell fixtures: $testTemp"
+          # ReadProperties tests expect the fixture's full display name. This
+          # changes only the disposable runner profile, never the user's PC.
+          $advanced = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+          New-Item -Path $advanced -Force | Out-Null
+          New-ItemProperty -Path $advanced -Name HideFileExt -Value 0 -PropertyType DWord -Force | Out-Null
       - name: Check release preparation
         shell: powershell
         run: ./tests/CheckReleasePreparation.ps1
@@ -43,6 +48,8 @@ jobs:
             exit $LASTEXITCODE
           }
           Write-Host 'Release x64 build succeeded; full compiler output is retained as an artifact.'
+      - name: Check native Shell environment
+        run: ctest --test-dir build-release -C Release -R 'FastFileExplorerTakeoverLiveTests|FastFileShellBrowserTests' --output-on-failure
       - name: Run all regression tests
         run: ctest --test-dir build-release -C Release --output-on-failure
       - name: Build installer and verify payload and process ownership

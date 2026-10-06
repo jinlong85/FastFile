@@ -1688,11 +1688,14 @@ struct MainWndRegressionAccess {
             }
             CloseHandle(child.hThread);CloseHandle(child.hProcess);
             HWND observed=nullptr;bool closed=false;
+            std::vector<std::wstring> lastSourceSelection;
             const auto deadline=GetTickCount64()+35000;
             while(GetTickCount64()<deadline && !closed) {
                 pump();window.PollExplorerTakeover();
                 for(const auto& entry:window.m_explorerTransfers)
-                    if(CMainWnd::PathEquals(entry.second.source.path,target))observed=entry.first;
+                    if(CMainWnd::PathEquals(entry.second.source.path,target)) {
+                        observed=entry.first;lastSourceSelection=entry.second.source.selection;
+                    }
                 std::vector<std::pair<std::wstring,bool>> actualSelection;
                 const bool readySelection=!iteration || (window.m_shellBrowser && window.m_shellBrowser->GetSelection(actualSelection)
                     && actualSelection.size()==1 && CMainWnd::PathEquals(actualSelection.front().first,selectedFile));
@@ -1707,6 +1710,10 @@ struct MainWndRegressionAccess {
                 <<(window.m_shellBrowser && window.m_shellBrowser->IsNavigationCompleteAt(target))<<", selection confirmed "<<selectionOk<<'\n';
             if(!closed || !IsWindowVisible(window.m_hWnd) || !window.m_shellBrowser || !window.m_shellBrowser->IsNavigationCompleteAt(target) || !selectionOk) {
                 std::cerr<<"scan entries="<<window.m_explorerTransfers.size()<<" sequence="<<window.m_explorerScanSequence<<'\n';
+                std::cerr<<"source still exists="<<IsWindow(observed)<<" actual selection count="<<selected.size()<<'\n';
+                std::cerr<<"last source selection count="<<lastSourceSelection.size()<<'\n';
+                for(const auto& item:lastSourceSelection)std::wcerr<<L"source selection="<<item<<L"\n";
+                for(const auto& item:selected)std::wcerr<<L"actual selection="<<item.first<<L"\n";
                 std::wcerr<<L"current="<<window.m_currentPath<<L" scan="<<window.ExplorerTakeoverStatus()<<L"\n";
                 for(const auto& entry:window.m_explorerTransfers)std::wcerr<<L"transfer="<<entry.first<<L" path="<<entry.second.source.path
                     <<L" ignored="<<entry.second.ignored<<L" started="<<entry.second.started<<L" resolved="<<entry.second.resolved<<L"\n";
