@@ -2,7 +2,7 @@ param([Parameter(Mandatory = $true)][string]$BuildDirectory)
 $ErrorActionPreference = 'Stop'
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
 if (-not (Test-Path -LiteralPath $vswhere)) { throw 'vswhere is required to locate the MSVC inspection tool.' }
-$dumpbin = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'VC/Tools/MSVC/**/bin/Hostx64/x64/dumpbin.exe' | Select-Object -First 1
+$dumpbin = & $vswhere -all -prerelease -products '*' -find 'VC/Tools/MSVC/**/bin/Hostx64/x64/dumpbin.exe' | Select-Object -First 1
 if ($LASTEXITCODE -ne 0 -or -not $dumpbin) { throw 'MSVC dumpbin was not found.' }
 foreach ($name in @('FastFile.exe', 'FastFileAgent.exe')) {
     $binary = Join-Path $BuildDirectory $name
