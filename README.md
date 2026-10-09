@@ -20,6 +20,8 @@ FastFile 将多个文件夹放在同一个窗口的标签页中，提供地址�
 
 [1.0.17 预发布版](https://github.com/jinlong85/FastFile/releases/tag/v1.0.17)包含“关于 FastFile”和独立后台代理：关闭界面后退出界面进程，代理按需重新打开文件管理器。当前验证和限制见 [HANDOFF.md](HANDOFF.md)，交互架构依据见 [分析文档](docs/360_INTERACTION_ANALYSIS.md)。
 
+当前源码候选 **1.0.22** 让所有右键菜单都使用未经修改的 Windows 经典菜单，所选命令交回 Windows 执行；复制、剪切、粘贴、删除、重命名、新建文件夹、属性等快捷键和按钮同样使用 Windows 原生命令。撤销／重做优先调用系统历史，在 Windows 不提供系统撤销时（例如 Windows 11 26H2 内部 DefView 限制）自动回退至内部安全撤销栈（支持重命名还原及复制文件移除）。快速访问沿用 Windows Shell 主页数据；原收藏栏独立保留。
+
 ## 下载与安装
 
 发行版面向 **Windows x64**，默认保留预发布标记。程序界面为中文；版本及验证范围以发行说明为准。

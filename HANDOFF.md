@@ -1,6 +1,59 @@
 # FastFile — 交接说明（给后续 AI / 开发者）
 
-更新日期：2026-10-06（Asia/Shanghai）
+更新日期：2026-10-08（Asia/Shanghai）
+
+## 本地候选：1.0.22 系统撤销回退与 Explorer 隔离（2026-10-08，已构建测试打包，未发布）
+
+- **平铺模式文件夹黑底与图标尺寸修复**：解决在平铺模式（ViewMode::Tiles）下部分文件夹图标（特别是内部包含非空文件如 Antigravity、Claude、Diablo IV 等）四周出现 71x71 不透明黑框的缺陷。深入排查查明：Shell 的 `IFolderView2::SetViewModeAndIconSize(FVM_TILE, iImageSize)` 接受的是系统逻辑像素（基准 96 DPI 下的标准尺寸 48），而之前改动误将乘以 DPI 后的物理像素（例如 150% 缩放下计算出 72px）传给了 Shell 接口。DefView 收到非标准 72px 请求后，会向系统底层 `FolderThumbnailProvider` 请求自定义合成缩略图；Windows 在把纸片文档与文件夹底模通过 GDI 混合时丢失了 Alpha 通道，导致四周透明像素变为纯黑 (0,0,0,255)。修复方式为：在 `ApplyShellViewMode` 中将 `ViewMode::Tiles` 严格锁定为标准的逻辑尺寸 48（`ViewMode::Content` 锁定为 32）；在 `ShellBrowserHost::ApplyViewMode` 中增加对目标尺寸非标准残留的检测与纠正机制；并在 `ExtractThumb` 针对文件夹对象（`SFGAO_FOLDER`）优先采用 `SIIGBF_ICONONLY`。在 `ShellBrowserHostTests` 中新增针对文件夹缩略图提取的四角 Alpha 透明通道校验（`FolderThumbCleanAlpha`）以及 `FVM_TILE` 必须报告逻辑 48 尺寸的断言。
+- **平铺模式图标大小统一**：修复在就地切换到平铺模式时文件夹图标大小可能不一致（部分为 16x16，部分为 48x48）的问题。在 `ApplyShellViewMode()` 中显式指定 `ViewMode::Tiles` 逻辑图标大小为 48、`ViewMode::Content` 为 32，并在切换视图模式后主动调用 `ListView_RedrawItems` 重绘列表项。
+- **详细信息视图列信息完整恢复（修改日期/类型/大小）**：修复切换到详细信息视图（Details）时整行除名称外后 3 列（修改日期、类型、大小）内容完全空白的缺陷。深入调试查明：现代 Windows 11 DefView 宿主在详细信息模式下窗口样式（`GWL_STYLE`）包含 `0x56301348`，其低 2 位掩码 `style & LVS_TYPEMASK` 并非 `LVS_REPORT`（实测结果为 0）。`DrawListIcon` 自绘逻辑依赖此掩码判断模式，将其误判为单列列表模式，进而执行了 `FillRect(draw->nmcd.hdc, &row, fill)` 全行纯白背景填充覆盖，并且在绘制了第 0 列名称后返回了 `CDRF_SKIPDEFAULT`，拦截并擦除了 Windows DefView 原生的后续各列默认绘制。修复方式为：在 `DrawListIcon` 中引入 `const bool isDetails = (m_requestedMode == FVM_DETAILS) || ((GetWindowLongPtrW(m_listWindow, GWL_STYLE) & LVS_TYPEMASK) == LVS_REPORT);` 准确识别详细信息模式；并在 `CDDS_ITEMPREPAINT` 阶段直接返回 `CDRF_NOTIFYPOSTPAINT`，完全交由 Windows 原生绘制所有列（名称、修改日期、类型、大小），随后在 `CDDS_ITEMPOSTPAINT` 阶段使用系统小图标列表精确叠加图标，绝不再擦除任何列文本。
+- **列表与详细信息视图文件夹与文件图标免 F5 刷新及索引隔离**：彻底修复切换到列表视图（List）时大批图片等普通文件图标空白、仅个别项有图标的严重缺陷。深度调试查明：DefView 为每个列表项分配的 `item.iImage` 是 DefView 内部私有图像列表的自增槽位序号（0, 1, 2...），而旧自绘逻辑在私有列表未就绪时错误地把该私有序号当作全局系统小图标列表的索引进行绘制；在系统图标列表中，序号 0~24 对应空白或未定义槽位（序号 25、27 碰巧对应其他扩展名图标，而 `.jpg` 的真实系统小图标索引为 297），从而造成 `pic_001.jpg` ~ `pic_024.jpg` 拿着索引 0~24 在系统小图标列表中绘制出空白！同时排查发现 `LVM_SETIMAGELIST` 曾因 `ImageList_GetImageCount(lp) > 1` 的防御判断将 DefView 刚创建的初始小图像列表（count=0）丢弃，且 `InstallListSpacer` 中存在把系统图像列表赋值给私有句柄的污染代码。修复方式为：在 `ShellBrowserHost` 中严格隔离 DefView 私有图像列表与系统图像列表（`GetSmallImageList()` 仅在合法私有句柄时返回私有列表，否则回退系统小列表）；`ResolveItemIcon` 严格校验私有句柄与私有序号有效性，未命中时通过 `SHGetFileInfoW(path, FILE_ATTRIBUTE_NORMAL, ..., SHGFI_SYSICONINDEX | SHGFI_USEFILEATTRIBUTES)` 实时解析全局系统图标索引并从系统小图标列表绘制；在 `ListSubclass` 的 `LVM_SETIMAGELIST` 处理中无条件记录 DefView 的小图像列表句柄，并清理 `InstallListSpacer` 污染代码。新增 `CheckJpgListIconsAfterTileSwitch` 针对平铺切换到列表视图下 20 个 `.jpg` 文件的回归测试并 100% 通过，首帧即可呈现全部图标。
+- **回退撤销栈**：在 Windows 原生撤销不可用时（例如 Windows 11 26H2 内部 DefView 不维护跨进程撤销历史），FastFile 自动回退至内部安全撤销栈，支持重命名逆转与复制文件移除撤销（Ctrl+Z / Ctrl+Y 与“更多”菜单撤销/重做联动）。Windows 系统撤销可用时继续优先使用原生动词。
+- **Explorer Live Tests 状态**：在 CMakeLists.txt 中将涉及真实 Explorer 启动的 Live Tests（`FastFileExplorerTakeoverLiveTests` / `FastFileExplorerAgentLiveTests`）标记为 DISABLED，避免在支持标签页的现代 Windows 桌面（如 26H2）上把测试文件夹合并至开发者日常使用的文件管理器窗口；保留独立手工验证入口（`--explorer-live-only` / `--agent-live-only`）。
+- **回归与构建**：所有核心回归测试（含快捷键、撤销/重做回退、界面、平铺模式统一 48px 图标、详细信息视图第 0/1/2 列完整性断言、详细信息与列表免 F5 图标解析、列表视图下 JPG 文件图标实时渲染、文件夹纯净透明缩略图与异步缩略图）全部通过（12/12，183.31s）；Release x64 编译 0 错误。CheckInstallerPayload 验证通过，生成 `dist/FastFile-Setup-1.0.22.exe`。未提交、未发布。
+
+## 本地候选：1.0.21 Windows 原生右键菜单与原生文件操作（2026-10-07，已构建测试打包，未发布）
+
+**本节取代**：第八批（右键菜单清理）、第九批（驱动器菜单删项／分隔线合并）、2026-10-02「原生文件操作进度与原生背景菜单」中的背景菜单改造、「非紧凑文件视图与原生菜单新标签」及「FastFile 内部磁盘 / 目录打开」中的菜单新标签／打开接管、「右键菜单重命名与大图标选中框延迟」中的重命名附加项、1.0.18–1.0.20 的快速访问菜单附加项，以及 2026-10-01「常用快捷键与撤销 / 重做修复」中的 FastFile 自有撤销历史。以上记录仅作历史参考，不要按它们恢复任何菜单修改或接管逻辑。
+
+用户决定：所有右键菜单都沿用 Windows 自带的经典菜单，“不要自己新增或删除”；文件操作、快捷键和按钮也全部交给 Windows，只保留一份系统撤销历史。
+
+- **文件视图（ExplorerBrowser / DefView）**：`ShellBrowserHost` 不再截获 `WM_CONTEXTMENU`／`NM_RCLICK`，菜单完全由 DefView 弹出和执行。`ICommDlgBrowser2::GetViewFlags` 保留 `CDB2GVF_NOSELECTVERB`（否则通用对话框模式会多出“选择”动词）和 `CDB2GVF_SHOWALLFILES`（配合 `IncludeObject` 的隐藏项目过滤）；`OnDefaultCommand` 只影响双击／Enter，文件夹仍在 FastFile 内打开（多个文件夹时其余开新标签）。`Create` 去掉 contextMenuMessage 参数。
+- **FastFile 自建的菜单**（导航树、搜索结果、快速访问、收藏栏芯片）：`GetUIObjectOf`／`CreateViewObject` + `QueryContextMenu`，标志为项目 `CMF_NORMAL|CMF_ITEMMENU`（导航树另加 `CMF_EXPLORE`），背景 `CMF_NORMAL`，按住 Shift 加 `CMF_EXTENDEDVERBS`。不传 `CMF_CANRENAME`：视图外没有可承载原生就地编辑的 Shell 视图（因此导航树／搜索结果右键菜单没有“重命名”，F2 仍可用）。菜单对象通过 `IUnknown_SetSite` 挂到 ExplorerBrowser（`SID_SShellBrowser`），使原生“打开”可在当前窗口浏览，FastFile 依导航事件同步。所选命令由 `CMINVOKECOMMANDINFOEX`（hwnd、ptInvoke、`CMIC_MASK_UNICODE|PTINVOKE`、Shift／Ctrl 掩码、`SW_SHOWNORMAL`）按原始偏移交回同一 `IContextMenu`；`IContextMenu2/3` 消息转发保留。“此电脑”（导航树根、快速访问行、收藏栏）使用 Computer 项目菜单，占位节点无菜单。失败只提示“无法显示 Windows 右键菜单”。
+- **已删除**：Prune／AddInternalFolderOpen／Tidy／HandleRoutedShellVerb／背景查看排序子菜单／备用菜单／收藏和快速访问附加项／复制路径与显示隐藏项目菜单项、`HandleInternalFolderOpenVerb`、所有 `kCmd*` 菜单命令、FastFile 撤销栈（UndoRecord、ReplayHistory 等）、剪贴板缓存（Publish/ReadFileClipboard）、DeleteItems／CreateNewFolder／Shell 重命名跟踪与 `SHChangeNotifyRegister` 重命名监听。
+- **快捷键与按钮**（`FileCommandForKey` → `RunFileCommand`）：文件视图有焦点时先交给 DefView 的 `TranslateAccelerator`，它不处理时才由 FastFile 调用同一原生动词；导航树／搜索结果对所选项目的系统菜单调用动词（copy、cut、delete，Shift+Delete 带 `CMIC_MASK_SHIFT_DOWN`）；粘贴、`NewFolder`（`CMDSTR_NEWFOLDERW`）、undo／redo 用当前文件夹背景菜单（undo／redo 优先使用视图背景菜单，因为历史按进程而非文件夹）。F2：视图内 `IFolderView2::DoRename`；导航树 `PromptText` + `IFileOperation::RenameItem`；搜索列表 FastFile 编辑框 + `RenameItem`，两者带 `FOFX_ADDUNDORECORD`。属性用原生 properties 动词。Ctrl+Shift+C 复制路径、Ctrl+N 新窗口和所有导航快捷键不变。拖放仍用 `ShellFileOperation`，复制／移动现在带 `FOF_ALLOWUNDO|FOFX_ADDUNDORECORD`。
+- **取舍**：撤销历史是本进程的 Windows 历史，资源管理器窗口里的操作不在其中；撤销“复制”会删除（回收）复制出的文件；删除确认遵循 Windows 设置，Shift+Delete 总是显示 Windows 确认；冲突、进度、确认和属性对话框都由 Windows 显示并归属 FastFile 窗口；“在新窗口中打开”等按 Windows 行为（可能打开资源管理器窗口）；收藏芯片右键不再有“取消固定”（星标仍可用）；复制／删除完成后不再有 FastFile 状态栏结果（拖放除外）；搜索结果在命令执行后刷新一次。
+- **测试**：`MainWndRegressionTests` 的 CheckShellMenus／CheckShortcuts／磁盘目录菜单检查重写，`ShellBrowserHostTests` 改为整套运行在隐藏桌面并验证视图右键不转发（CBT 钩子拦截 `#32768`，绝不显示）。菜单展示与命令执行使用 `m_trackMenuHook`／`m_nativeInvokeHook` 测试接缝，删除等破坏性动词只记录不执行；真实原生复制、粘贴、就地重命名、撤销／重做仅在隐藏桌面的临时目录中运行；`NativeDialogGuard` 关闭并计数任何意外对话框。
+- **状态**：2026-10-07 已用 winget 恢复工具链（VS 2022 Build Tools 17.14.41：MSVC 14.44.35207、Windows SDK 10.0.26100、自带 CMake；另装 Kitware CMake 4.4.4；安装包用的 .NET Framework csc 本就存在）。Release x64 静态构建 0 错误（仅原有 `MainWnd.DragDrop.cpp` C4996 警告），生产代码构建期无需修改。CTest：13 项一次运行全部通过（199.8 s，`build-ui/1.0.21-ctest.log`）；`FastFileExplorerTakeoverLiveTests`／`FastFileExplorerAgentLiveTests` 未纳入：它们启动真实 explorer.exe，本机 Windows 26H2（26300）把 `/n,/separate` 请求作为标签页并入用户已打开的资源管理器窗口，首次完整运行时两项失败（源窗口无法关闭）并在用户窗口留下一个指向测试临时目录的标签页，且清理逻辑会向整个窗口发 WM_CLOSE，故不再在用户桌面运行，需改造后（或在无资源管理器窗口时）再验。安装包 `dist\FastFile-Setup-1.0.21.exe` 2,295,808 字节，SHA-256 `963ADE2074F8E9DA96D8C5351F56627D08493E7276694FDD287AC8573B616B84`；CheckInstallerPayload、CheckReleaseRuntime、CheckInstallerProcessOwnership 均通过。未安装、未发布。
+- **本机原生撤销不可用（需用户决定）**：在 26300 上，本进程 DefView 粘贴、就地重命名以及带 `FOFX_ADDUNDORECORD` 的 IFileOperation 之后，Windows 背景菜单都没有“撤销／重做”，DefView 的 Ctrl+Z 返回 S_OK 但不还原，未设置 MaxUndoItems；重装前的系统上同一方法可用。因此 1.0.21 在本机按 Ctrl+Z／点“撤销”不会撤销任何操作（状态栏提示“没有可撤销的操作”）。测试改为：Windows 提供撤销时验证真实撤销／重做往返和拖放复制撤销名称；不提供时断言没有私有撤销、文件不变、不调用任何动词。是否恢复 FastFile 自有撤销需用户决定。
+- **构建期测试修正（仅测试代码）**：子菜单项 wID 是每次查询不同的 HMENU，比较时跳过；Shift 扩展菜单的原始对照在按住 Shift 时查询（有扩展自己读键盘状态）；DefView 复制是异步的，Ctrl+C 检查改为轮询剪贴板；Ctrl+Shift+N 允许任意 Shift 掩码；文件夹激活检查改为“当前路径等于目标”（wParam=1 遵循标签复用规则）；磁盘／目录菜单在系统提供者两次查询编号不同时逐项比较内容；项目菜单站点（SID_SShellBrowser）改为真实断言；F2 就地重命名经 Enter 提交已有真实断言并通过。
+
+## 本地候选：1.0.20 快速访问菜单结构修正（2026-10-07，现场待确认，未发布）
+
+- 用户安装 1.0.19 后确认所有快速访问项右键仍有重叠文字；上一轮自绘接口修正不能视为现场问题已解决。
+- 对同一系统 Home 项目比较原始菜单、FastFile 菜单及物理文件夹菜单；实际项目为普通字符串（MFT_STRING），不是自绘或回调位图。原始 Home 菜单弹出前后保持 23 项，旧 FastFile 路径添加 2 项却从 23 变为 22，丢失 Bandizip、授予访问权限及发送到原生项目。
+- `TrackPopupShellMenu` 原来递归整理扩展所有子菜单，删除了延迟填充子菜单的分隔线占位，随后 Shell 在弹出初始化时移除父项。改为只整理 FastFile 修改的顶层；真实 Home 对照从 23 变为 25，保留全部原生项目。这是已确认的菜单结构缺陷；不能仅据此断言用户截图中瞬时重叠的根因已完全确认。
+- 增加延迟子菜单占位回归：旧实现 1 failure，修正后 0 failures。可选 `FASTFILE_QUICK_MENU_DIAGNOSTICS=<输出目录>` 对同一真实 Home 项目只查询、显示并取消三个菜单，记录布局和 PNG；`FASTFILE_MENU_DPI_AWARE=1` 使用主程序的 DPI 感知模式。诊断不调用用户文件操作。截图由 PrintWindow 重绘采集，不能代替用户桌面上的瞬时绘制验收。物理文件夹路径仍有独立的预填充及清理逻辑，本次未扩展修改。
+- 当前生产修改 Release x64 构建及完整 CTest **15/15，247.24 秒**通过（`build-ui/quick-menu-lazy-build.log`、`quick-menu-lazy-all-tests.log`）。仅版本更新到 1.0.20 后重新构建，快速访问／工程一致性／版本专项 **3/3**，菜单专项 **0 failures**。完整测试期间临时停止同安装目录、同会话代理，结束后已恢复；用户界面未替换。
+- `dist/FastFile-Setup-1.0.20.exe`：**2,365,952 字节**，SHA-256 **319658CBE4753E2A261CE1B8D5549A8336BD386CBC7CE83368C72778D2436966**。安装包版本与全部 3 个内嵌文件、进程归属以及无外部 MSVC DLL 检查通过，日志为 `build-ui/quick-menu-1.0.20-*.log`。未安装、提交、推送或发布本候选；现场重叠问题待用户实际操作验收。
+
+## 本地候选：1.0.19 快速访问右键菜单绘制（2026-10-07，未发布）
+
+- 用户截图显示快速访问菜单中部分第三方项以及“发送到”等文字错位、重叠和缺失；没有将其直接认定为字符编码问题。查到 `ForwardShellMenuMessage` 只对 WM_MENUCHAR 调用 IContextMenu3::HandleMenuMsg2，绘制／测量仍调用旧方法；旧接口成功时统一返回 0，且未隔离扩展的 GDI 字体、颜色和裁剪状态。
+- 改为对四种菜单消息优先调用 HandleMenuMsg2 并保留 LRESULT；新版方法明确未实现／无接口时兼容 IContextMenu2，旧接口绘制／测量成功返回 TRUE。仅 S_OK 标记已处理，S_FALSE 留给后续处理。WM_DRAWITEM／WM_MEASUREITEM 检查 ODT_MENU，不转交自绘控件。绘制前 SaveDC、结束后 RestoreDC，避免后续条目继承扩展修改的字体、颜色和裁剪状态。没有移除或禁用用户的第三方菜单扩展。
+- 新增现代接口专用／旧接口自绘菜单夹具：尺寸和返回值、每项只绘制一次、快捷键结果、S_FALSE、旧接口回退、自绘控件隔离、GDI 状态以及真实 TrackPopupMenuEx 中文菜单绘制和关闭清理。旧代码菜单专项 **10 项失败**（`build-ui/quick-menu-before-tests.log`），修正后的菜单专项 **0 失败**（`quick-menu-final-menu-tests.log`）；系统快速访问测试另以真实 Home PIDL 打开并取消原生菜单，不选择用户项目上的命令（`quick-menu-final-home-tests.log`）。
+- CMake Release x64 静态 CRT 构建通过（`build-ui/quick-menu-final-build.log`）。最终完整 CTest **15/15，246.39 秒**（`build-ui/quick-menu-all-tests.log`），包含菜单绘制回归、快速访问、实际 Shell、文件操作和代理交互；验证期间按上节的规则暂停安装版代理，finally 恢复并检查运行状态。
+- 本地候选 `dist/FastFile-Setup-1.0.19.exe`，**2,365,952 字节**，SHA-256 **49E70E4EEA84968E3CC40D23DA8E87B4D69A552FC8A5688E222E5028881D193D**；版本／全部 3 文件、安装器进程归属、静态运行库检查通过（`quick-menu-payload.log`、`quick-menu-installer-ownership.log`、`quick-menu-runtime.log`）。未替换当前用户安装版、未提交／推送／发布；GitHub 最新发行仍是 1.0.17。现有测试证明菜单协议及状态隔离修正，不替代安装后对截图中第三方菜单的现场视觉复测，未断言某个第三方扩展是唯一根因。
+
+## 本地候选：1.0.18 系统快速访问（2026-10-07，未发布）
+
+- 用户要求快速访问的全部数据范围跟随 Windows 资源管理器。改为读取 Windows Shell Home（`f874310e-b6b7-47dc-bc84-b9e6b38f5903`），失败时回退 Quick Access（`679f85cb-0220-4080-b29b-5540cc05aab6`）；保留系统枚举顺序、显示名称、目录／文件类型及绝对 PIDL。固定状态读取 Windows SDK 的 `PKEY_Home_IsPinned`，后台轮询不创建右键菜单。常用目录、最近文件及隐私筛选由系统提供，不自行生成最近记录或强制插入默认目录。
+- 启动、激活、手动刷新及可见窗口每五秒同步。短期 STA 工作线程读取，UI 线程应用快照；读取失败保留原列表，空枚举清空，相同数据不重建。按住条目、Shell 菜单或嵌套 OLE 拖放期间延后应用，避免当前点击目标改变。退出时停止计时器、等待线程并清理已投递快照。大量条目使用滚动区域。
+- 固定／取消固定通过 Shell 实际提供的 canonical verb；使用 Home 的绝对 PIDL 获取原生菜单，包括系统支持的最近项目移除。原生菜单执行后只重新读取，不重复调用固定操作。文件交给默认程序，目录在 FastFile 打开。Windows 管理顺序，本地拖动不保存私有顺序。旧 `quick_access.txt` 保留但不再读取，不自动导入系统固定项；原收藏栏独立保留。
+- 新增 `FastFileQuickAccessTests`，真实系统 Home 与独立 `Shell.Application` 枚举逐项比对数量、顺序、名称和类型，本机返回 6 项。实际固定／取消固定仅操作本轮临时目录并清理；覆盖异步同步、PIDL、空结果、失败保留、无默认项补回、固定状态、重复快照不重建、交互保护及滚动高度。其他 UI 测试使用独立文件夹 Shell 来源，避免写用户固定项。源文件仍放在现有编译单元，CMake／VS 源文件一致性通过。
+- 验证期间发现旧测试假设快速访问同步存在，已补等待及空列表保护。另发现设置测试保存的是 live OLE 剪贴板代理：复制诊断后恢复／Flush 同一代理存在递归读取风险，现改用已有 `SnapshotClipboard()` 保存独立数据。修正后视图／界面／集成测试各连续 3 次通过，共 117.15 秒（`build-ui/quick-access-clipboard-targeted.log`）；最终完整 CTest **15/15，247.02 秒**（`build-ui/quick-access-verified-all-tests.log`）。未取得此前退出的完整堆栈；注册表隔离的临时尝试未消除失败，已撤回，不把它或后台菜单读取当作已证实的崩溃根因。回归程序增加可选异常诊断 `FASTFILE_TEST_EXCEPTION_TRACE=1` 和 MSVC 链接 map。
+- 代理实测曾被安装版代理抢先接走同一测试目录，已由两边日志确认。完整验证期间临时停止当前会话／当前安装目录的代理，在 `finally` 中恢复；最终确认安装版代理再次运行。没有改变接管设置、安装文件或安装／卸载程序。历史失败日志保留在 `build-ui/quick-access-*.log`，不能以它们替代上述最终结果。
+- CMake Release x64 静态 CRT 构建通过（`build-ui/quick-access-clipboard-build.log`）。本地安装包 `dist/FastFile-Setup-1.0.18.exe`，**2,365,952 字节**，SHA-256 **C0F892F70CB74E7F357F302EC32B3B1960D24C34513009D6B3A73293E0934734**；版本及全部 3 个内嵌文件哈希、安装器进程归属、GUI／代理无外部 MSVC DLL 检查通过（`quick-access-payload-final.log`、`quick-access-installer-ownership-final.log`、`quick-access-runtime-final.log`）。未安装到用户当前目录、未提交或推送本轮修改、未发布到 GitHub；最新发行仍为 1.0.17。安装后在用户实际快速访问中确认展示与操作效果的现场验收尚未执行。
 
 ## 自动发行完成：1.0.17（2026-10-06）
 

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "UIlib.h"
 #include "UiTokens.h"
@@ -13,6 +13,7 @@ class ShellWindowRegistration;
 struct ExplorerScanState;
 
 #include <atomic>
+#include <functional>
 #include <condition_variable>
 #include <deque>
 #include <map>
@@ -132,10 +133,7 @@ private:
     static constexpr UINT kMsgCancelInlineRename = WM_APP + 0x452;
     static constexpr UINT kMsgShellNavigation = WM_APP + 0x453;
     static constexpr UINT kMsgShellSelection = WM_APP + 0x454;
-    static constexpr UINT kMsgShellRename = WM_APP + 0x455;
     static constexpr UINT kMsgShellFolderOpen = WM_APP + 0x456;
-    static constexpr UINT kMsgShellContextMenu = WM_APP + 0x457;
-    bool HandleInternalFolderOpenVerb(const std::wstring& verb,const std::vector<std::wstring>& paths);
     struct DirEntry {
         std::wstring name;
         std::wstring fullPath;
@@ -210,25 +208,54 @@ private:
     void FocusSearchBox();
     void ShowPropertiesForSelection();
 
-    // Undo (Ctrl+Z) — only for operations FastFile performs itself
-    struct UndoRecord {
-        enum class Kind { Rename, CreateFolder, Move, Copy, ShellRename, ShellDelete } kind = Kind::Rename;
-        std::wstring from;   // path before the operation
-        std::wstring to;     // path after the operation
-        // Kind::Move only: every (source, destination) pair of that one move operation,
-        // so a single Ctrl+Z restores the whole batch.
-        std::vector<std::pair<std::wstring, std::wstring>> moved;
-        std::vector<std::pair<std::wstring, std::wstring>> backups;
+    // ---- Windows-native file commands & fallback undo stack --------------------------
+    // Every file operation runs the canonical Shell verb of the Windows context menu.
+    // If the Windows system undo history is unavailable (e.g. on certain Windows 11 builds
+    // where DefView does not maintain undo records for hosted views), FastFile falls back
+    // to an internal undo stack for reversible operations (rename and copy).
+    enum class NativeScope { Selection, Background };
+    enum class FileCommand { None, Copy, Cut, Paste, Delete, DeletePermanent, Rename, NewFolder,
+        SelectAll, Undo, Redo, Properties };
+    enum class UndoKind { Rename, CopyFiles };
+    struct UndoEntry {
+        UndoKind kind;
+        std::wstring oldPath;
+        std::wstring newPath;
+        std::vector<std::wstring> copiedDests;
     };
-    void PushUndo(UndoRecord::Kind kind, std::wstring from, std::wstring to);
-    void PushHistoryRecord(UndoRecord record);
+    static FileCommand FileCommandForKey(WPARAM key, bool ctrl, bool shift, bool alt);
+    void RunFileCommand(FileCommand command);
     void OnUndo();
     void OnRedo();
-    bool ReplayHistory(UndoRecord& record, bool redo);
-    void ClearRedoHistory();
-    void TrackShellRename(WPARAM change, LPARAM process);
-    void FinishShellHistory();
-    void RefreshAfterHistory();
+    bool CanUndo();
+    bool CanRedo();
+    void PushUndoRename(const std::wstring& oldPath, const std::wstring& newPath);
+    void PushUndoCopy(const std::vector<std::pair<std::wstring, std::wstring>>& completedCopies);
+    bool ApplyUndoEntry(const UndoEntry& entry, bool isRedo);
+    // Invokes the canonical verb on the selection menu (view selection, tree folder or
+    // search-list items) or on the current folder's background menu. extraMask adds
+    // CMIC_MASK_* bits (Shift+Delete passes CMIC_MASK_SHIFT_DOWN).
+    bool InvokeNativeVerb(const wchar_t* verb, NativeScope scope, DWORD extraMask = 0);
+    bool NativeVerbAvailable(const wchar_t* verb, NativeScope scope);
+    bool CreateNativeVerbMenu(NativeScope scope, bool history, IContextMenu** menu, bool* fromView);
+    HRESULT InvokeShellCommand(IContextMenu* menu, UINT offset, const wchar_t* verb, POINT ptInvoke,
+        DWORD extraMask = 0);
+    void RefreshAfterFileChange();
+    // Test seams (never set by the application): observe a native invoke instead of running
+    // it, and replace TrackPopupMenuEx so no menu is ever shown during automated tests.
+    struct NativeVerbCall {
+        std::wstring verb;            // canonical verb (or the string verb that was invoked)
+        NativeScope scope = NativeScope::Selection;
+        DWORD mask = 0;               // CMINVOKECOMMANDINFOEX::fMask
+        bool byOffset = false;        // invoked through the menu's own command offset
+        bool fromView = false;        // menu object came from the hosted Windows view
+        HRESULT hr = S_FALSE;
+        int count = 0;                // invokes since the seam was installed
+    };
+    NativeVerbCall m_lastNativeVerb;
+    std::function<HRESULT(IContextMenu*)> m_nativeInvokeHook;
+    std::function<UINT(IContextMenu*, HMENU)> m_trackMenuHook;
+    UINT m_lastShellMenuFlags = 0;    // CMF_* of the last menu FastFile queried for display
     void FocusFileView();
     void CycleKeyboardPane(bool reverse);
     void ShowAddressHistory();
@@ -256,14 +283,25 @@ private:
     void OnPinnedFavoriteClick(CControlUI* btn);
     void ShowFavoriteContextMenu(CControlUI* btn, POINT ptScreen);
     bool IsOverFavoritesBar(POINT ptClient) const;
-    // Quick access rows: the four built-ins plus the user's pinned folders live in one
-    // ordered list so the order can be dragged and is persisted in quick_access.txt.
+    // System Home snapshot: Shell owns contents, ranking, pin order and privacy.
     struct QuickRow {
         bool isThisPc = false;
-        bool builtIn = false;   // one of 此电脑 / 文档 / 桌面 / 下载
+        bool builtIn = false;   // retained for legacy fixture compatibility
+        bool isFolder = true;
+        bool pinned = false;
         std::wstring path;      // folder path (kThisPcPath for This PC)
         std::wstring label;     // display name (localized for the built-ins)
+        std::wstring shellPath; // item identity in the system Home namespace
+        std::vector<BYTE> shellId; // absolute PIDL preserves the Home context-menu parent
     };
+    struct QuickSnapshot { HRESULT result = E_FAIL; std::vector<QuickRow> rows; };
+    static HRESULT ReadSystemQuickRows(std::vector<QuickRow>& rows, const std::wstring& source = L"");
+    static HRESULT InvokeQuickVerb(HWND owner, const std::wstring& identity, const char* verb,
+        const std::vector<BYTE>& shellId = {});
+    void ApplyQuickSnapshot(const QuickSnapshot& snapshot);
+    void StopQuickAccessSync();
+    static constexpr UINT kMsgQuickAccessReady = WM_APP + 0x467;
+    static constexpr UINT_PTR kTimerQuickAccessSync = 0x4608;
     static std::wstring GetQuickAccessFilePath();
     void LoadQuickAccess();
     void SaveQuickAccess() const;
@@ -277,7 +315,7 @@ private:
     bool PinQuickAccess(const std::wstring& path);
     bool UnpinQuickAccess(const std::wstring& path);
     bool IsQuickAccessPinned(const std::wstring& path) const;
-    void EnsureDefaultQuickRows();   // inserts any missing built-in row (keeps user order)
+    void EnsureDefaultQuickRows();   // legacy compatibility; does not inject default pins
     void OpenQuickAccessTab(const std::wstring& path);
 
     // Search / filter
@@ -459,23 +497,18 @@ private:
     void ApplyWindowCornerAndPadding();
     void ApplyWindowIcon();
     void ApplyUiChromeTokens(); // Phase1: paddings + unified Win11 light colors
+    // Shows a queried Shell menu unchanged and hands the chosen command back to the same
+    // IContextMenu (CMINVOKECOMMANDINFOEX). FastFile adds, removes and intercepts nothing.
     bool TrackPopupShellMenu(IContextMenu* pMenu, HMENU hMenu, POINT ptScreen,
-        UINT idCmdFirst, UINT idShellMax, bool appendHiddenToggle,
-        const std::vector<std::pair<UINT, std::wstring>>* extraItems = nullptr,
-        UINT* outExtraCmd = nullptr);
-    // Hide shell-menu entries FastFile does not want to show (see the implementation)
-    void PruneShellMenu(IContextMenu* pMenu, HMENU hMenu, UINT idCmdFirst, UINT idShellMax,
-        bool backgroundMenu);
-    void AddInternalFolderOpenMenu(IContextMenu* menu, HMENU popup, UINT first, UINT last,
-        const std::vector<std::wstring>& paths);
-    static void TidyMenuSeparators(HMENU hMenu);
-    bool HandleRoutedShellVerb(const std::wstring& verb);
-    HMENU CreateBackgroundViewSubmenu() const;
-    HMENU CreateBackgroundSortSubmenu() const;
+        UINT idCmdFirst, UINT idShellMax);
+    // CMF_* flags, identical to Explorer's: items CMF_NORMAL | CMF_ITEMMENU, the navigation
+    // tree adds CMF_EXPLORE, Shift adds CMF_EXTENDEDVERBS; backgrounds CMF_NORMAL.
+    static UINT ShellItemMenuFlags(bool shift, bool explore);
+    static UINT ShellBackgroundMenuFlags(bool shift);
     bool ShellBrowserShowsFolder(const std::wstring& folderPath) const;
+    bool CreateShellBackgroundContextMenu(const std::wstring& folderPath, IContextMenu** menu, bool* fromView);
     bool BuildShellBackgroundMenu(const std::wstring& folderPath, IContextMenu** menu, HMENU* popup,
         UINT* shellMax, bool* fromView);
-    void ReleaseRetiredShellMenus();
     void ForwardShellMenuMessage(UINT uMsg, WPARAM wParam, LPARAM lParam, LRESULT* pResult, bool* handled);
     void RebuildBreadcrumb();
     void OnBreadcrumbSegmentClick(CControlUI* btn);
@@ -622,29 +655,28 @@ private:
     void IconActivateCursor();                 // Enter/Space: open the cursor item
 
     void CollectSelectedItems(std::vector<ClipboardItem>& out) const;
-    bool PublishFileClipboard(const std::vector<ClipboardItem>& items, bool cut);
-    bool ReadFileClipboard(std::vector<ClipboardItem>& items, bool& cut) const;
-    static DWORD DeleteOperationFlags(bool permanent);
-    void DeletePaths(const std::vector<ClipboardItem>& items, bool permanent);
-    bool DeleteItems(const std::vector<ClipboardItem>& items, bool permanent = false,
-        std::vector<std::wstring>* completed = nullptr);
+    // Windows rename (IFileOperation::RenameItem with a system undo record) for the tree and
+    // FastFile's own lists, which have no Shell view to host the native in-place edit.
     bool RenameItem(const ClipboardItem& item, const std::wstring& newName);
-    bool CreateNewFolder();
 
     void ShowItemContextMenu(CControlUI* pItem, POINT ptScreen);
-    bool ShowShellContextMenu(const std::vector<std::wstring>& paths, POINT ptScreen,
-        const std::vector<std::pair<UINT, std::wstring>>* extraItems = nullptr,
-        UINT* outExtraCmd = nullptr);
+    // explore = navigation tree (CMF_EXPLORE), as in Explorer's folder pane.
+    bool ShowShellContextMenu(const std::vector<std::wstring>& paths, POINT ptScreen, bool explore = false);
     bool ShowShellBackgroundContextMenu(const std::wstring& folderPath, POINT ptScreen);
-    // Builds the Shell item menu for paths (QueryContextMenu + prune + FastFile entries).
-    // CMF_CANRENAME is passed for a single renamable item shown in the Shell view.
+    // 此电脑 itself (tree root, quick-access row, favourite chip): the Computer item's own menu.
+    bool ShowThisPcContextMenu(POINT ptScreen, bool explore);
+    bool ShowPidlContextMenu(PCIDLIST_ABSOLUTE item, POINT ptScreen, bool explore);
+    // Raw Shell item menu objects: GetUIObjectOf(IID_IContextMenu) of the items' parent.
+    bool CreateShellItemContextMenu(const std::vector<std::wstring>& paths, IContextMenu** menu);
+    bool CreatePidlContextMenu(PCIDLIST_ABSOLUTE item, IContextMenu** menu);
+    // QueryContextMenu with the given flags into a fresh popup (no edits).
+    static bool QueryShellMenu(IContextMenu* menu, UINT flags, HMENU* popup, UINT* shellMax);
     bool BuildShellItemMenu(const std::vector<std::wstring>& paths, IContextMenu** menu, HMENU* popup,
-        UINT* shellMax);
-    bool CanRenameInShellView(const std::wstring& path) const;
-    bool BeginShellRename(const std::wstring& path);
-    void ShowFallbackContextMenu(const std::vector<ClipboardItem>& items, POINT ptScreen);
+        UINT* shellMax, bool explore = false);
+    bool ShowQueriedShellMenu(IContextMenu* menu, UINT flags, POINT ptScreen);
     void ShowTreeContextMenu(CTreeNodeUI* node, POINT ptScreen);
     void ShowBlankAreaContextMenu(POINT ptScreen);
+    void ShowKeyboardContextMenu();
 
     // A: visible vertical scrollbars on file views
     void StyleVerticalScrollBar(CContainerUI* host);
@@ -740,6 +772,8 @@ private:
     std::wstring m_renameOriginalPath;
     bool m_renameIsDirectory = false;
     bool m_finishingInlineRename = false;
+    std::vector<UndoEntry> m_undoStack;
+    std::vector<UndoEntry> m_redoStack;
     bool m_addressEditMode = false;
     CListUI* m_pFileList = nullptr;
     CTreeViewUI* m_pDirTree = nullptr;
@@ -778,6 +812,10 @@ private:
     int m_previewRailLastY = 0;
     std::vector<FavoriteItem> m_favorites;
     std::vector<QuickRow> m_quickRows;
+    std::thread m_quickReadThread;
+    std::atomic<bool> m_quickReadStopping{false};
+    bool m_quickReadPending = false;
+    std::wstring m_quickReadSource; // empty in production; isolated Shell fixture in tests
     // Quick-access drag-to-reorder state (vertical drag moves the row under the cursor).
     int m_quickDragIndex = -1;
     bool m_quickDragActive = false;
@@ -836,9 +874,6 @@ private:
     bool m_previewVisible = true;
     bool m_favoritesBarVisible = true;
     IContextMenu* m_pCtxMenu = nullptr;
-    bool m_shellMenuBackground = false;       // the tracked Shell menu is a folder background menu
-    std::wstring m_shellMenuFolder;           // ... for this folder
-    std::vector<HMENU> m_retiredShellMenus;   // Shell submenus replaced by FastFile's 查看 / 排序方式
     IContextMenu2* m_pCtxMenu2 = nullptr;
     IContextMenu3* m_pCtxMenu3 = nullptr;
     std::wstring m_previewPath;
@@ -885,19 +920,6 @@ private:
     IDropTarget* m_pDropTarget = nullptr;
     bool m_inDoDragDrop = false;
 
-    std::vector<ClipboardItem> m_clipboard;
-    bool m_clipboardIsCut = false;
-    std::vector<UndoRecord> m_undoStack;
-    std::vector<UndoRecord> m_redoStack;
-    bool m_historyStarted = false;
-    ULONG m_shellRenameNotify = 0;
-    std::wstring m_pendingShellRename;
-    std::vector<std::wstring> m_recentShellSelection;
-    std::vector<std::pair<std::wstring, std::wstring>> m_appRenameNotifications;
-    bool m_shellHistoryPending = false;
-    bool m_shellHistoryRedo = false;
-    DWORD m_shellHistoryStarted = 0;
-    static constexpr UINT_PTR kTimerShellHistory = 0x7f13;
 
     std::map<std::wstring, std::wstring> m_iconCache;
     std::mutex m_iconCacheMutex;
@@ -940,11 +962,6 @@ private:
     static constexpr const wchar_t* kThisPcPath = L"::ThisPC";
     static constexpr const wchar_t* kPendingMarker = L"::pending";
     static constexpr const wchar_t* kFavoritePinPath = L"::FavoritePin";
-    static constexpr UINT_PTR kCmdFavUnpin = 9101;
-    static constexpr UINT_PTR kCmdFavOpen = 9102;
-    static constexpr UINT_PTR kCmdFavOpenNewTab = 9103;
-    static constexpr UINT_PTR kCmdFavOpenNewWindow = 9104;
-    static constexpr UINT_PTR kCmdFavCopyPath = 9105;
     static constexpr int kMaxListItems = 8000;
     static constexpr int kMaxDetailsItems = 100000;   // details view virtualizes; icons do not
     static constexpr int kMaxIconThumbs = 400;
@@ -1030,7 +1047,7 @@ private:
     static std::wstring s_agentArgumentsForTest;
     static HDESK s_agentDesktopForTest;
     static_assert(kMsgPreviewIconReady != kMsgThumbReady && kMsgPreviewIconReady != kMsgFileOpFinished
-        && kMsgPreviewIconReady != kMsgShellContextMenu, "private window messages must be unique");
+        && kMsgPreviewIconReady != kMsgShellFolderOpen, "private window messages must be unique");
     static constexpr int kDetailsVirtOverscan = 8;
     static constexpr UINT_PTR kTimerDetailsSync = 0x4603;
     static constexpr int kUiBatchSize = 40;
@@ -1042,25 +1059,4 @@ private:
     static constexpr UINT_PTR kTimerVirtSync = 0x4601;
     static constexpr UINT_PTR kTimerColWidth = 0x4602;
     static constexpr UINT_PTR kTimerLayoutSync = 0x4604;
-
-    static constexpr UINT_PTR kCmdCtxOpen = 9001;
-    static constexpr UINT_PTR kCmdCtxCopy = 9002;
-    static constexpr UINT_PTR kCmdCtxDelete = 9003;
-    static constexpr UINT_PTR kCmdCtxRename = 9004;
-    static constexpr UINT_PTR kCmdCtxRefresh = 9005;
-    static constexpr UINT_PTR kCmdShellRename = 0xFFF0; // outside the Shell command range (0x0001..0x7FFF)
-    static constexpr UINT_PTR kCmdShellNewTab = 0xFFF1;
-    // Commands FastFile mixes into Shell context menus live above the Shell's command range
-    // (idCmdFirst 1 .. idCmdLast 0x7FFF; the view background menu really uses ids up to
-    // 0x7FFE), so a Shell verb can never be mistaken for a FastFile command.
-    static constexpr UINT_PTR kCmdToggleHidden = 0xFE50;
-    static constexpr UINT_PTR kCmdBgRefresh = 0xFE00;
-    static constexpr UINT_PTR kCmdBgPaste = 0xFE01;
-    static constexpr UINT_PTR kCmdBgUndo = 0xFE02;
-    static constexpr UINT_PTR kCmdBgRedo = 0xFE03;
-    static constexpr UINT_PTR kCmdBgViewBase = 0xFE10;   // +0..7 -> ViewMode
-    static constexpr UINT_PTR kCmdBgSortBase = 0xFE20;   // +0..3 -> SortColumn, +4 asc, +5 desc
-    // FastFile entries appended below a shell context menu opened from a quick-access row.
-    static constexpr UINT_PTR kCmdQuickOpen = 0xFE40;
-    static constexpr UINT_PTR kCmdQuickUnpin = 0xFE41;
 };

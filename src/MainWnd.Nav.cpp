@@ -194,12 +194,6 @@ void CMainWnd::SyncShellViewSelection()
         snapshot.push_back(item.first);
     if (snapshot == m_shellSelectionSnapshot)
         return;
-    for (const auto& path : snapshot) {
-        if (std::find(m_recentShellSelection.begin(), m_recentShellSelection.end(), path) == m_recentShellSelection.end())
-            m_recentShellSelection.push_back(path);
-    }
-    if (m_recentShellSelection.size() > 32)
-        m_recentShellSelection.erase(m_recentShellSelection.begin(), m_recentShellSelection.end() - 32);
     m_shellSelectionSnapshot.swap(snapshot);
     m_shellBrowser->EnsureSelectionVisible();
     UpdateCommandBarState();
@@ -333,6 +327,7 @@ void CMainWnd::OnItemActivate(CControlUI* pSender)
 
 void CMainWnd::RefreshListing()
 {
+    LoadQuickAccess();
     if (m_currentPath.empty()) {
         UpdateStatus(_T("当前路径为空"));
         return;
@@ -566,11 +561,6 @@ void CMainWnd::UpdateListingStatusTip()
             CDuiString selTip;
             selTip.Format(_T("%s已选 %d 项"), sep.GetData(), static_cast<int>(sel.size()));
             tip += selTip;
-        }
-        if (!m_clipboard.empty()) {
-            CDuiString clip;
-            clip.Format(_T("%s剪贴板 %d 项"), sep.GetData(), static_cast<int>(m_clipboard.size()));
-            tip += clip;
         }
     }
     UpdateStatus(tip.GetData());

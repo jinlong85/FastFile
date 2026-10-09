@@ -1,4 +1,4 @@
-﻿// FastFile - view modes, details list, icon/tile views, virtualization, sorting
+// FastFile - view modes, details list, icon/tile views, virtualization, sorting
 // Implements CMainWnd members moved out of the original monolithic MainWnd.cpp.
 // Behaviour is unchanged; declarations live in MainWnd.h.
 
@@ -700,9 +700,9 @@ void CMainWnd::ApplyShellViewMode()
     case ViewMode::MediumIcons:     mode = FVM_ICON; iconSize = DpiScale(32); break;
     case ViewMode::List:            mode = FVM_LIST; break;
     case ViewMode::Details:         mode = FVM_DETAILS; break;
-    case ViewMode::Tiles:           mode = FVM_TILE; break;
+    case ViewMode::Tiles:           mode = FVM_TILE; iconSize = 48; break;
     case ViewMode::SmallIcons:      mode = FVM_SMALLICON; iconSize = DpiScale(16); break;
-    case ViewMode::Content:         mode = FVM_CONTENT; break;
+    case ViewMode::Content:         mode = FVM_CONTENT; iconSize = 32; break;
     }
     m_shellBrowser->SetShowHidden(m_showHidden);
     m_shellBrowser->SetViewMode(mode, iconSize);

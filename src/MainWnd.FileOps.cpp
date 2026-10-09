@@ -1,4 +1,6 @@
-// FastFile - file operations (Windows IFileOperation engine on STA workers) and history
+// FastFile - file commands (Windows-native verbs), rename helpers and the IFileOperation
+// engine used by drag-and-drop transfers. FastFile keeps no undo history of its own: every
+// operation lands in the Windows undo history, which Ctrl+Z / Ctrl+Y replay natively.
 // Implements CMainWnd members moved out of the original monolithic MainWnd.cpp.
 // Declarations live in MainWnd.h; the copy engine itself is ShellFileOperation.cpp.
 
@@ -128,85 +130,8 @@ void CMainWnd::CollectSelectedItems(std::vector<ClipboardItem>& out) const
     }
 }
 
-bool CMainWnd::PublishFileClipboard(const std::vector<ClipboardItem>& items, bool cut)
-{
-    std::wstring paths;
-    for (const auto& item : items) { paths += item.path; paths.push_back(L'\0'); }
-    paths.push_back(L'\0');
-    HGLOBAL drop = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT,
-        sizeof(DROPFILES) + paths.size() * sizeof(wchar_t));
-    HGLOBAL effect = GlobalAlloc(GMEM_MOVEABLE, sizeof(DWORD));
-    if (!drop || !effect) {
-        if (drop) GlobalFree(drop);
-        if (effect) GlobalFree(effect);
-        return false;
-    }
-    auto* header = static_cast<DROPFILES*>(GlobalLock(drop));
-    auto* preferred = static_cast<DWORD*>(GlobalLock(effect));
-    if (!header || !preferred) {
-        if (header) GlobalUnlock(drop);
-        if (preferred) GlobalUnlock(effect);
-        GlobalFree(drop); GlobalFree(effect); return false;
-    }
-    header->pFiles = sizeof(DROPFILES); header->fWide = TRUE;
-    memcpy(reinterpret_cast<BYTE*>(header) + sizeof(DROPFILES), paths.data(), paths.size() * sizeof(wchar_t));
-    *preferred = cut ? DROPEFFECT_MOVE : DROPEFFECT_COPY;
-    GlobalUnlock(drop); GlobalUnlock(effect);
-    if (!OpenClipboard(m_hWnd)) { GlobalFree(drop); GlobalFree(effect); return false; }
-    bool ok = EmptyClipboard() && SetClipboardData(CF_HDROP, drop);
-    if (ok) drop = nullptr; // Windows owns each successfully published handle.
-    const UINT format = RegisterClipboardFormatW(CFSTR_PREFERREDDROPEFFECT);
-    if (ok && SetClipboardData(format, effect)) effect = nullptr;
-    else ok = false;
-    CloseClipboard();
-    if (drop) GlobalFree(drop);
-    if (effect) GlobalFree(effect);
-    return ok;
-}
-
-bool CMainWnd::ReadFileClipboard(std::vector<ClipboardItem>& items, bool& cut) const
-{
-    items.clear(); cut = false;
-    if (!OpenClipboard(m_hWnd)) return false;
-    HDROP drop = static_cast<HDROP>(GetClipboardData(CF_HDROP));
-    const UINT count = drop ? DragQueryFileW(drop, 0xffffffff, nullptr, 0) : 0;
-    for (UINT i = 0; i < count; ++i) {
-        const UINT length = DragQueryFileW(drop, i, nullptr, 0);
-        std::wstring path(length + 1, L'\0');
-        if (!length || !DragQueryFileW(drop, i, path.data(), length + 1)) continue;
-        path.resize(length);
-        const DWORD attributes = GetFileAttributesW(path.c_str());
-        if (attributes != INVALID_FILE_ATTRIBUTES)
-            items.push_back({std::move(path), (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0});
-    }
-    HGLOBAL effect = GetClipboardData(RegisterClipboardFormatW(CFSTR_PREFERREDDROPEFFECT));
-    if (effect && GlobalSize(effect) >= sizeof(DWORD)) {
-        auto* preferred = static_cast<const DWORD*>(GlobalLock(effect));
-        if (preferred) { cut = (*preferred & DROPEFFECT_MOVE) != 0; GlobalUnlock(effect); }
-    }
-    CloseClipboard();
-    return !items.empty();
-}
-
-void CMainWnd::OnCopyClicked()
-{
-    std::vector<ClipboardItem> items;
-    CollectSelectedItems(items);
-    if (items.empty()) {
-        UpdateStatus(_T("请先选中要复制的文件或文件夹（支持 Ctrl/Shift 多选）"));
-        return;
-    }
-    if (!PublishFileClipboard(items, false)) {
-        UpdateStatus(_T("无法访问系统剪贴板，请稍后重试")); return;
-    }
-    m_clipboard = std::move(items);
-    m_clipboardIsCut = false;
-    CDuiString tip;
-    tip.Format(_T("已复制 %d 项 — 切换到目标面板后点「粘贴」（可跨左右面板）"),
-        static_cast<int>(m_clipboard.size()));
-    UpdateStatus(tip.GetData());
-    ApplyCopyUiState();
-}
+// Command-bar buttons and shortcuts: the same canonical Windows verbs as Explorer.
+void CMainWnd::OnCopyClicked() { RunFileCommand(FileCommand::Copy); }
 
 void CMainWnd::OnCopyPaths()
 {
@@ -228,54 +153,7 @@ void CMainWnd::OnCopyPaths()
     UpdateStatus(ok ? _T("已复制完整路径") : _T("无法访问系统剪贴板"));
 }
 
-void CMainWnd::OnPasteClicked()
-{
-    if (m_shellHistoryPending) { UpdateStatus(_T("正在完成 Windows 文件操作，请稍候")); return; }
-    if (!ReadFileClipboard(m_clipboard, m_clipboardIsCut)) {
-        UpdateStatus(_T("剪贴板为空 — 先选中项目并点「复制」"));
-        return;
-    }
-    if (m_currentPath.empty() || IsThisPcPath(m_currentPath)) {
-        UpdateStatus(_T("当前目录无效"));
-        return;
-    }
-
-    for (const auto& it : m_clipboard) {
-        if (!it.isDir) continue;
-        std::wstring src = NormalizePath(it.path);
-        std::wstring dst = NormalizePath(m_currentPath);
-        if (src.empty() || dst.empty()) continue;
-        if (_wcsicmp(src.c_str(), dst.c_str()) == 0) {
-            UpdateStatus(_T("不能粘贴到自身"));
-            return;
-        }
-        std::wstring prefix = src;
-        if (prefix.back() != L'\\') prefix.push_back(L'\\');
-        if (dst.size() >= prefix.size()
-            && _wcsnicmp(dst.c_str(), prefix.c_str(), static_cast<int>(prefix.size())) == 0) {
-            UpdateStatus(_T("不能粘贴到源文件夹内部"));
-            return;
-        }
-    }
-
-    const bool move = m_clipboardIsCut;
-    std::vector<std::wstring> sources;
-    for (const auto& it : m_clipboard) {
-        // Moving an item into the folder it already lives in is a no-op in Explorer too.
-        if (move && PathEquals(ParentPath(it.path), m_currentPath)) continue;
-        sources.push_back(it.path);
-    }
-    if (sources.empty()) { UpdateStatus(_T("项目已在当前文件夹中")); return; }
-    if (move) {
-        m_clipboard.clear();
-        m_clipboardIsCut = false;
-        ApplyCopyUiState();
-    }
-    // Copy and cut+paste both run in the Windows copy engine: Explorer's own progress
-    // dialog, replace/skip conflict dialog and pause/cancel. No status-bar progress text.
-    StartFileOperation(move ? ShellFileOps::Kind::Move : ShellFileOps::Kind::Copy,
-        std::move(sources), m_currentPath);
-}
+void CMainWnd::OnPasteClicked() { RunFileCommand(FileCommand::Paste); }
 
 void CMainWnd::OnCancelCopyClicked()
 {
@@ -286,71 +164,19 @@ void CMainWnd::OnCancelCopyClicked()
 
 void CMainWnd::OnDeleteClicked(bool permanent)
 {
-    if (m_shellHistoryPending) { UpdateStatus(_T("正在完成 Windows 文件操作，请稍候")); return; }
-    std::vector<ClipboardItem> items;
-    CollectSelectedItems(items);
-    if (items.empty()) {
-        UpdateStatus(_T("请先选中要删除的项目"));
-        return;
-    }
-    DeletePaths(items, permanent);
-}
-
-void CMainWnd::DeletePaths(const std::vector<ClipboardItem>& items, bool permanent)
-{
-    if (items.empty()) return;
-    if (permanent) {
-        CDuiString msg;
-        if (items.size() == 1) {
-            msg.Format(_T("确定将「%s」永久删除吗？\n\n该项目不会进入回收站，无法通过资源管理器还原。"),
-                GetLeafName(items[0].path).c_str());
-        } else {
-            msg.Format(_T("确定将选中的 %d 项永久删除吗？\n\n这些项目不会进入回收站。"),
-                static_cast<int>(items.size()));
-        }
-        if (::MessageBoxW(m_hWnd, msg.GetData(), L"FastFile - 确认删除",
-            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) {
-            UpdateStatus(_T("已取消删除"));
-            return;
-        }
-    }
-    std::vector<std::wstring> sources;
-    for (const auto& item : items) sources.push_back(item.path);
-    // Recycle / permanent delete use the same native engine and progress dialog as copy.
-    StartFileOperation(permanent ? ShellFileOps::Kind::Delete : ShellFileOps::Kind::Recycle,
-        std::move(sources));
-}
-
-DWORD CMainWnd::DeleteOperationFlags(bool permanent)
-{
-    // Keep Shell error/elevation UI available. Only routine confirmation is
-    // suppressed; WANTNUKEWARNING still warns when recycling is impossible.
-    return ShellFileOps::OperationFlags(permanent ? ShellFileOps::Kind::Delete : ShellFileOps::Kind::Recycle, true);
-}
-
-bool CMainWnd::DeleteItems(const std::vector<ClipboardItem>& items, bool permanent,
-    std::vector<std::wstring>* completed)
-{
-    // Synchronous variant on the calling (UI) thread; the interactive ACL checks use it to
-    // observe the Windows permission dialog. User commands go through DeletePaths().
-    if (completed) completed->clear();
-    if (items.empty()) return false;
-    ShellFileOps::Request request;
-    request.kind = permanent ? ShellFileOps::Kind::Delete : ShellFileOps::Kind::Recycle;
-    for (const auto& item : items) request.sources.push_back(item.path);
-    request.owner = m_hWnd;
-    request.interactive = m_fileOpsInteractive;
-    const auto result = ShellFileOps::Perform(request);
-    m_lastFileOperation = result;
-    if (completed) for (const auto& pair : result.completed) completed->push_back(pair.first);
-    const bool all = SUCCEEDED(result.hr) && !result.aborted && result.completed.size() == items.size();
-    if (!all) UpdateStatus(DescribeFileOperation(result).c_str());
-    return all;
+    // Windows' own delete: recycle (Shift = permanent) with Windows' confirmation rules.
+    RunFileCommand(permanent ? FileCommand::DeletePermanent : FileCommand::Delete);
 }
 
 void CMainWnd::OnRenameClicked()
 {
-    if (m_shellHistoryPending) { UpdateStatus(_T("正在完成 Windows 文件操作，请稍候")); return; }
+    // The hosted Windows view renames in place with its own edit (IFolderView2::DoRename),
+    // exactly like F2 in Explorer, including multi-item rename.
+    if (!IsTreeKeyboardFocus() && m_shellBrowser && m_shellBrowser->IsCreated() && m_shellBrowser->IsVisible()) {
+        if (m_shellBrowser->SelectedCount() <= 0) UpdateStatus(_T("请先选中要重命名的项目"));
+        else if (!m_shellBrowser->BeginRename()) UpdateStatus(_T("无法启动 Windows 原生重命名"));
+        return;
+    }
     std::vector<ClipboardItem> items;
     CollectSelectedItems(items);
     if (items.empty()) {
@@ -366,15 +192,6 @@ void CMainWnd::OnRenameClicked()
         std::wstring name;
         if (PromptText(m_hWnd, L"重命名文件夹", L"文件夹名称：", GetLeafName(items[0].path).c_str(), name) &&
             RenameItem(items[0], name)) NavigateToNow(JoinPath(ParentPath(items[0].path), name), true);
-        return;
-    }
-
-    if (m_shellBrowser && m_shellBrowser->IsCreated() && m_shellBrowser->IsVisible()) {
-        m_pendingShellRename = items[0].path;
-        if (!m_shellBrowser->BeginRename()) {
-            m_pendingShellRename.clear();
-            UpdateStatus(_T("无法启动 Windows 原生重命名"));
-        }
         return;
     }
 
@@ -505,10 +322,7 @@ void CMainWnd::CommitInlineRename()
     ClipboardItem item;
     item.path = oldPath;
     item.isDir = wasDirectory;
-    if (RenameItem(item, entered)) {
-        UpdateStatus(_T("重命名完成（Ctrl+Z 可撤销）"));
-        RefreshListing();
-    }
+    if (RenameItem(item, entered)) RefreshListing();
 }
 
 void CMainWnd::CancelInlineRename()
@@ -525,50 +339,49 @@ void CMainWnd::CancelInlineRename()
     UpdateStatus(_T("已取消重命名"));
 }
 
+// The tree and FastFile's search list have no Shell view for the native in-place edit, so
+// they collect the name in FastFile's edit and let the Windows engine rename the item
+// (IFileOperation::RenameItem) with an undo record in the system history, so Ctrl+Z (here or
+// from the folder menu's 撤销) restores it like an Explorer rename.
 bool CMainWnd::RenameItem(const ClipboardItem& item, const std::wstring& newName)
 {
     std::wstring parent = ParentPath(item.path);
     if (parent.empty()) parent = item.path; // shouldn't happen
-    std::wstring dest = JoinPath(parent, newName);
-    if (::GetFileAttributesW(dest.c_str()) != INVALID_FILE_ATTRIBUTES) {
+    const std::wstring dest = JoinPath(parent, newName);
+    if (::GetFileAttributesW(dest.c_str()) != INVALID_FILE_ATTRIBUTES && !PathEquals(dest, item.path)) {
         UpdateStatus(_T("目标名称已存在"));
         return false;
     }
-    if (!::MoveFileW(item.path.c_str(), dest.c_str())) {
+    IShellItem* shellItem = nullptr;
+    IFileOperation* operation = nullptr;
+    HRESULT hr = ::SHCreateItemFromParsingName(item.path.c_str(), nullptr, IID_PPV_ARGS(&shellItem));
+    if (SUCCEEDED(hr)) hr = ::CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&operation));
+    if (SUCCEEDED(hr)) {
+        DWORD flags = FOF_ALLOWUNDO | FOFX_ADDUNDORECORD | FOFX_SHOWELEVATIONPROMPT | FOF_NOCONFIRMMKDIR;
+        if (!m_fileOpsInteractive) flags = FOF_ALLOWUNDO | FOFX_ADDUNDORECORD | FOF_SILENT | FOF_NOERRORUI | FOF_NOCONFIRMATION;
+        hr = operation->SetOperationFlags(flags);
+    }
+    if (SUCCEEDED(hr)) hr = operation->SetOwnerWindow(m_hWnd);
+    if (SUCCEEDED(hr)) hr = operation->RenameItem(shellItem, newName.c_str(), nullptr);
+    if (SUCCEEDED(hr)) hr = operation->PerformOperations();
+    BOOL aborted = FALSE;
+    if (SUCCEEDED(hr) && operation) operation->GetAnyOperationsAborted(&aborted);
+    if (operation) operation->Release();
+    if (shellItem) shellItem->Release();
+    if (FAILED(hr) || aborted || ::GetFileAttributesW(dest.c_str()) == INVALID_FILE_ATTRIBUTES) {
         CDuiString tip;
-        tip.Format(_T("重命名失败 (%lu)"), ::GetLastError());
-        UpdateStatus(tip.GetData());
+        tip.Format(_T("重命名未完成 (0x%08X)"), static_cast<unsigned>(hr));
+        UpdateStatus(aborted ? _T("已取消重命名") : tip.GetData());
         return false;
     }
-    PushUndo(UndoRecord::Kind::Rename, item.path, dest);
+    PushUndoRename(item.path, dest);
+    UpdateStatus(_T("重命名完成（Ctrl+Z 可撤销）"));
     return true;
 }
 
-void CMainWnd::OnNewFolderClicked()
-{
-    if (m_shellHistoryPending) { UpdateStatus(_T("正在完成 Windows 文件操作，请稍候")); return; }
-    CreateNewFolder();
-}
+void CMainWnd::OnNewFolderClicked() { RunFileCommand(FileCommand::NewFolder); }
 
-void CMainWnd::OnCutClicked()
-{
-    std::vector<ClipboardItem> items;
-    CollectSelectedItems(items);
-    if (items.empty()) {
-        UpdateStatus(_T("请先选择要剪切的文件或文件夹"));
-        return;
-    }
-    if (!PublishFileClipboard(items, true)) {
-        UpdateStatus(_T("无法访问系统剪贴板，请稍后重试")); return;
-    }
-    m_clipboard = std::move(items);
-    m_clipboardIsCut = true;
-    CDuiString tip;
-    tip.Format(_T("已剪切 %d 项 — 切换到目标目录后点「粘贴」即可移动"),
-        static_cast<int>(m_clipboard.size()));
-    UpdateStatus(tip.GetData());
-    ApplyCopyUiState();
-}
+void CMainWnd::OnCutClicked() { RunFileCommand(FileCommand::Cut); }
 
 void CMainWnd::OnShareClicked()
 {
@@ -608,37 +421,6 @@ void CMainWnd::OnShareClicked()
     } else {
         UpdateStatus(_T("共享不可用，请使用右键菜单"));
     }
-}
-
-bool CMainWnd::CreateNewFolder()
-{
-    if (m_currentPath.empty()) {
-        UpdateStatus(_T("当前目录无效"));
-        return false;
-    }
-    std::wstring name = L"新建文件夹";
-    std::wstring entered;
-    if (!PromptText(m_hWnd, L"新建文件夹", L"文件夹名称：", name.c_str(), entered)) {
-        UpdateStatus(_T("已取消新建"));
-        return false;
-    }
-    if (!FastFileCore::IsValidLeafName(entered)) {
-        UpdateStatus(_T("名称无效"));
-        return false;
-    }
-    std::wstring dest = UniqueDestPath(JoinPath(m_currentPath, entered));
-    if (!::CreateDirectoryW(dest.c_str(), nullptr)) {
-        CDuiString tip;
-        tip.Format(_T("创建失败 (%lu)"), ::GetLastError());
-        UpdateStatus(tip.GetData());
-        return false;
-    }
-    CDuiString tip;
-    tip.Format(_T("已创建: %s（Ctrl+Z 可撤销）"), GetLeafName(dest).c_str());
-    UpdateStatus(tip.GetData());
-    PushUndo(UndoRecord::Kind::CreateFolder, std::wstring(), dest);
-    RefreshListing();
-    return true;
 }
 
 bool CMainWnd::PromptText(HWND owner, const wchar_t* title, const wchar_t* prompt,
@@ -791,45 +573,17 @@ void CMainWnd::OnFileOperationFinished(WPARAM id, LPARAM resultPointer)
         ::PostMessageW(m_hWnd, WM_CLOSE, 0, 0);
 }
 
-void CMainWnd::PushHistoryRecord(UndoRecord record)
-{
-    ClearRedoHistory(); m_historyStarted = true;
-    m_undoStack.push_back(std::move(record));
-    constexpr size_t kMaxUndoRecords = 50;
-    if (m_undoStack.size() > kMaxUndoRecords) {
-        m_undoStack.erase(m_undoStack.begin(),
-            m_undoStack.begin() + (m_undoStack.size() - kMaxUndoRecords));
-    }
-}
-
 void CMainWnd::ApplyFileOperationResult(const ShellFileOps::Result& result)
 {
     using Kind = ShellFileOps::Kind;
-    if (!result.completed.empty()) {
-        UndoRecord record;
-        switch (result.kind) {
-        case Kind::Copy:
-        case Kind::Move:
-            // One undo step for the whole batch, built from the engine's reported results
-            // (actual names such as "- 副本"), so a single Ctrl+Z puts every item back.
-            record.kind = result.kind == Kind::Move ? UndoRecord::Kind::Move : UndoRecord::Kind::Copy;
-            record.moved = result.completed;
-            PushHistoryRecord(std::move(record));
-            break;
-        case Kind::Recycle:
-            record.kind = UndoRecord::Kind::ShellDelete;
-            record.moved = result.completed;
-            PushHistoryRecord(std::move(record));
-            break;
-        case Kind::Delete:
-            ClearRedoHistory();
-            break;
-        }
+    if (result.kind == Kind::Copy && !result.completed.empty()) {
+        PushUndoCopy(result.completed);
     }
+    // The operation carried FOFX_ADDUNDORECORD, so it is already in the Windows undo history.
     UpdateStatus(DescribeFileOperation(result).c_str());
     // ExplorerBrowser follows change notifications itself; refresh FastFile's own state
     // (details pane, tree, a deleted current folder) for the affected folders.
-    if (result.kind == Kind::Recycle || result.kind == Kind::Delete) RefreshAfterHistory();
+    if (result.kind == Kind::Recycle || result.kind == Kind::Delete) RefreshAfterFileChange();
     else if (result.kind == Kind::Move || PathEquals(m_currentPath, result.destination)) RefreshListing();
 }
 
@@ -922,198 +676,10 @@ bool CMainWnd::DeleteTreePermanent(const std::wstring& path)
     return r == 0 && !op.fAnyOperationsAborted;
 }
 
-// ---- Undo (Ctrl+Z) -----------------------------------------------------
-
-void CMainWnd::PushUndo(UndoRecord::Kind kind, std::wstring from, std::wstring to)
+void CMainWnd::RefreshAfterFileChange()
 {
-    if (from.empty() && to.empty()) { ClearRedoHistory(); m_historyStarted = true; return; }
-    PushHistoryRecord(UndoRecord{ kind, std::move(from), std::move(to) });
-}
-
-void CMainWnd::TrackShellRename(WPARAM change, LPARAM process)
-{
-    PIDLIST_ABSOLUTE* paths = nullptr;
-    LONG event = 0;
-    HANDLE lock = SHChangeNotification_Lock(reinterpret_cast<HANDLE>(change), DWORD(process), &paths, &event);
-    if (!lock) return;
-    std::wstring from, to;
-    PWSTR path = nullptr;
-    if (paths && paths[0] && SUCCEEDED(SHGetNameFromIDList(paths[0], SIGDN_FILESYSPATH, &path))) {
-        from = path; CoTaskMemFree(path); path = nullptr;
-    }
-    if (paths && paths[1] && SUCCEEDED(SHGetNameFromIDList(paths[1], SIGDN_FILESYSPATH, &path))) {
-        to = path; CoTaskMemFree(path);
-    }
-    SHChangeNotification_Unlock(lock);
-    if (_wcsicmp(from.c_str(), to.c_str()) == 0) return;
-    for (auto i = m_appRenameNotifications.begin(); i != m_appRenameNotifications.end(); ++i) {
-        if (_wcsicmp(i->first.c_str(), from.c_str()) == 0 && _wcsicmp(i->second.c_str(), to.c_str()) == 0) {
-            m_appRenameNotifications.erase(i); return;
-        }
-    }
-    if (m_shellHistoryPending || m_copyRunning || !m_shellBrowser || !m_shellBrowser->IsVisible()) return;
-    bool selected = false;
-    for (const auto& path : m_recentShellSelection)
-        selected = selected || _wcsicmp(path.c_str(), from.c_str()) == 0 || _wcsicmp(path.c_str(), to.c_str()) == 0;
-    const bool requested = !m_pendingShellRename.empty() &&
-        _wcsicmp(NormalizePath(from).c_str(), NormalizePath(m_pendingShellRename).c_str()) == 0;
-    const bool inCurrentFolder = _wcsicmp(ParentPath(from).c_str(), NormalizePath(m_currentPath).c_str()) == 0;
-    if (!from.empty() && !to.empty() && (requested || (selected && inCurrentFolder)) &&
-        _wcsicmp(ParentPath(from).c_str(), ParentPath(to).c_str()) == 0) {
-        m_pendingShellRename.clear();
-        PushUndo(UndoRecord::Kind::ShellRename, std::move(from), std::move(to));
-    }
-}
-
-void CMainWnd::ClearRedoHistory()
-{
-    // Backup folders are created by copy undo, contain only those copies, and are
-    // kept until redo is discarded. Never follow a substituted reparse directory.
-    for (const auto& record : m_redoStack) {
-        for (const auto& pair : record.backups) {
-            const auto folder = ParentPath(pair.second);
-            const DWORD attributes = GetFileAttributesW(folder.c_str());
-            if (attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
-                DeleteTreePermanent(pair.second);
-                RemoveDirectoryW(folder.c_str());
-            }
-        }
-    }
-    m_redoStack.clear();
-}
-
-bool CMainWnd::ReplayHistory(UndoRecord& record, bool redo)
-{
-    auto exists = [](const std::wstring& path) { return GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES; };
-    auto relocate = [&](const std::wstring& from, const std::wstring& to) {
-        if (!exists(from)) return exists(to); // retry after a partial operation
-        if (exists(to)) return false; // never overwrite an unrelated replacement
-        return MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_COPY_ALLOWED) != FALSE;
-    };
-    switch (record.kind) {
-    case UndoRecord::Kind::Rename: {
-        const auto& from = redo ? record.from : record.to;
-        const auto& to = redo ? record.to : record.from;
-        if (!relocate(from, to)) return false;
-        m_appRenameNotifications.emplace_back(from, to);
-        if (m_appRenameNotifications.size() > 32) m_appRenameNotifications.erase(m_appRenameNotifications.begin());
-        SHChangeNotify(SHCNE_RENAMEITEM, SHCNF_PATHW | SHCNF_FLUSH, from.c_str(), to.c_str());
-        return true;
-    }
-    case UndoRecord::Kind::CreateFolder:
-        return redo ? CreateDirectoryW(record.to.c_str(), nullptr) != FALSE
-                    : RemoveDirectoryW(record.to.c_str()) != FALSE;
-    case UndoRecord::Kind::Move: {
-        bool ok = true;
-        if (redo) {
-            for (const auto& pair : record.moved) ok = relocate(pair.first, pair.second) && ok;
-        } else {
-            for (auto i = record.moved.rbegin(); i != record.moved.rend(); ++i)
-                ok = relocate(i->second, i->first) && ok;
-        }
-        return ok;
-    }
-    case UndoRecord::Kind::Copy: {
-        if (record.backups.empty()) {
-            for (const auto& pair : record.moved) {
-                GUID guid{}; wchar_t id[40]{};
-                if (FAILED(CoCreateGuid(&guid))) return false;
-                StringFromGUID2(guid, id, _countof(id));
-                const auto folder = ParentPath(pair.second) + L"\\.FastFileUndo-" + id;
-                record.backups.emplace_back(pair.second, folder + L"\\item");
-            }
-        }
-        bool ok = true;
-        for (const auto& pair : record.backups) {
-            const auto folder = ParentPath(pair.second);
-            if (!redo) {
-                const DWORD attributes = GetFileAttributesW(folder.c_str());
-                if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) return false;
-                if (attributes == INVALID_FILE_ATTRIBUTES && !CreateDirectoryW(folder.c_str(), nullptr)) return false;
-                SetFileAttributesW(folder.c_str(), FILE_ATTRIBUTE_HIDDEN);
-            }
-            ok = (redo ? relocate(pair.second, pair.first) : relocate(pair.first, pair.second)) && ok;
-            if (redo) RemoveDirectoryW(folder.c_str());
-        }
-        return ok;
-    }
-    case UndoRecord::Kind::ShellRename:
-    case UndoRecord::Kind::ShellDelete: {
-        if (!m_shellBrowser) return false;
-        m_pendingShellRename.clear();
-        if (record.kind == UndoRecord::Kind::ShellRename) {
-            if (!exists(redo ? record.from : record.to) || exists(redo ? record.to : record.from)) return false;
-        } else {
-            for (const auto& pair : record.moved) if (exists(pair.first) != redo) return false;
-        }
-        // Change notifications may arrive after the completion timer. Keep the
-        // expected rename excluded until its notification is consumed, so an
-        // undo is never mistaken for a new user rename that clears redo.
-        const bool rename = record.kind == UndoRecord::Kind::ShellRename;
-        const std::pair<std::wstring, std::wstring> notification{
-            redo ? record.from : record.to, redo ? record.to : record.from};
-        if (rename) m_appRenameNotifications.push_back(notification);
-        m_shellHistoryPending = true; m_shellHistoryRedo = redo;
-        if (!m_shellBrowser->InvokeHistory(redo)) {
-            m_shellHistoryPending = false;
-            if (rename) {
-                auto i = std::find(m_appRenameNotifications.begin(), m_appRenameNotifications.end(), notification);
-                if (i != m_appRenameNotifications.end()) m_appRenameNotifications.erase(i);
-            }
-            return false;
-        }
-        // Shell menu verbs can post the operation even when NOASYNC is supplied.
-        // Commit the history cursor only after the filesystem confirms completion.
-        m_shellHistoryStarted = GetTickCount();
-        SetTimer(m_hWnd, kTimerShellHistory, 50, nullptr);
-        return true;
-    }
-    }
-    return false;
-}
-
-void CMainWnd::OnUndo()
-{
-    if (m_shellHistoryPending) { UpdateStatus(_T("正在完成 Windows 撤销/重做，请稍候")); return; }
-    if (m_copyRunning.load()) { UpdateStatus(_T("有 Windows 文件操作在进行，完成后再撤销")); return; }
-    if (m_undoStack.empty()) {
-        if (!m_historyStarted && m_shellBrowser && m_shellBrowser->InvokeHistory(false)) {
-            RefreshListing(); UpdateStatus(_T("已撤销 Windows 文件操作"));
-        } else UpdateStatus(_T("没有可撤销的操作"));
-        return;
-    }
-    auto& record = m_undoStack.back();
-    if (ReplayHistory(record, false)) {
-        if (m_shellHistoryPending) { UpdateStatus(_T("正在撤销 Windows 文件操作…")); return; }
-        m_redoStack.push_back(std::move(record)); m_undoStack.pop_back();
-        UpdateStatus(_T("已撤销（Ctrl+Y 可重做）"));
-    } else UpdateStatus(_T("撤销未完成：项目已变化、存在同名项目或无法访问，请检查后重试"));
-    RefreshAfterHistory();
-}
-
-void CMainWnd::OnRedo()
-{
-    if (m_shellHistoryPending) { UpdateStatus(_T("正在完成 Windows 撤销/重做，请稍候")); return; }
-    if (m_copyRunning.load()) { UpdateStatus(_T("有 Windows 文件操作在进行，完成后再重做")); return; }
-    if (m_redoStack.empty()) {
-        if (!m_historyStarted && m_shellBrowser && m_shellBrowser->InvokeHistory(true)) {
-            RefreshListing(); UpdateStatus(_T("已重做 Windows 文件操作"));
-        } else UpdateStatus(_T("没有可重做的操作"));
-        return;
-    }
-    auto& record = m_redoStack.back();
-    if (ReplayHistory(record, true)) {
-        if (m_shellHistoryPending) { UpdateStatus(_T("正在重做 Windows 文件操作…")); return; }
-        m_undoStack.push_back(std::move(record)); m_redoStack.pop_back();
-        UpdateStatus(_T("已重做"));
-    } else UpdateStatus(_T("重做未完成：项目已变化、存在同名项目或无法访问，请检查后重试"));
-    RefreshAfterHistory();
-}
-
-void CMainWnd::RefreshAfterHistory()
-{
-    // Undoing a copied/new folder can remove the directory currently being viewed.
-    // Return to its nearest existing parent instead of retaining an invalid tab path.
+    // A removed directory can be the one currently being viewed. Return to its nearest
+    // existing parent instead of retaining an invalid tab path.
     if (!IsThisPcPath(m_currentPath) && GetFileAttributesW(m_currentPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
         std::wstring parent = ParentPath(m_currentPath);
         while (!parent.empty() && !IsThisPcPath(parent) && GetFileAttributesW(parent.c_str()) == INVALID_FILE_ATTRIBUTES) {
@@ -1123,26 +689,6 @@ void CMainWnd::RefreshAfterHistory()
     } else RefreshListing();
 }
 
-void CMainWnd::FinishShellHistory()
-{
-    if (!m_shellHistoryPending) return;
-    auto& source = m_shellHistoryRedo ? m_redoStack : m_undoStack;
-    auto& target = m_shellHistoryRedo ? m_undoStack : m_redoStack;
-    if (source.empty()) { KillTimer(m_hWnd, kTimerShellHistory); m_shellHistoryPending = false; return; }
-    const auto& record = source.back();
-    auto exists = [](const std::wstring& path) { return GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES; };
-    bool complete = true;
-    if (record.kind == UndoRecord::Kind::ShellRename)
-        complete = exists(m_shellHistoryRedo ? record.to : record.from) &&
-            !exists(m_shellHistoryRedo ? record.from : record.to);
-    else for (const auto& pair : record.moved) complete = (exists(pair.first) != m_shellHistoryRedo) && complete;
-    if (complete || GetTickCount() - m_shellHistoryStarted > 30000) {
-        KillTimer(m_hWnd, kTimerShellHistory); m_shellHistoryPending = false;
-        if (complete) { target.push_back(std::move(source.back())); source.pop_back(); }
-        RefreshAfterHistory();
-        UpdateStatus(complete ? _T("Windows 文件操作已完成") : _T("Windows 文件操作未完成，请检查提示后重试"));
-    }
-}
 // ---- Keyboard helpers --------------------------------------------------
 
 void CMainWnd::FocusSearchBox()
@@ -1211,24 +757,112 @@ void CMainWnd::CycleKeyboardPane(bool reverse)
 
 void CMainWnd::ShowPropertiesForSelection()
 {
+    // Windows' own 属性 verb: the selected items' sheet, or the folder's when nothing is
+    // selected (Alt+Enter on the background in Explorer).
     std::vector<ClipboardItem> items;
     CollectSelectedItems(items);
-
-    const std::wstring target = items.empty() ? m_currentPath : items.front().path;
-    if (target.empty()) {
+    const bool viewSelection = !IsTreeKeyboardFocus() && m_shellBrowser && m_shellBrowser->IsCreated()
+        && m_shellBrowser->IsVisible() && m_shellBrowser->SelectedCount() > 0;
+    const bool selection = viewSelection || (!items.empty()
+        && !(m_shellBrowser && m_shellBrowser->IsCreated() && m_shellBrowser->IsVisible() && !IsTreeKeyboardFocus()));
+    if (!InvokeNativeVerb(L"properties", selection ? NativeScope::Selection : NativeScope::Background))
         UpdateStatus(_T("没有可显示属性的对象"));
-        return;
-    }
+}
 
-    SHELLEXECUTEINFOW sei = {};
-    sei.cbSize = sizeof(sei);
-    sei.fMask = SEE_MASK_INVOKEIDLIST | SEE_MASK_FLAG_NO_UI;
-    sei.lpVerb = L"properties";
-    sei.lpFile = target.c_str();
-    sei.nShow = SW_SHOWNORMAL;
-    if (!::ShellExecuteExW(&sei)) {
-        CDuiString tip;
-        tip.Format(_T("无法显示属性 (错误 %lu)"), ::GetLastError());
-        UpdateStatus(tip.GetData());
+void CMainWnd::PushUndoRename(const std::wstring& oldPath, const std::wstring& newPath)
+{
+    m_undoStack.push_back({ UndoKind::Rename, oldPath, newPath, {} });
+    m_redoStack.clear();
+}
+
+void CMainWnd::PushUndoCopy(const std::vector<std::pair<std::wstring, std::wstring>>& completedCopies)
+{
+    std::vector<std::wstring> dests;
+    dests.reserve(completedCopies.size());
+    for (const auto& pair : completedCopies) {
+        if (!pair.second.empty()) dests.push_back(pair.second);
     }
+    if (!dests.empty()) {
+        m_undoStack.push_back({ UndoKind::CopyFiles, L"", L"", std::move(dests) });
+        m_redoStack.clear();
+    }
+}
+
+bool CMainWnd::ApplyUndoEntry(const UndoEntry& entry, bool isRedo)
+{
+    if (entry.kind == UndoKind::Rename) {
+        const std::wstring current = isRedo ? entry.oldPath : entry.newPath;
+        const std::wstring target = isRedo ? entry.newPath : entry.oldPath;
+        const std::wstring targetLeaf = GetLeafName(target);
+        if (::GetFileAttributesW(current.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            UpdateStatus(isRedo ? _T("重做失败：原文件不存在") : _T("撤销失败：当前文件不存在"));
+            return false;
+        }
+        IShellItem* shellItem = nullptr;
+        IFileOperation* operation = nullptr;
+        HRESULT hr = ::SHCreateItemFromParsingName(current.c_str(), nullptr, IID_PPV_ARGS(&shellItem));
+        if (SUCCEEDED(hr)) hr = ::CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&operation));
+        if (SUCCEEDED(hr)) {
+            DWORD flags = FOF_ALLOWUNDO | FOFX_ADDUNDORECORD | FOFX_SHOWELEVATIONPROMPT | FOF_NOCONFIRMMKDIR;
+            if (!m_fileOpsInteractive) flags = FOF_ALLOWUNDO | FOFX_ADDUNDORECORD | FOF_SILENT | FOF_NOERRORUI | FOF_NOCONFIRMATION;
+            hr = operation->SetOperationFlags(flags);
+        }
+        if (SUCCEEDED(hr)) hr = operation->SetOwnerWindow(m_hWnd);
+        if (SUCCEEDED(hr)) hr = operation->RenameItem(shellItem, targetLeaf.c_str(), nullptr);
+        if (SUCCEEDED(hr)) hr = operation->PerformOperations();
+        BOOL aborted = FALSE;
+        if (SUCCEEDED(hr) && operation) operation->GetAnyOperationsAborted(&aborted);
+        if (operation) operation->Release();
+        if (shellItem) shellItem->Release();
+        if (FAILED(hr) || aborted) {
+            UpdateStatus(isRedo ? _T("重做重命名失败") : _T("撤销重命名失败"));
+            return false;
+        }
+        RefreshListing();
+        UpdateStatus(isRedo ? _T("已重做重命名") : _T("已撤销重命名"));
+        return true;
+    }
+    if (entry.kind == UndoKind::CopyFiles) {
+        if (isRedo) {
+            UpdateStatus(_T("复制操作暂不支持重做"));
+            return false;
+        }
+        IFileOperation* operation = nullptr;
+        HRESULT hr = ::CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&operation));
+        if (FAILED(hr) || !operation) {
+            UpdateStatus(_T("撤销复制失败：无法创建文件操作组件"));
+            return false;
+        }
+        DWORD flags = FOFX_RECYCLEONDELETE | FOF_ALLOWUNDO | FOFX_ADDUNDORECORD | FOFX_SHOWELEVATIONPROMPT | FOF_NOCONFIRMATION;
+        if (!m_fileOpsInteractive) flags = FOF_ALLOWUNDO | FOF_SILENT | FOF_NOERRORUI | FOF_NOCONFIRMATION;
+        operation->SetOperationFlags(flags);
+        operation->SetOwnerWindow(m_hWnd);
+        int queued = 0;
+        for (const auto& path : entry.copiedDests) {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(::SHCreateItemFromParsingName(path.c_str(), nullptr, IID_PPV_ARGS(&item)))) {
+                if (SUCCEEDED(operation->DeleteItem(item, nullptr))) {
+                    ++queued;
+                }
+                item->Release();
+            }
+        }
+        if (queued == 0) {
+            operation->Release();
+            UpdateStatus(_T("撤销复制失败：副本已不存在"));
+            return false;
+        }
+        hr = operation->PerformOperations();
+        BOOL aborted = FALSE;
+        operation->GetAnyOperationsAborted(&aborted);
+        operation->Release();
+        if (FAILED(hr) || aborted) {
+            UpdateStatus(_T("撤销复制失败"));
+            return false;
+        }
+        RefreshListing();
+        UpdateStatus(_T("已撤销复制（已移除副本）"));
+        return true;
+    }
+    return false;
 }

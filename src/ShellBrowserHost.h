@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <Windows.h>
 #include <shobjidl.h>
@@ -27,8 +27,10 @@ public:
     ShellBrowserHost(const ShellBrowserHost&) = delete;
     ShellBrowserHost& operator=(const ShellBrowserHost&) = delete;
 
+    // The hosted view keeps its own Windows context menus: WM_CONTEXTMENU / NM_RCLICK are
+    // never intercepted, so DefView builds, shows and invokes the unmodified classic menu.
     bool Create(HWND parent, const RECT& bounds, UINT navigationMessage,
-        UINT selectionMessage, UINT folderOpenMessage=0, UINT contextMenuMessage=0);
+        UINT selectionMessage, UINT folderOpenMessage=0);
     void Destroy();
     void SetBounds(const RECT& bounds);
     bool Navigate(const std::wstring& path, bool retryPending = false);
@@ -36,16 +38,19 @@ public:
     void PollNavigation();
     void Refresh();
     bool BeginRename();
-    // Starts the view's in-place name edit on the item with this file-system path
-    // (SVSI_EDIT | SVSI_SELECT | SVSI_FOCUSED | SVSI_DESELECTOTHERS), like F2 in Explorer.
-    bool BeginRenameItem(const std::wstring& path);
     bool SelectAll();
     bool ClearSelection();
     bool Focus();
-    bool InvokeHistory(bool redo, bool invoke = true);
     // The current view's own folder-background menu (IShellView::GetItemObject with
     // SVGIO_BACKGROUND): Explorer's 查看 / 排序方式 / 分组依据 / 粘贴 / 撤销 ... entries.
     HRESULT CreateBackgroundContextMenu(IContextMenu** menu) const;
+    // The current view's own selection menu (IShellView::GetItemObject with SVGIO_SELECTION),
+    // the object DefView itself uses for 复制 / 剪切 / 删除 / 属性 on the selected items.
+    HRESULT CreateSelectionContextMenu(IContextMenu** menu) const;
+    // Sites a Shell menu built outside the view (tree, quick-access rows, favourites) on the
+    // hosted ExplorerBrowser, as Explorer sites its navigation-pane menus on the frame, so a
+    // native "打开" browses the hosted view in place instead of launching a new window.
+    bool SiteContextMenu(IUnknown* menu) const;
     HRESULT TranslateAccelerator(MSG* message);
     bool OwnsWindow(HWND window) const;
     bool IsAtPath(const std::wstring& path) const;
@@ -67,6 +72,8 @@ public:
     bool SetSort(int column, bool ascending);
     bool SetGrouping(int mode);
     bool GetSelection(std::vector<std::pair<std::wstring, bool>>& paths) const;
+    // Selected items of the current view, virtual ones included (-1 without a view).
+    int SelectedCount() const;
     bool IsCreated() const { return m_browser != nullptr; }
     // Large / extra-large thumbnail memory cache bounds (LRU; tests shrink them).
     void SetThumbnailCacheLimits(size_t maxBytes, size_t maxEntries);
@@ -84,12 +91,14 @@ private:
     void DetachSelectionEvents();
     void StyleNativeView(IFolderView2* view);
     bool ApplyViewMode(IFolderView2* view);
-    bool ForwardContextMenu(WPARAM source, LPARAM position);
     LRESULT DrawIconItem(NMLVCUSTOMDRAW* draw);
     void ClearItemImages();
     static HBITMAP NormalizeImageAlpha(HBITMAP bitmap);
     void RestoreListSpacing();
     bool InstallListSpacer(HWND list);
+    HIMAGELIST GetSmallImageList();
+    HIMAGELIST GetSystemSmallImageList();
+    int ResolveItemIcon(int index, HIMAGELIST* outIml = nullptr);
     LRESULT DrawListIcon(NMLVCUSTOMDRAW* draw);
     // Thumbnail cache (UI thread): key = item identity + slot size + size / mtime stamp.
     struct ThumbEntry { std::wstring key; HBITMAP bitmap = nullptr; size_t bytes = 0; };
@@ -166,6 +175,7 @@ private:
     bool m_customTileHeight = false;
     HIMAGELIST m_listSpacer=nullptr;
     HIMAGELIST m_shellSmallImages=nullptr;
+    HIMAGELIST m_systemSmallImages=nullptr;
     std::list<ThumbEntry> m_thumbLru;    // front = most recently used
     std::unordered_map<std::wstring, std::list<ThumbEntry>::iterator> m_thumbIndex;
     size_t m_thumbBytes = 0;
@@ -197,7 +207,6 @@ private:
     UINT m_navigationMessage = 0;
     UINT m_selectionMessage = 0;
     UINT m_folderOpenMessage = 0;
-    UINT m_contextMenuMessage = 0;
     FOLDERVIEWMODE m_requestedMode = FVM_DETAILS;
     int m_requestedIconSize = -1;
     std::wstring m_lastNavigation;

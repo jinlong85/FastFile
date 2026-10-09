@@ -16,6 +16,7 @@
 #include <shdispid.h>
 #include <ocidl.h>
 #include <servprov.h>
+#include <shlguid.h>
 
 namespace {
 
@@ -182,6 +183,9 @@ public:
         if (!flags) return E_POINTER;
         // Enumerate hidden objects independently of Explorer's global setting;
         // IncludeObject applies FastFile's own menu preference using NameFolderFilter.
+        // CDB2GVF_NOSELECTVERB must stay: hosting ICommDlgBrowser puts DefView in
+        // common-dialog mode, where it would otherwise *add* a "选择" default verb to
+        // every item menu. With the flag the item menus stay identical to Explorer's.
         *flags = CDB2GVF_SHOWALLFILES | CDB2GVF_NOSELECTVERB;
         return S_OK;
     }
@@ -270,7 +274,7 @@ ShellBrowserHost::ShellBrowserHost() = default;
 ShellBrowserHost::~ShellBrowserHost() { Destroy(); }
 
 bool ShellBrowserHost::Create(HWND parent, const RECT& bounds,
-    UINT navigationMessage, UINT selectionMessage, UINT folderOpenMessage, UINT contextMenuMessage)
+    UINT navigationMessage, UINT selectionMessage, UINT folderOpenMessage)
 {
     if (m_browser || !parent)
         return false;
@@ -279,7 +283,6 @@ bool ShellBrowserHost::Create(HWND parent, const RECT& bounds,
     m_navigationMessage = navigationMessage;
     m_selectionMessage = selectionMessage;
     m_folderOpenMessage = folderOpenMessage;
-    m_contextMenuMessage = contextMenuMessage;
 
     HRESULT hr = ::CoCreateInstance(CLSID_ExplorerBrowser, nullptr, CLSCTX_INPROC_SERVER,
         IID_PPV_ARGS(&m_browser));
@@ -322,6 +325,10 @@ bool ShellBrowserHost::Create(HWND parent, const RECT& bounds,
 void ShellBrowserHost::Destroy()
 {
     RestoreListSpacing();
+    if (m_systemSmallImages) {
+        reinterpret_cast<IImageList*>(m_systemSmallImages)->Release();
+        m_systemSmallImages = nullptr;
+    }
     StopThumbWorker();
     ClearItemImages();
     if (m_listWindow) RemoveWindowSubclass(m_listWindow, ListSubclass, reinterpret_cast<UINT_PTR>(this));
@@ -535,67 +542,6 @@ bool ShellBrowserHost::BeginRename()
     return SUCCEEDED(hr);
 }
 
-bool ShellBrowserHost::BeginRenameItem(const std::wstring& path)
-{
-    if (!m_browser || path.empty())
-        return false;
-    IFolderView2* view = nullptr;
-    if (FAILED(m_browser->GetCurrentView(IID_PPV_ARGS(&view))) || !view)
-        return false;
-    int count = 0, index = -1;
-    view->ItemCount(SVGIO_ALLVIEW, &count);
-    for (int i = 0; i < count && index < 0; ++i) {
-        IShellItem* item = nullptr;
-        if (FAILED(view->GetItem(i, IID_PPV_ARGS(&item))) || !item) continue;
-        PWSTR name = nullptr;
-        if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &name)) && name) {
-            if (::CompareStringOrdinal(name, -1, path.c_str(), -1, TRUE) == CSTR_EQUAL) index = i;
-            ::CoTaskMemFree(name);
-        }
-        item->Release();
-    }
-    HRESULT hr = E_FAIL;
-    if (index >= 0)
-        hr = view->SelectItem(index, SVSI_EDIT | SVSI_SELECT | SVSI_FOCUSED | SVSI_DESELECTOTHERS | SVSI_ENSUREVISIBLE);
-    view->Release();
-    return SUCCEEDED(hr);
-}
-
-bool ShellBrowserHost::InvokeHistory(bool redo, bool invoke)
-{
-    if (!m_browser) return false;
-    IShellView* view = nullptr;
-    if (FAILED(m_browser->GetCurrentView(IID_PPV_ARGS(&view)))) return false;
-    IContextMenu* context = nullptr;
-    HRESULT hr = view->GetItemObject(SVGIO_BACKGROUND, IID_PPV_ARGS(&context));
-    view->Release();
-    if (FAILED(hr)) return false;
-    HMENU menu = CreatePopupMenu();
-    hr = menu ? context->QueryContextMenu(menu, 0, 1, 0x7fff, CMF_NORMAL) : E_OUTOFMEMORY;
-    bool found = false;
-    if (SUCCEEDED(hr)) {
-        for (UINT offset = 0; offset < static_cast<UINT>(HRESULT_CODE(hr)); ++offset) {
-            wchar_t verb[128]{};
-            if (FAILED(context->GetCommandString(offset, GCS_VERBW, nullptr,
-                reinterpret_cast<LPSTR>(verb), _countof(verb)))) continue;
-            if (_wcsicmp(verb, redo ? L"redo" : L"undo") != 0) continue;
-            const UINT state = GetMenuState(menu, offset + 1, MF_BYCOMMAND);
-            if (state == UINT(-1) || (state & (MF_DISABLED | MF_GRAYED))) break;
-            found = true;
-            if (invoke) {
-                CMINVOKECOMMANDINFO info{}; info.cbSize = sizeof(info);
-                info.fMask = CMIC_MASK_NOASYNC;
-                info.hwnd = m_parent; info.lpVerb = MAKEINTRESOURCEA(offset); info.nShow = SW_SHOWNORMAL;
-                found = SUCCEEDED(context->InvokeCommand(&info));
-            }
-            break;
-        }
-    }
-    if (menu) DestroyMenu(menu);
-    context->Release();
-    return found;
-}
-
 HRESULT ShellBrowserHost::CreateBackgroundContextMenu(IContextMenu** menu) const
 {
     if (!menu) return E_POINTER;
@@ -607,6 +553,45 @@ HRESULT ShellBrowserHost::CreateBackgroundContextMenu(IContextMenu** menu) const
     hr = view->GetItemObject(SVGIO_BACKGROUND, IID_PPV_ARGS(menu));
     view->Release();
     return hr;
+}
+
+HRESULT ShellBrowserHost::CreateSelectionContextMenu(IContextMenu** menu) const
+{
+    if (!menu) return E_POINTER;
+    *menu = nullptr;
+    if (!m_browser) return E_UNEXPECTED;
+    IShellView* view = nullptr;
+    HRESULT hr = m_browser->GetCurrentView(IID_PPV_ARGS(&view));
+    if (FAILED(hr) || !view) return FAILED(hr) ? hr : E_FAIL;
+    hr = view->GetItemObject(SVGIO_SELECTION, IID_PPV_ARGS(menu));
+    view->Release();
+    return hr;
+}
+
+int ShellBrowserHost::SelectedCount() const
+{
+    if (!m_browser) return -1;
+    IFolderView* view = nullptr;
+    if (FAILED(m_browser->GetCurrentView(IID_PPV_ARGS(&view))) || !view) return -1;
+    int count = 0;
+    const HRESULT hr = view->ItemCount(SVGIO_SELECTION, &count);
+    view->Release();
+    return SUCCEEDED(hr) ? count : -1;
+}
+
+bool ShellBrowserHost::SiteContextMenu(IUnknown* menu) const
+{
+    if (!menu || !m_browser) return false;
+    IServiceProvider* services = nullptr;
+    IShellBrowser* browser = nullptr;
+    // Only site the menu when the frame really answers for the Shell browser service.
+    if (FAILED(m_browser->QueryInterface(IID_PPV_ARGS(&services))) || !services) return false;
+    const HRESULT hr = services->QueryService(SID_SShellBrowser, IID_PPV_ARGS(&browser));
+    if (browser) browser->Release();
+    bool sited = false;
+    if (SUCCEEDED(hr)) sited = SUCCEEDED(IUnknown_SetSite(menu, services));
+    services->Release();
+    return sited;
 }
 
 bool ShellBrowserHost::SelectAll()
@@ -890,7 +875,14 @@ bool ShellBrowserHost::ApplyViewMode(IFolderView2* view)
     view->GetViewModeAndIconSize(&currentMode,&currentSize);
     UINT dpi=GetDpiForWindow(m_parent);if(!dpi)dpi=96;
     const bool dpiChanged=dpi!=m_dpi;
-    const bool changed=currentMode!=mode || (iconSize>0 && currentSize!=iconSize);
+    const int targetSize = (iconSize > 0) ? iconSize :
+        (mode == FVM_TILE ? 48 :
+         mode == FVM_CONTENT ? 32 :
+         mode == FVM_SMALLICON ? 16 :
+         (mode == FVM_DETAILS || mode == FVM_LIST) ? 16 : -1);
+    const bool sizeChanged = (targetSize > 0 && currentSize != targetSize)
+        || (iconSize > 0 && currentSize != iconSize);
+    const bool changed=currentMode!=mode || sizeChanged;
     // A real change (mode, size, DPI) is batched: the list does not paint the
     // half-switched layout (old rows under new items) and repaints once at the end.
     HWND batch=nullptr;
@@ -929,7 +921,8 @@ bool ShellBrowserHost::ApplyViewMode(IFolderView2* view)
     // (installing it afterwards re-measured every item a second time).
     if (changed && spacerMode && !dpiChanged && batch && !m_listSpacer) InstallListSpacer(batch);
     if (changed) ++m_counters.modeSets;
-    const HRESULT hr = changed ? view->SetViewModeAndIconSize(mode, iconSize) : S_OK;
+    const int applySize = (iconSize > 0) ? iconSize : ((targetSize > 0 && currentSize != targetSize) ? targetSize : iconSize);
+    const HRESULT hr = changed ? view->SetViewModeAndIconSize(mode, applySize) : S_OK;
     m_dpi = GetDpiForWindow(m_parent);
     if (!m_dpi) m_dpi = 96;
     const int previousSlot = m_iconSlot;
@@ -964,6 +957,7 @@ bool ShellBrowserHost::ApplyViewMode(IFolderView2* view)
         m_redrawBatch=nullptr;
         if (IsWindow(batch)) {
             SendMessageW(batch,WM_SETREDRAW,TRUE,0);
+            ListView_RedrawItems(batch, 0, ListView_GetItemCount(batch) - 1);
             // Measured: an extra RDW_UPDATENOW here only moved the paint into the switch
             // call (longer sync, same busy time), so the repaint stays asynchronous.
             RedrawWindow(batch,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_FRAME);
@@ -1048,17 +1042,108 @@ void ShellBrowserHost::StyleNativeView(IFolderView2* view)
     }
 }
 
+HIMAGELIST ShellBrowserHost::GetSystemSmallImageList()
+{
+    if (!m_systemSmallImages) {
+        SHFILEINFOW sfi{};
+        m_systemSmallImages = reinterpret_cast<HIMAGELIST>(
+            SHGetFileInfoW(L"", 0, &sfi, sizeof(sfi), SHGFI_SYSICONINDEX | SHGFI_SMALLICON));
+    }
+    return m_systemSmallImages;
+}
+
+HIMAGELIST ShellBrowserHost::GetSmallImageList()
+{
+    HIMAGELIST sys = GetSystemSmallImageList();
+    if (m_shellSmallImages && m_shellSmallImages != sys && ImageList_GetImageCount(m_shellSmallImages) > 0)
+        return m_shellSmallImages;
+    return sys;
+}
+
+int ShellBrowserHost::ResolveItemIcon(int index, HIMAGELIST* outIml)
+{
+    if (outIml) *outIml = nullptr;
+    HIMAGELIST sys = GetSystemSmallImageList();
+    HIMAGELIST shell = (m_shellSmallImages && m_shellSmallImages != sys && ImageList_GetImageCount(m_shellSmallImages) > 0) ? m_shellSmallImages : nullptr;
+
+    LVITEMW item{}; item.mask = LVIF_IMAGE; item.iItem = index;
+    if (ListView_GetItem(m_listWindow, &item) && item.iImage >= 0) {
+        if (shell && item.iImage < ImageList_GetImageCount(shell)) {
+            if (outIml) *outIml = shell;
+            return item.iImage;
+        }
+    }
+    if (m_viewWindow) {
+        NMLVDISPINFO di{};
+        di.hdr.hwndFrom = m_listWindow;
+        di.hdr.idFrom = GetDlgCtrlID(m_listWindow);
+        di.hdr.code = LVN_GETDISPINFO;
+        di.item.mask = LVIF_IMAGE;
+        di.item.iItem = index;
+        di.item.iSubItem = 0;
+        SendMessageW(m_viewWindow, WM_NOTIFY, di.hdr.idFrom, reinterpret_cast<LPARAM>(&di));
+        if (shell && di.item.iImage >= 0 && di.item.iImage < ImageList_GetImageCount(shell)) {
+            if (outIml) *outIml = shell;
+            return di.item.iImage;
+        }
+    }
+    if (m_browser) {
+        IFolderView2* fv = nullptr;
+        if (SUCCEEDED(m_browser->GetCurrentView(IID_PPV_ARGS(&fv))) && fv) {
+            IShellItem* si = nullptr;
+            if (SUCCEEDED(fv->GetItem(index, IID_PPV_ARGS(&si))) && si) {
+                SFGAOF attrs = 0;
+                si->GetAttributes(SFGAO_FOLDER, &attrs);
+                SHFILEINFO sfi{};
+                int resolved = -1;
+                if (attrs & SFGAO_FOLDER) {
+                    if (SHGetFileInfoW(L"folder", FILE_ATTRIBUTE_DIRECTORY, &sfi, sizeof(sfi),
+                        SHGFI_SYSICONINDEX | SHGFI_USEFILEATTRIBUTES))
+                        resolved = sfi.iIcon;
+                } else {
+                    PWSTR path = nullptr;
+                    if (SUCCEEDED(si->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) {
+                        if (SHGetFileInfoW(path, FILE_ATTRIBUTE_NORMAL, &sfi, sizeof(sfi),
+                            SHGFI_SYSICONINDEX | SHGFI_USEFILEATTRIBUTES))
+                            resolved = sfi.iIcon;
+                        CoTaskMemFree(path);
+                    } else if (SUCCEEDED(si->GetDisplayName(SIGDN_NORMALDISPLAY, &path)) && path) {
+                        if (SHGetFileInfoW(path, FILE_ATTRIBUTE_NORMAL, &sfi, sizeof(sfi),
+                            SHGFI_SYSICONINDEX | SHGFI_USEFILEATTRIBUTES))
+                            resolved = sfi.iIcon;
+                        CoTaskMemFree(path);
+                    }
+                }
+                si->Release();
+                fv->Release();
+                if (resolved >= 0 && sys) {
+                    if (outIml) *outIml = sys;
+                    return resolved;
+                }
+            } else {
+                fv->Release();
+            }
+        }
+    }
+    return -1;
+}
+
 bool ShellBrowserHost::InstallListSpacer(HWND list)
 {
     if (m_listSpacer) return true;
-    HIMAGELIST images=ListView_GetImageList(list,LVSIL_SMALL);
-    int w=0,h=0;
-    if(!images || !ImageList_GetIconSize(images,&w,&h)) return false;
-    m_listSpacer=ImageList_Create(MulDiv(w,96,m_dpi),26,ILC_COLOR32,1,1);
+    HIMAGELIST images = ListView_GetImageList(list, LVSIL_SMALL);
+    int w = 0, h = 0;
+    HIMAGELIST sys = GetSystemSmallImageList();
+    if (images && images != sys && images != m_listSpacer && ImageList_GetIconSize(images, &w, &h) && ImageList_GetImageCount(images) > 0) {
+        m_shellSmallImages = images;
+    } else {
+        m_shellSmallImages = nullptr;
+        w = 16; h = 16;
+    }
+    m_listSpacer=ImageList_Create(MulDiv(16,m_dpi,96),26,ILC_COLOR32,1,1);
     if(!m_listSpacer) return false;
     ++m_counters.spacerSwaps;
     ImageList_SetImageCount(m_listSpacer,1);
-    m_shellSmallImages=images;
     SetWindowLongPtrW(list,GWL_STYLE,GetWindowLongPtrW(list,GWL_STYLE)|LVS_SHAREIMAGELISTS);
     ListView_SetImageList(list,m_listSpacer,LVSIL_SMALL);
     return true;
@@ -1069,8 +1154,9 @@ void ShellBrowserHost::RestoreListSpacing()
     if(!m_listSpacer)return;
     ++m_counters.spacerSwaps;
     const HIMAGELIST spacer=m_listSpacer;m_listSpacer=nullptr;
-    if(m_listWindow && IsWindow(m_listWindow))
-        ListView_SetImageList(m_listWindow,m_shellSmallImages,LVSIL_SMALL);
+    HIMAGELIST restoreIml = m_shellSmallImages ? m_shellSmallImages : GetSmallImageList();
+    if(m_listWindow && IsWindow(m_listWindow) && restoreIml)
+        ListView_SetImageList(m_listWindow,restoreIml,LVSIL_SMALL);
     ImageList_Destroy(spacer);m_shellSmallImages=nullptr;
 }
 
@@ -1078,46 +1164,60 @@ LRESULT ShellBrowserHost::DrawListIcon(NMLVCUSTOMDRAW* draw)
 {
     if(draw->nmcd.dwDrawStage==CDDS_PREPAINT)return CDRF_NOTIFYITEMDRAW;
     if(draw->dwItemType!=LVCDI_ITEM)return CDRF_DODEFAULT;
-    if(draw->nmcd.dwDrawStage==CDDS_ITEMPOSTPAINT) {
-        LVITEMW item{};item.mask=LVIF_IMAGE|LVIF_STATE;item.iItem=int(draw->nmcd.dwItemSpec);
-        item.stateMask=LVIS_OVERLAYMASK|LVIS_CUT;
-        RECT icon{},row{};int w=0,h=0;
-        if(ListView_GetItem(m_listWindow,&item) && item.iImage>=0
-            && ListView_GetItemRect(m_listWindow,item.iItem,&icon,LVIR_ICON)
-            && ListView_GetItemRect(m_listWindow,item.iItem,&row,LVIR_BOUNDS)
-            && ImageList_GetIconSize(m_shellSmallImages,&w,&h))
-            ImageList_DrawEx(m_shellSmallImages,item.iImage,draw->nmcd.hdc,icon.left,
-                row.top+(row.bottom-row.top-h)/2,w,h,CLR_NONE,CLR_NONE,
-                ILD_TRANSPARENT|(item.state&LVIS_OVERLAYMASK)|((item.state&LVIS_CUT)?ILD_BLEND50:0));
+    const int itemIndex = int(draw->nmcd.dwItemSpec);
+    const bool isDetails = (m_requestedMode == FVM_DETAILS)
+        || ((GetWindowLongPtrW(m_listWindow, GWL_STYLE) & LVS_TYPEMASK) == LVS_REPORT);
+
+    if (draw->nmcd.dwDrawStage == CDDS_ITEMPOSTPAINT) {
+        if (!isDetails) return CDRF_DODEFAULT;
+        LVITEMW item{}; item.mask = LVIF_IMAGE | LVIF_STATE; item.iItem = itemIndex;
+        item.stateMask = LVIS_OVERLAYMASK | LVIS_CUT;
+        RECT icon{}, row{}; int w = 0, h = 0;
+        HIMAGELIST iml = nullptr;
+        const int img = ResolveItemIcon(itemIndex, &iml);
+        if (img >= 0 && iml
+            && ListView_GetItem(m_listWindow, &item)
+            && ListView_GetItemRect(m_listWindow, itemIndex, &icon, LVIR_ICON)
+            && ListView_GetItemRect(m_listWindow, itemIndex, &row, LVIR_BOUNDS)
+            && ImageList_GetIconSize(iml, &w, &h)) {
+            ImageList_DrawEx(iml, img, draw->nmcd.hdc, icon.left,
+                row.top + (row.bottom - row.top - h) / 2, w, h, CLR_NONE, CLR_NONE,
+                ILD_TRANSPARENT | (item.state & LVIS_OVERLAYMASK) | ((item.state & LVIS_CUT) ? ILD_BLEND50 : 0));
+        }
         return CDRF_DODEFAULT;
     }
-    if(draw->nmcd.dwDrawStage!=CDDS_ITEMPREPAINT)return CDRF_DODEFAULT;
+    if (draw->nmcd.dwDrawStage != CDDS_ITEMPREPAINT) return CDRF_DODEFAULT;
     // Details keeps native text, columns, focus and selection painting. Draw
-    // only its real icon after the native row has reserved the common spacing.
-    if((GetWindowLongPtrW(m_listWindow,GWL_STYLE)&LVS_TYPEMASK)==LVS_REPORT)
+    // only its real icon in CDDS_ITEMPOSTPAINT after the native row has drawn columns.
+    if (isDetails)
         return CDRF_NOTIFYPOSTPAINT;
-    LVITEMW item{};item.mask=LVIF_IMAGE|LVIF_STATE;item.iItem=int(draw->nmcd.dwItemSpec);
-    item.stateMask=LVIS_OVERLAYMASK|LVIS_CUT|LVIS_SELECTED|LVIS_FOCUSED;
-    RECT icon{},row{};int w=0,h=0;
-    if(ListView_GetItem(m_listWindow,&item) && item.iImage>=0
-        && ListView_GetItemRect(m_listWindow,item.iItem,&icon,LVIR_ICON)
-        && ListView_GetItemRect(m_listWindow,item.iItem,&row,LVIR_BOUNDS)
-        && ImageList_GetIconSize(m_shellSmallImages,&w,&h)) {
-        const bool selected=(item.state&LVIS_SELECTED)!=0;
-        HBRUSH fill=CreateSolidBrush(selected?RGB(0xE5,0xF1,0xFB)
-            :(draw->nmcd.uItemState&CDIS_HOT)?RGB(0xF5,0xF5,0xF5):RGB(255,255,255));
-        FillRect(draw->nmcd.hdc,&row,fill);DeleteObject(fill);
-        ImageList_DrawEx(m_shellSmallImages,item.iImage,draw->nmcd.hdc,icon.left,
-            row.top+(row.bottom-row.top-h)/2,w,h,CLR_NONE,CLR_NONE,
-            ILD_TRANSPARENT|item.state&LVIS_OVERLAYMASK|((item.state&LVIS_CUT)?ILD_BLEND50:0));
-        wchar_t title[32768]{};ListView_GetItemText(m_listWindow,item.iItem,0,title,_countof(title));
-        const int saved=SaveDC(draw->nmcd.hdc);
-        SelectObject(draw->nmcd.hdc,reinterpret_cast<HFONT>(SendMessageW(m_listWindow,WM_GETFONT,0,0)));
-        SetBkMode(draw->nmcd.hdc,TRANSPARENT);SetTextColor(draw->nmcd.hdc,RGB(0x1A,0x1A,0x1A));
-        RECT text{icon.left+w+MulDiv(4,m_dpi,96),row.top,row.right-MulDiv(4,m_dpi,96),row.bottom};
-        DrawTextW(draw->nmcd.hdc,title,-1,&text,DT_SINGLELINE|DT_VCENTER|DT_END_ELLIPSIS|DT_NOPREFIX);
-        if((item.state&LVIS_FOCUSED) && OwnsWindow(GetFocus()))DrawFocusRect(draw->nmcd.hdc,&row);
-        RestoreDC(draw->nmcd.hdc,saved);
+
+    LVITEMW item{}; item.mask = LVIF_IMAGE | LVIF_STATE; item.iItem = itemIndex;
+    item.stateMask = LVIS_OVERLAYMASK | LVIS_CUT | LVIS_SELECTED | LVIS_FOCUSED;
+    RECT icon{}, row{}; int w = 0, h = 0;
+    HIMAGELIST iml = nullptr;
+    const int img = ResolveItemIcon(itemIndex, &iml);
+    if (ListView_GetItem(m_listWindow, &item)
+        && ListView_GetItemRect(m_listWindow, itemIndex, &icon, LVIR_ICON)
+        && ListView_GetItemRect(m_listWindow, itemIndex, &row, LVIR_BOUNDS)) {
+        const bool selected = (item.state & LVIS_SELECTED) != 0;
+        HBRUSH fill = CreateSolidBrush(selected ? RGB(0xE5, 0xF1, 0xFB)
+            : (draw->nmcd.uItemState & CDIS_HOT) ? RGB(0xF5, 0xF5, 0xF5) : RGB(255, 255, 255));
+        FillRect(draw->nmcd.hdc, &row, fill); DeleteObject(fill);
+        if (img >= 0 && iml && ImageList_GetIconSize(iml, &w, &h)) {
+            ImageList_DrawEx(iml, img, draw->nmcd.hdc, icon.left,
+                row.top + (row.bottom - row.top - h) / 2, w, h, CLR_NONE, CLR_NONE,
+                ILD_TRANSPARENT | (item.state & LVIS_OVERLAYMASK) | ((item.state & LVIS_CUT) ? ILD_BLEND50 : 0));
+        }
+        wchar_t title[32768]{}; ListView_GetItemText(m_listWindow, itemIndex, 0, title, _countof(title));
+        const int saved = SaveDC(draw->nmcd.hdc);
+        SelectObject(draw->nmcd.hdc, reinterpret_cast<HFONT>(SendMessageW(m_listWindow, WM_GETFONT, 0, 0)));
+        SetBkMode(draw->nmcd.hdc, TRANSPARENT); SetTextColor(draw->nmcd.hdc, RGB(0x1A, 0x1A, 0x1A));
+        const int iconRight = (img >= 0 && iml && w > 0) ? (icon.left + w) : icon.right;
+        RECT text{iconRight + MulDiv(4, m_dpi, 96), row.top, row.right - MulDiv(4, m_dpi, 96), row.bottom};
+        DrawTextW(draw->nmcd.hdc, title, -1, &text, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+        if ((item.state & LVIS_FOCUSED) && OwnsWindow(GetFocus())) DrawFocusRect(draw->nmcd.hdc, &row);
+        RestoreDC(draw->nmcd.hdc, saved);
         return CDRF_SKIPDEFAULT;
     }
     return CDRF_DODEFAULT;
@@ -1248,9 +1348,21 @@ HBITMAP ShellBrowserHost::ExtractThumb(PCIDLIST_ABSOLUTE pidl, int size)
     HBITMAP bitmap = nullptr;
     if (pidl && SUCCEEDED(SHCreateItemFromIDList(pidl, IID_PPV_ARGS(&factory)))) {
         const SIZE request{size, size};
-        // Ask Shell for the physical-size thumbnail, never a stretched 16px icon.
-        if (FAILED(factory->GetImage(request, SIIGBF_THUMBNAILONLY, &bitmap)))
-            factory->GetImage(request, SIIGBF_ICONONLY, &bitmap);
+        SFGAOF attrs = 0;
+        IShellItem* item = nullptr;
+        if (SUCCEEDED(SHCreateItemFromIDList(pidl, IID_PPV_ARGS(&item))) && item) {
+            item->GetAttributes(SFGAO_FOLDER, &attrs);
+            item->Release();
+        }
+        if (attrs & SFGAO_FOLDER) {
+            // Folders use clean icons to prevent Shell composite thumbnail black borders
+            if (FAILED(factory->GetImage(request, SIIGBF_ICONONLY, &bitmap)))
+                factory->GetImage(request, SIIGBF_THUMBNAILONLY, &bitmap);
+        } else {
+            // Ask Shell for the physical-size thumbnail, never a stretched 16px icon.
+            if (FAILED(factory->GetImage(request, SIIGBF_THUMBNAILONLY, &bitmap)))
+                factory->GetImage(request, SIIGBF_ICONONLY, &bitmap);
+        }
         factory->Release();
     }
     return NormalizeImageAlpha(bitmap);
@@ -1626,28 +1738,12 @@ LRESULT ShellBrowserHost::DrawIconItem(NMLVCUSTOMDRAW* draw)
     return CDRF_SKIPDEFAULT;
 }
 
-bool ShellBrowserHost::ForwardContextMenu(WPARAM source, LPARAM position)
-{
-    if(!m_contextMenuMessage || !m_browser)return false;
-    IFolderView2* view=nullptr;int count=0;
-    if(FAILED(m_browser->GetCurrentView(IID_PPV_ARGS(&view))))return false;
-    const HRESULT hr=view->ItemCount(SVGIO_SELECTION,&count);view->Release();
-    std::vector<std::pair<std::wstring,bool>> paths;
-    // Virtual selections still need the provider's native menu binding.
-    if(FAILED(hr) || !GetSelection(paths) || count!=static_cast<int>(paths.size()))return false;
-    return SendMessageW(m_parent,m_contextMenuMessage,source,position)!=0;
-}
-
 LRESULT CALLBACK ShellBrowserHost::ViewSubclass(HWND window, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR data)
 {
     auto* host = reinterpret_cast<ShellBrowserHost*>(data);
-    if(msg==WM_CONTEXTMENU && host->ForwardContextMenu(wp,lp))return 0;
+    // WM_CONTEXTMENU and NM_RCLICK pass straight through: DefView shows its own menu.
     if (msg == WM_NOTIFY && lp) {
         auto* header = reinterpret_cast<NMHDR*>(lp);
-        if(header->hwndFrom==host->m_listWindow && header->code==NM_RCLICK) {
-            POINT point{};GetCursorPos(&point);
-            if(host->ForwardContextMenu(reinterpret_cast<WPARAM>(host->m_listWindow),MAKELPARAM(point.x,point.y)))return TRUE;
-        }
         if(header->hwndFrom==host->m_listWindow && header->code==LVN_ITEMACTIVATE
             && reinterpret_cast<NMLISTVIEW*>(lp)->iItem>=0) {
             IShellView* view=nullptr;
@@ -1714,7 +1810,6 @@ void ShellBrowserHost::PaintScrollBar(HWND window)
 LRESULT CALLBACK ShellBrowserHost::ListSubclass(HWND window, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR data)
 {
     auto* host=reinterpret_cast<ShellBrowserHost*>(data);
-    if(msg==WM_CONTEXTMENU && host->ForwardContextMenu(wp,lp))return 0;
     if(msg==WM_PAINT) {
         ++host->m_counters.listPaints;
         RECT update{},client{};
@@ -1737,7 +1832,7 @@ LRESULT CALLBACK ShellBrowserHost::ListSubclass(HWND window, UINT msg, WPARAM wp
     if(msg==LVM_SETIMAGELIST && wp==LVSIL_SMALL && host->m_listSpacer
         && reinterpret_cast<HIMAGELIST>(lp)!=host->m_listSpacer) {
         const HIMAGELIST previous=host->m_shellSmallImages;
-        if(ImageList_GetImageCount(reinterpret_cast<HIMAGELIST>(lp))>1)
+        if(reinterpret_cast<HIMAGELIST>(lp))
             host->m_shellSmallImages=reinterpret_cast<HIMAGELIST>(lp);
         DefSubclassProc(window,msg,wp,reinterpret_cast<LPARAM>(host->m_listSpacer));
         return reinterpret_cast<LRESULT>(previous);

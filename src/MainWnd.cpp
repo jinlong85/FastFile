@@ -18,6 +18,7 @@ CMainWnd::CMainWnd()
 
 CMainWnd::~CMainWnd()
 {
+    StopQuickAccessSync();
     StopExplorerTakeover();
     delete m_shellWindow;
     m_shellWindow = nullptr;
@@ -61,13 +62,6 @@ void CMainWnd::InitWindow()
 {
     m_PaintManager.AddTranslateAccelerator(this);
     AddClipboardFormatListener(m_hWnd);
-    PIDLIST_ABSOLUTE desktop = nullptr;
-    if (SUCCEEDED(SHGetSpecialFolderLocation(m_hWnd, CSIDL_DESKTOP, &desktop))) {
-        SHChangeNotifyEntry entry{desktop, TRUE};
-        m_shellRenameNotify = SHChangeNotifyRegister(m_hWnd, SHCNRF_ShellLevel | SHCNRF_NewDelivery,
-            SHCNE_RENAMEITEM | SHCNE_RENAMEFOLDER, kMsgShellRename, 1, &entry);
-        CoTaskMemFree(desktop);
-    }
     m_settings=FastFileSettings::Load(FastFileSettings::FilePath());
     ReadSystemIntegration(m_settings);
     m_viewMode=static_cast<ViewMode>(m_settings.defaultView);m_sortColumn=static_cast<SortColumn>(m_settings.sortColumn);m_sortAscending=m_settings.sortAscending;
@@ -149,6 +143,7 @@ void CMainWnd::InitWindow()
     InitTabs();
     LoadFavorites();
     LoadQuickAccess();
+    SetTimer(m_hWnd, kTimerQuickAccessSync, 5000, nullptr);
     RebuildFavoritesBar();
     UpdateSearchOptionVisibility();
     InitDragDrop();
@@ -159,7 +154,7 @@ void CMainWnd::InitWindow()
         const RECT bounds = m_pListHost->GetPos();
         m_shellBrowser = new (std::nothrow) ShellBrowserHost;
         if (!m_shellBrowser || !m_shellBrowser->Create(m_hWnd, bounds,
-                kMsgShellNavigation, kMsgShellSelection, kMsgShellFolderOpen, kMsgShellContextMenu)) {
+                kMsgShellNavigation, kMsgShellSelection, kMsgShellFolderOpen)) {
             delete m_shellBrowser;
             m_shellBrowser = nullptr;
             UpdateStatus(_T("Windows 文件视图初始化失败"));
@@ -505,20 +500,6 @@ void CMainWnd::OnClick(TNotifyUI& msg)
 
 LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
-    if(uMsg==kMsgShellContextMenu && m_shellBrowser) {
-        POINT point{static_cast<short>(LOWORD(lParam)),static_cast<short>(HIWORD(lParam))};
-        if(point.x==-1 && point.y==-1) {
-            RECT bounds{};GetWindowRect(reinterpret_cast<HWND>(wParam),&bounds);
-            point={bounds.left+24,bounds.top+24};
-        }
-        std::vector<std::pair<std::wstring,bool>> selected;
-        if(!m_shellBrowser->GetSelection(selected))return 0;
-        std::vector<std::wstring> paths;
-        for(const auto& item:selected)paths.push_back(item.first);
-        if(paths.empty())ShowBlankAreaContextMenu(point);
-        else ShowShellContextMenu(paths,point);
-        return 1;
-    }
     if (uMsg == WM_CAPTURECHANGED || uMsg == WM_CANCELMODE || uMsg == WM_KILLFOCUS)
         CancelScrollBarGestures();
     // The search box width follows the row (clamp(240, 30%, 435) logical); set it before
@@ -540,10 +521,6 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             OnShellBrowserNavigation(std::move(*path));
         NotifyShellWindowLocation();
         TryApplyPendingShellSelect();
-        return 0;
-    }
-    if (uMsg == kMsgShellRename) {
-        TrackShellRename(wParam, lParam);
         return 0;
     }
     if (uMsg == kMsgShellSelection) {
@@ -731,24 +708,11 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         SaveSession();
     }
     if (uMsg == WM_DESTROY) {
+        StopQuickAccessSync();
         StopExplorerTakeover();
         if (m_shellWindow) m_shellWindow->Revoke();
         m_PaintManager.RemoveTranslateAccelerator(this);
         RemoveClipboardFormatListener(m_hWnd);
-        if (m_shellRenameNotify) SHChangeNotifyDeregister(m_shellRenameNotify);
-        // A failed copy undo can leave a partially retained batch. Restore its
-        // retained items before dropping the in-memory history on close.
-        for (const auto& record : m_undoStack) {
-            for (const auto& pair : record.backups) {
-                const auto folder = ParentPath(pair.second);
-                const DWORD attributes = GetFileAttributesW(folder.c_str());
-                if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) continue;
-                if (GetFileAttributesW(pair.first.c_str()) == INVALID_FILE_ATTRIBUTES)
-                    MoveFileExW(pair.second.c_str(), pair.first.c_str(), 0);
-                RemoveDirectoryW(folder.c_str());
-            }
-        }
-        ClearRedoHistory();
         // DuiLib's WindowImplBase::OnClose only clears bHandled and never posts WM_QUIT,
         // so without this the process lives on with no window after a close (it also keeps
         // FastFile.exe locked, which blocks rebuilds). Quit once the window is gone.
@@ -759,7 +723,10 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         return 0;
     }
     if (uMsg == WM_TIMER) {
-        if (wParam == kTimerShellHistory) { FinishShellHistory(); return 0; }
+        if (wParam == kTimerQuickAccessSync) {
+            if (IsWindowVisible(m_hWnd) && !IsIconic(m_hWnd)) LoadQuickAccess();
+            return 0;
+        }
         if (wParam == kTimerVirtSync) { SyncVisibleIconWindow(false); return 0; }
         if (wParam == kTimerColWidth) { CaptureColumnWidths(); return 0; }
         if (wParam == kTimerDetailsSync) { UpdateDetailsWindow(false); return 0; }
@@ -1187,49 +1154,13 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 EnterAddressEditMode();
                 return 0;
             }
-            // ---- clipboard / file operations ----
-            if (ctrl && wParam == 'C') {
-                OnCopyClicked();
-                return 0;
-            }
-            if (ctrl && wParam == 'V') {
-                OnPasteClicked();
-                return 0;
-            }
-            if (ctrl && wParam == 'X') {
-                OnCutClicked();
-                return 0;
-            }
-            if (ctrl && wParam == 'Z') {
-                OnUndo();
-                return 0;
-            }
-            if (ctrl && shift && wParam == 'N') {
-                OnNewFolderClicked();
-                return 0;
-            }
-            if (ctrl && wParam == 'A') {
-                SelectAllItems();
-                return 0;
-            }
-            if (wParam == VK_DELETE && shift) {
-                OnDeleteClicked(/*permanent*/ true);
-                return 0;
-            }
-            if (wParam == VK_DELETE) {
-                OnDeleteClicked();
-                return 0;
-            }
-            if (wParam == VK_F2) {
-                OnRenameClicked();
+            // ---- file operations: Windows-native verbs (see RunFileCommand) ----
+            if (const FileCommand command = FileCommandForKey(wParam, ctrl, shift, alt); command != FileCommand::None) {
+                RunFileCommand(command);
                 return 0;
             }
             if (wParam == VK_F3 || (ctrl && wParam == 'F')) {
                 FocusSearchBox();
-                return 0;
-            }
-            if (alt && wParam == VK_RETURN) {
-                ShowPropertiesForSelection();
                 return 0;
             }
             // ---- tabs ----
@@ -1320,7 +1251,6 @@ LRESULT CMainWnd::TranslateAccelerator(MSG* message)
             ClearSearchFilter(); FocusFileView(); return S_OK;
         }
         if (!textEdit) { ClearFileSelection(); return S_OK; }
-        m_pendingShellRename.clear();
         return S_FALSE;
     }
     if (textEdit) return S_FALSE;
@@ -1331,28 +1261,21 @@ LRESULT CMainWnd::TranslateAccelerator(MSG* message)
             ViewMode::Details, ViewMode::Tiles, ViewMode::Content};
         SetViewMode(modes[key - '1']); return S_OK;
     }
-    if (!alt && ctrl && key == 'N') {
-        if (shift) OnNewFolderClicked(); else OpenPathInNewWindow(m_currentPath, {0, 0});
+    if (!alt && ctrl && !shift && key == 'N') { OpenPathInNewWindow(m_currentPath, {0, 0}); return S_OK; }
+    if (!alt && ctrl && key == 'C' && shift) { OnCopyPaths(); return S_OK; }
+    // File operations are Windows' own. Inside the hosted view, DefView handles its keys
+    // natively (copy / cut / paste / delete / rename / undo / redo / select all / properties);
+    // only a key it declines is turned into the same native verb by FastFile. Elsewhere
+    // (tree, search list) the verb runs on the selected items' own Shell menu.
+    if (const FileCommand command = FileCommandForKey(key, ctrl, shift, alt); command != FileCommand::None) {
+        if (shellWindow && m_shellBrowser->TranslateAccelerator(message) == S_OK) return S_OK;
+        RunFileCommand(command);
         return S_OK;
     }
-    if (!alt && ctrl && key == 'C' && shift) { OnCopyPaths(); return S_OK; }
-    if (!alt && ctrl && (key == 'C' || key == VK_INSERT)) { OnCopyClicked(); return S_OK; }
-    if (!alt && ((ctrl && key == 'V') || (!ctrl && shift && key == VK_INSERT))) { OnPasteClicked(); return S_OK; }
-    if (!alt && ctrl && key == 'X') { OnCutClicked(); return S_OK; }
-    if (!alt && ctrl && key == 'Z') { if (shift) OnRedo(); else OnUndo(); return S_OK; }
-    if (!alt && ctrl && key == 'Y') { OnRedo(); return S_OK; }
-    if (!alt && ctrl && key == 'A') { SelectAllItems(); return S_OK; }
-    if (!alt && (key == VK_DELETE || (ctrl && key == 'D'))) { OnDeleteClicked(shift); return S_OK; }
-    if (!ctrl && !alt && key == VK_F2) { OnRenameClicked(); return S_OK; }
     if (!ctrl && !alt && key == VK_BACK) { GoBack(); return S_OK; }
-    if (!ctrl && alt && key == VK_RETURN) { ShowPropertiesForSelection(); return S_OK; }
-    if (!ctrl && !alt && (key == VK_APPS || (shift && key == VK_F10)) &&
-        !(m_shellBrowser && m_shellBrowser->OwnsWindow(message->hwnd))) {
-        RECT bounds = m_pFileList ? m_pFileList->GetPos() : RECT{0,0,100,100};
-        POINT point{bounds.left + 20, bounds.top + 40}; ClientToScreen(m_hWnd, &point);
-        std::vector<ClipboardItem> selected; CollectSelectedItems(selected);
-        std::vector<std::wstring> paths; for (const auto& item : selected) paths.push_back(item.path);
-        if (paths.empty()) ShowBlankAreaContextMenu(point); else ShowShellContextMenu(paths, point);
+    // Menu key / Shift+F10 inside the hosted view open its own native menu.
+    if (!ctrl && !alt && (key == VK_APPS || (shift && key == VK_F10)) && !shellWindow) {
+        ShowKeyboardContextMenu();
         return S_OK;
     }
     return m_shellBrowser ? m_shellBrowser->TranslateAccelerator(message) : S_FALSE;
@@ -1548,8 +1471,10 @@ LRESULT CMainWnd::HandleCustomMessage(UINT uMsg, WPARAM wParam, LPARAM lParam, B
         return 0;
     }
     if (uMsg == WM_ACTIVATE) {
-        if (LOWORD(wParam) != WA_INACTIVE)
+        if (LOWORD(wParam) != WA_INACTIVE) {
             EnsureMainWindowVisible();
+            LoadQuickAccess();
+        }
         bHandled = FALSE;
         return 0;
     }
@@ -1562,6 +1487,13 @@ LRESULT CMainWnd::HandleCustomMessage(UINT uMsg, WPARAM wParam, LPARAM lParam, B
     if (uMsg == kMsgFileOpFinished) {
         bHandled = TRUE;
         OnFileOperationFinished(wParam, lParam);
+        return 0;
+    }
+    if (uMsg == kMsgQuickAccessReady) {
+        std::unique_ptr<QuickSnapshot> snapshot(reinterpret_cast<QuickSnapshot*>(lParam));
+        m_quickReadPending = false;
+        if (snapshot && !m_quickReadStopping) ApplyQuickSnapshot(*snapshot);
+        bHandled = TRUE;
         return 0;
     }
     if (uMsg == kMsgThumbReady) {

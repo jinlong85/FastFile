@@ -1,4 +1,4 @@
-﻿#include "ShellBrowserHost.h"
+#include "ShellBrowserHost.h"
 #include "ShellPresentation.h"
 #include "ShellMenuUtil.h"
 
@@ -100,32 +100,49 @@ struct ShellBrowserHostTestAccess {
         DeleteFileW((next+L"\\native-view.txt").c_str());RemoveDirectoryW(next.c_str());
         return failures==0;
     }
+    // 1.0.21: the view's right-click / menu key is DefView's own classic menu. The host must
+    // not forward WM_CONTEXTMENU / NM_RCLICK anywhere; DefView itself tries to open a popup,
+    // which a CBT hook blocks (counted) so nothing is ever shown.
     static inline int menuRequests=0;
+    static inline int nativeMenus=0;
     static LRESULT CALLBACK MenuProbe(HWND window,UINT message,WPARAM wp,LPARAM lp,UINT_PTR,DWORD_PTR) {
         if(message==WM_APP+4) {++menuRequests;return 1;}
         return DefSubclassProc(window,message,wp,lp);
     }
+    static LRESULT CALLBACK BlockMenus(int code,WPARAM wp,LPARAM lp) {
+        if(code==HCBT_CREATEWND) {
+            wchar_t name[32]{};GetClassNameW(reinterpret_cast<HWND>(wp),name,_countof(name));
+            if(wcscmp(name,L"#32768")==0) {++nativeMenus;return 1;}
+        }
+        return CallNextHookEx(nullptr,code,wp,lp);
+    }
     static bool ContextMenuRouting(ShellBrowserHost& host) {
-        menuRequests=0;
+        menuRequests=0;nativeMenus=0;
         SetWindowSubclass(host.m_parent,MenuProbe,41,0);
-        SendMessageW(host.m_listWindow,WM_CONTEXTMENU,reinterpret_cast<WPARAM>(host.m_listWindow),MAKELPARAM(20,20));
+        HHOOK block=SetWindowsHookExW(WH_CBT,BlockMenus,nullptr,GetCurrentThreadId());
+        if(!block){RemoveWindowSubclass(host.m_parent,MenuProbe,41);return false;}
+        // A popup that somehow escapes the hook must fail the test rather than block the suite.
+        SetTimer(host.m_parent,42,500,[](HWND,UINT,UINT_PTR,DWORD){EndMenu();});
+        RECT list{};GetWindowRect(host.m_listWindow,&list);
+        SendMessageW(host.m_listWindow,WM_CONTEXTMENU,reinterpret_cast<WPARAM>(host.m_listWindow),MAKELPARAM(list.left+20,list.top+20));
         SendMessageW(host.m_viewWindow,WM_CONTEXTMENU,reinterpret_cast<WPARAM>(host.m_listWindow),MAKELPARAM(-1,-1));
         RECT row{};ListView_GetItemRect(host.m_listWindow,0,&row,LVIR_BOUNDS);
         const LPARAM point=MAKELPARAM(row.left+8,(row.top+row.bottom)/2);
-        // A stuck native popup must fail the test rather than block the suite.
-        SetTimer(host.m_parent,42,500,[](HWND,UINT,UINT_PTR,DWORD){EndMenu();});
         PostMessageW(host.m_listWindow,WM_RBUTTONDOWN,MK_RBUTTON,point);
         PostMessageW(host.m_listWindow,WM_RBUTTONUP,0,point);
         const DWORD deadline=GetTickCount()+700;
-        while(menuRequests<3 && GetTickCount()<deadline) {
+        while(GetTickCount()<deadline) {
             MSG message{};while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)) {
                 if(message.message==WM_APP+1) {delete reinterpret_cast<std::wstring*>(message.lParam);continue;}
                 TranslateMessage(&message);DispatchMessageW(&message);
             }Sleep(5);
         }
         KillTimer(host.m_parent,42);
+        UnhookWindowsHookEx(block);
         RemoveWindowSubclass(host.m_parent,MenuProbe,41);
-        return menuRequests==3;
+        if(menuRequests!=0 || nativeMenus<2)
+            std::cerr<<"context menu diagnostic: forwarded="<<menuRequests<<" nativePopups="<<nativeMenus<<"\n";
+        return menuRequests==0 && nativeMenus>=2;
     }
     static bool NavigationSpacing(ShellBrowserHost& host,const std::wstring& path,FOLDERVIEWMODE mode) {
         if(!host.SetViewMode(mode) || !host.Navigate(path))return false;
@@ -259,7 +276,7 @@ struct ShellBrowserHostTestAccess {
         RECT canvas{0,0,640,480};FillRect(dc,&canvas,reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
         NMLVCUSTOMDRAW draw{};draw.nmcd.hdc=dc;draw.nmcd.dwItemSpec=0;draw.nmcd.dwDrawStage=CDDS_ITEMPREPAINT;
         host.DrawListIcon(&draw);
-        if((GetWindowLongPtrW(host.m_listWindow,GWL_STYLE)&LVS_TYPEMASK)==LVS_REPORT) {
+        if(host.m_requestedMode==FVM_DETAILS || (GetWindowLongPtrW(host.m_listWindow,GWL_STYLE)&LVS_TYPEMASK)==LVS_REPORT) {
             draw.nmcd.dwDrawStage=CDDS_ITEMPOSTPAINT;host.DrawListIcon(&draw);
         }
         RECT icon{},row{};ListView_GetItemRect(host.m_listWindow,0,&icon,LVIR_ICON);
@@ -326,6 +343,112 @@ struct ShellBrowserHostTestAccess {
         };
         return run(0x40C86432,0x4032190D) && run(0x4032190D,0x4032190D)
             && run(0x00FFFFFF,0) && run(0xFFC86432,0xFFC86432);
+    }
+    static bool FolderThumbCleanAlpha(ShellBrowserHost& host, const std::wstring& folderPath) {
+        PIDLIST_ABSOLUTE pidl = nullptr;
+        if (FAILED(SHParseDisplayName(folderPath.c_str(), nullptr, &pidl, 0, nullptr)) || !pidl)
+            return false;
+        HBITMAP thumb = host.ExtractThumb(pidl, 72);
+        CoTaskMemFree(pidl);
+        if (!thumb) return false;
+        BITMAP bm{}; GetObjectW(thumb, sizeof(bm), &bm);
+        if (bm.bmBitsPixel != 32 || bm.bmWidth <= 0 || bm.bmHeight <= 0) {
+            DeleteObject(thumb);
+            return false;
+        }
+        BITMAPINFO bi{}; bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bi.bmiHeader.biWidth = bm.bmWidth; bi.bmiHeader.biHeight = -bm.bmHeight;
+        bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32;
+        std::vector<DWORD> pixels(size_t(bm.bmWidth) * bm.bmHeight);
+        HDC dc = GetDC(nullptr);
+        GetDIBits(dc, thumb, 0, bm.bmHeight, pixels.data(), &bi, DIB_RGB_COLORS);
+        ReleaseDC(nullptr, dc);
+        DeleteObject(thumb);
+        const DWORD corner = pixels[0];
+        return (corner >> 24) == 0;
+    }
+    static bool CheckDetailsColumnsAndIcons(ShellBrowserHost& host) {
+        if (!host.SetViewMode(FVM_DETAILS)) return false;
+        NMLVCUSTOMDRAW draw{};
+        draw.nmcd.dwItemSpec = 0;
+        draw.nmcd.dwDrawStage = CDDS_ITEMPREPAINT;
+        draw.dwItemType = LVCDI_ITEM;
+        if (host.DrawListIcon(&draw) != CDRF_NOTIFYPOSTPAINT) return false;
+        const DWORD dl = GetTickCount() + 1500;
+        while (GetTickCount() < dl && ListView_GetItemCount(host.m_listWindow) < 1) {
+            MSG msg;
+            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg); DispatchMessageW(&msg);
+            }
+            Sleep(5);
+        }
+        const int count = ListView_GetItemCount(host.m_listWindow);
+        if (count < 1) return false;
+        HIMAGELIST iml = nullptr;
+        const int img = host.ResolveItemIcon(0, &iml);
+        if (img < 0 || !iml || img >= ImageList_GetImageCount(iml)) return false;
+        if (!host.SetViewMode(FVM_LIST)) return false;
+        draw.nmcd.dwDrawStage = CDDS_ITEMPREPAINT;
+        if (host.DrawListIcon(&draw) != CDRF_SKIPDEFAULT) return false;
+        return true;
+    }
+    static bool CheckJpgListIconsAfterTileSwitch(ShellBrowserHost& host, const std::wstring& folder) {
+        for (int i = 1; i <= 20; ++i) {
+            wchar_t name[MAX_PATH]{};
+            swprintf_s(name, L"%s\\pic_%03d.jpg", folder.c_str(), i);
+            HANDLE h = CreateFileW(name, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+        }
+        host.SetViewMode(FVM_TILE, 48);
+        host.Navigate(folder);
+        const DWORD dl = GetTickCount() + 3000;
+        while (GetTickCount() < dl) {
+            MSG msg;
+            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg); DispatchMessageW(&msg);
+            }
+            if (ListView_GetItemCount(host.m_listWindow) >= 20) break;
+            Sleep(10);
+        }
+        // Switch from Tile directly to List
+        host.SetViewMode(FVM_LIST);
+        for (int step = 0; step < 10; ++step) {
+            MSG msg;
+            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg); DispatchMessageW(&msg);
+            }
+            Sleep(10);
+        }
+        HDC screen = GetDC(nullptr);
+        HDC dc = CreateCompatibleDC(screen);
+        HBITMAP bitmap = CreateCompatibleBitmap(screen, 640, 480);
+        auto old = SelectObject(dc, bitmap);
+        bool allIconsDrawn = true;
+        const int count = ListView_GetItemCount(host.m_listWindow);
+        if (count < 20) allIconsDrawn = false;
+        for (int i = 0; i < count; ++i) {
+            RECT canvas{0, 0, 640, 480}; FillRect(dc, &canvas, reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+            NMLVCUSTOMDRAW draw{}; draw.nmcd.hdc = dc; draw.nmcd.dwItemSpec = i; draw.nmcd.dwDrawStage = CDDS_ITEMPREPAINT;
+            draw.dwItemType = LVCDI_ITEM;
+            LRESULT ret = host.DrawListIcon(&draw);
+            if (ret != CDRF_SKIPDEFAULT) allIconsDrawn = false;
+            int colored = 0;
+            for (int y = 0; y < 480; ++y) {
+                for (int x = 0; x < 640; ++x) {
+                    if (GetPixel(dc, x, y) != RGB(255, 255, 255)) ++colored;
+                }
+            }
+            HIMAGELIST iml = nullptr;
+            const int img = host.ResolveItemIcon(i, &iml);
+            if (colored < 10 || img < 0 || !iml) allIconsDrawn = false;
+        }
+        SelectObject(dc, old); DeleteObject(bitmap); DeleteDC(dc); ReleaseDC(nullptr, screen);
+        for (int i = 1; i <= 20; ++i) {
+            wchar_t name[MAX_PATH]{};
+            swprintf_s(name, L"%s\\pic_%03d.jpg", folder.c_str(), i);
+            DeleteFileW(name);
+        }
+        return allIconsDrawn;
     }
     static HWND List(ShellBrowserHost& host) { return host.m_listWindow; }
     static bool Borderless(ShellBrowserHost& host) {
@@ -449,6 +572,14 @@ static bool SeparatorNormalizationRegression()
 int main()
 {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    // Every window, menu and Shell dialog of this suite lives on a private desktop: nothing can
+    // appear on the user's screen, even if a native popup or error box were triggered.
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+    const std::wstring desktopName = L"FastFileShellView_" + std::to_wstring(::GetCurrentProcessId());
+    HDESK isolatedDesktop = ::CreateDesktopW(desktopName.c_str(), nullptr, nullptr, 0, GENERIC_ALL, nullptr);
+    if (!isolatedDesktop || !::SetThreadDesktop(isolatedDesktop))
+        return Fail("isolated test desktop unavailable");
     const HRESULT com = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(com))
         return Fail("CoInitializeEx failed");
@@ -542,7 +673,7 @@ int main()
 
     ShellBrowserHost host;
     const RECT bounds = { 0, 0, 640, 480 };
-    if (!host.Create(parent, bounds, WM_APP + 1, WM_APP + 2, WM_APP + 3, WM_APP + 4)) {
+    if (!host.Create(parent, bounds, WM_APP + 1, WM_APP + 2, WM_APP + 3)) {
         const int result = Fail("IExplorerBrowser initialization failed", &host, parent, folder, file);
         ::CoUninitialize();
         return result;
@@ -569,6 +700,20 @@ int main()
         if ((flags & headerMask) != (mode == FVM_DETAILS ? 0 : headerMask))
             return Fail("column header leaked into a non-details view", &host, parent, folder, file);
     }
+    host.SetViewMode(FVM_TILE, 48);
+    {
+        IFolderView2* view = ShellBrowserHostTestAccess::View(host);
+        FOLDERVIEWMODE vmode = FVM_AUTO; int vsize = 0;
+        if (view) { view->GetViewModeAndIconSize(&vmode, &vsize); view->Release(); }
+        if (vmode != FVM_TILE || vsize != 48)
+            return Fail("Tile view mode must use standard 48 logical icon size", &host, parent, folder, file);
+    }
+    if (!ShellBrowserHostTestAccess::FolderThumbCleanAlpha(host, folder))
+        return Fail("folder thumbnail extraction must preserve transparent alpha without black box defects", &host, parent, folder, file);
+    if (!ShellBrowserHostTestAccess::CheckDetailsColumnsAndIcons(host))
+        return Fail("Details view must notify postpaint and List view must resolve icons", &host, parent, folder, file);
+    if (!ShellBrowserHostTestAccess::CheckJpgListIconsAfterTileSwitch(host, folder))
+        return Fail("list icons must resolve and paint after switching from Tile mode", &host, parent, folder, file);
     host.Refresh();
     const UINT dpi = GetDpiForWindow(parent);
     for (int logical : {128, 160}) {
@@ -664,7 +809,7 @@ int main()
     if(ListView_GetImageList(ShellBrowserHostTestAccess::List(host),LVSIL_SMALL)!=spacer)
         return Fail("reapplying the same mode must not restore a compact image list",&host,parent,folder,file);
     if(!ShellBrowserHostTestAccess::ContextMenuRouting(host))
-        return Fail("mouse and keyboard native view menus must reach the host command router",&host,parent,folder,file);
+        return Fail("mouse and keyboard view menus must be DefView's own (never forwarded to FastFile)",&host,parent,folder,file);
     CreateDirectoryW(nested.c_str(),nullptr);
     CopyFileW(file.c_str(),(nested+L"\\item.txt").c_str(),FALSE);
     bool navigationSpacing=true;

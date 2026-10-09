@@ -219,10 +219,9 @@ DWORD OperationFlags(Kind kind, bool interactive)
     case Kind::Copy:
     case Kind::Move:
         // Native progress, conflict (replace / skip / keep both) and error dialogs stay on.
-        // No FOFX_ADDUNDORECORD: these operations live in FastFile's own history, and an
-        // Explorer record would make a later native Ctrl+Z of a recycle undo the wrong step
-        // (Explorer's "undo copy" also deletes the copy permanently, edits included).
-        flags = FOF_NOCONFIRMMKDIR | FOFX_SHOWELEVATIONPROMPT;
+        // The undo record puts drag-and-drop transfers into the Windows undo history, the
+        // only history FastFile has (Ctrl+Z replays it natively, as in Explorer).
+        flags = FOF_NOCONFIRMMKDIR | FOFX_SHOWELEVATIONPROMPT | FOF_ALLOWUNDO | FOFX_ADDUNDORECORD;
         break;
     case Kind::Recycle:
         // Routine "move to Recycle Bin?" is not asked (Windows 10/11 default); the warning
@@ -231,7 +230,8 @@ DWORD OperationFlags(Kind kind, bool interactive)
             FOFX_ADDUNDORECORD | FOFX_RECYCLEONDELETE | FOF_WANTNUKEWARNING;
         break;
     case Kind::Delete:
-        // FastFile asks its own explicit permanent-delete question before this runs.
+        // Engine-level permanent delete (no FastFile command issues it any more; the
+        // Delete key and 删除 button run Windows' own delete verb with its confirmation).
         flags = FOF_NOCONFIRMATION | FOFX_SHOWELEVATIONPROMPT;
         break;
     }

@@ -5,25 +5,9 @@
 #include "MainWndInternal.h"
 #include "FavoriteStarUI.h"
 #include "FavoritesJson.h"
+#include "ShellPresentation.h"
 
 namespace {
-
-// CF_UNICODETEXT copy used by the favourites / quick-access context menus.
-void CopyTextToClipboard(HWND owner, const std::wstring& text)
-{
-    if (!::OpenClipboard(owner))
-        return;
-    ::EmptyClipboard();
-    const size_t bytes = (text.size() + 1) * sizeof(wchar_t);
-    if (HGLOBAL mem = ::GlobalAlloc(GMEM_MOVEABLE, bytes)) {
-        if (void* dst = ::GlobalLock(mem)) {
-            memcpy(dst, text.c_str(), bytes);
-            ::GlobalUnlock(mem);
-            ::SetClipboardData(CF_UNICODETEXT, mem);
-        }
-    }
-    ::CloseClipboard();
-}
 
 bool IsCjk(wchar_t c)
 {
@@ -437,130 +421,173 @@ std::wstring CMainWnd::GetQuickAccessFilePath()
     return slash == std::wstring::npos ? L"quick_access.txt" : path.substr(0, slash + 1) + L"quick_access.txt";
 }
 
-void CMainWnd::LoadQuickAccess()
+HRESULT CMainWnd::InvokeQuickVerb(HWND owner, const std::wstring& identity, const char* verb, const std::vector<BYTE>& shellId)
 {
-    m_quickRows.clear();
-    FILE* fp = nullptr;
-    const std::wstring file = GetQuickAccessFilePath();
-    if (_wfopen_s(&fp, file.c_str(), L"rb") != 0 || !fp) {
-        BuildDefaultQuickRows();
-        return;
-    }
-    fseek(fp, 0, SEEK_END);
-    const long size = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-    if (size < 2) { fclose(fp); BuildDefaultQuickRows(); return; }
-    std::wstring content(static_cast<size_t>(size) / sizeof(wchar_t), L'\0');
-    fread(&content[0], 1, size, fp);
-    fclose(fp);
-    if (!content.empty() && content[0] == 0xFEFF) content.erase(content.begin());
-
-    // The file stores the full display order: "::ThisPC" for the Computer folder, then one
-    // path per row. Files written by older builds only list the user's pins, so the four
-    // built-ins are still inserted (first, in their default order) when they are missing.
-    const std::wstring docs = GetKnownFolderPath(CSIDL_PERSONAL);
-    const std::wstring desk = GetKnownFolderPath(CSIDL_DESKTOPDIRECTORY);
-    const std::wstring downs = GetDownloadsPath();
-
-    auto alreadyListed = [&](const std::wstring& path) {
-        for (const auto& row : m_quickRows)
-            if (!row.isThisPc && PathEquals(row.path, path)) return true;
-        return false;
-    };
-
-    size_t pos = 0;
-    while (pos < content.size()) {
-        const size_t eol = content.find(L'\n', pos);
-        std::wstring line = content.substr(pos, (eol == std::wstring::npos ? content.size() : eol) - pos);
-        pos = eol == std::wstring::npos ? content.size() : eol + 1;
-        if (!line.empty() && line.back() == L'\r') line.pop_back();
-        if (line.empty()) continue;
-        if (line == kThisPcPath) {
-            if (m_quickRows.empty()) {
-                QuickRow row;
-                row.isThisPc = true;
-                row.builtIn = true;
-                row.path = kThisPcPath;
-                row.label = L"此电脑";
-                m_quickRows.push_back(std::move(row));
+    PIDLIST_ABSOLUTE absolute = shellId.empty() ? nullptr : ILCloneFull(reinterpret_cast<PCIDLIST_ABSOLUTE>(shellId.data()));
+    HRESULT hr = shellId.empty() ? SHParseDisplayName(identity.c_str(), nullptr, &absolute, 0, nullptr) : (absolute ? S_OK : E_OUTOFMEMORY);
+    if (FAILED(hr)) return hr;
+    IShellFolder* parent = nullptr;
+    PCUITEMID_CHILD child = nullptr;
+    hr = SHBindToParent(absolute, IID_PPV_ARGS(&parent), &child);
+    IContextMenu* menu = nullptr;
+    if (SUCCEEDED(hr)) hr = parent->GetUIObjectOf(owner, 1, &child, IID_IContextMenu, nullptr, reinterpret_cast<void**>(&menu));
+    HMENU popup = CreatePopupMenu();
+    if (SUCCEEDED(hr) && !popup) hr = E_OUTOFMEMORY;
+    if (SUCCEEDED(hr)) hr = menu->QueryContextMenu(popup, 0, 1, 0x7fff, CMF_NORMAL);
+    if (SUCCEEDED(hr)) {
+        const UINT last = 1 + HRESULT_CODE(hr);
+        hr = HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
+        for (UINT id = 1; id < last; ++id) {
+            char name[128]{};
+            if (SUCCEEDED(menu->GetCommandString(id - 1, GCS_VERBA, nullptr, name, sizeof(name))) && _stricmp(name, verb) == 0) {
+                CMINVOKECOMMANDINFO invoke{};
+                invoke.cbSize = sizeof(invoke); invoke.hwnd = owner;
+                invoke.fMask = CMIC_MASK_NOASYNC;
+                invoke.lpVerb = MAKEINTRESOURCEA(id - 1); invoke.nShow = SW_SHOWNORMAL;
+                hr = menu->InvokeCommand(&invoke);
+                break;
             }
-            continue;
         }
-        const std::wstring path = NormalizePath(line);
-        if (path.empty() || alreadyListed(path)) continue;
-        DWORD attrs = ::GetFileAttributesW(path.c_str());
-        if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) continue;
-        QuickRow row;
-        row.path = path;
-        if (!docs.empty() && PathEquals(path, docs)) {
-            row.builtIn = true;
-            row.label = L"文档";
-        } else if (!desk.empty() && PathEquals(path, desk)) {
-            row.builtIn = true;
-            row.label = L"桌面";
-        } else if (!downs.empty() && PathEquals(path, downs)) {
-            row.builtIn = true;
-            row.label = L"下载";
-        } else {
-            row.label = GetLeafName(path);
-            if (row.label.empty()) row.label = path;
-        }
-        m_quickRows.push_back(std::move(row));
     }
-    EnsureDefaultQuickRows();
+    if (popup) DestroyMenu(popup);
+    if (menu) menu->Release();
+    if (parent) parent->Release();
+    CoTaskMemFree(absolute);
+    return hr;
+}
+
+HRESULT CMainWnd::ReadSystemQuickRows(std::vector<QuickRow>& rows, const std::wstring& source)
+{
+    // Shell owns ranking, pin order, privacy filtering and cloud/virtual items.
+    // Never parse or rewrite AutomaticDestinations or synthesize recent entries.
+    PIDLIST_ABSOLUTE root = nullptr;
+    HRESULT hr = SHParseDisplayName(source.empty() ? L"shell:::{f874310e-b6b7-47dc-bc84-b9e6b38f5903}" : source.c_str(), nullptr, &root, 0, nullptr);
+    if (FAILED(hr) && source.empty())
+        hr = SHParseDisplayName(L"shell:::{679f85cb-0220-4080-b29b-5540cc05aab6}", nullptr, &root, 0, nullptr);
+    if (FAILED(hr)) return hr;
+    IShellFolder* desktop = nullptr;
+    IShellFolder* folder = nullptr;
+    hr = SHGetDesktopFolder(&desktop);
+    if (SUCCEEDED(hr)) hr = desktop->BindToObject(root, nullptr, IID_PPV_ARGS(&folder));
+    if (desktop) desktop->Release();
+    IEnumIDList* items = nullptr;
+    if (SUCCEEDED(hr)) hr = folder->EnumObjects(nullptr, SHCONTF_FOLDERS | SHCONTF_NONFOLDERS, &items);
+    std::vector<QuickRow> result;
+    if (SUCCEEDED(hr) && items) {
+        PITEMID_CHILD child = nullptr;
+        while ((hr = items->Next(1, &child, nullptr)) == S_OK) {
+            QuickRow row;
+            PIDLIST_ABSOLUTE absolute = ILCombine(root, child);
+            if (absolute) {
+                const auto bytes = reinterpret_cast<const BYTE*>(absolute);
+                row.shellId.assign(bytes, bytes + ILGetSize(absolute));
+            }
+            PWSTR text = nullptr;
+            HRESULT itemResult = absolute ? SHGetNameFromIDList(absolute, SIGDN_DESKTOPABSOLUTEPARSING, &text) : E_OUTOFMEMORY;
+            if (SUCCEEDED(itemResult)) { row.shellPath = text; CoTaskMemFree(text); text = nullptr; }
+            if (SUCCEEDED(itemResult)) itemResult = SHGetNameFromIDList(absolute, SIGDN_NORMALDISPLAY, &text);
+            if (SUCCEEDED(itemResult)) { row.label = text; CoTaskMemFree(text); text = nullptr; }
+            // Home item identities may be virtual; keep them usable if no file-system path exists.
+            if (absolute && SUCCEEDED(SHGetNameFromIDList(absolute, SIGDN_FILESYSPATH, &text))) {
+                row.path = text; CoTaskMemFree(text); text = nullptr;
+            } else row.path = row.shellPath;
+            SFGAOF attributes = SFGAO_FOLDER;
+            PCUITEMID_CHILD relative = child;
+            if (SUCCEEDED(itemResult)) itemResult = folder->GetAttributesOf(1, &relative, &attributes);
+            row.isFolder = (attributes & SFGAO_FOLDER) != 0;
+            IShellFolder2* properties = nullptr;
+            if (SUCCEEDED(itemResult) && (source.empty() || source.find(L"shell:::{") == 0)
+                && SUCCEEDED(folder->QueryInterface(IID_PPV_ARGS(&properties)))) {
+                VARIANT pinned{};
+                if (SUCCEEDED(properties->GetDetailsEx(relative, &PKEY_Home_IsPinned, &pinned)) && pinned.vt == VT_BOOL)
+                    row.pinned = pinned.boolVal != VARIANT_FALSE;
+                VariantClear(&pinned);
+                properties->Release();
+            }
+            if (absolute) CoTaskMemFree(absolute);
+            CoTaskMemFree(child); child = nullptr;
+            if (FAILED(itemResult)) { hr = itemResult; break; }
+            result.push_back(std::move(row));
+        }
+    }
+    if (items) items->Release();
+    if (folder) folder->Release();
+    CoTaskMemFree(root);
+    if (FAILED(hr) && source.empty()) return ReadSystemQuickRows(rows, L"shell:::{679f85cb-0220-4080-b29b-5540cc05aab6}");
+    if (SUCCEEDED(hr)) rows.swap(result); // S_FALSE is a valid empty enumeration.
+    return hr;
+}
+
+void CMainWnd::ApplyQuickSnapshot(const QuickSnapshot& snapshot)
+{
+    if (FAILED(snapshot.result)) return; // transient failure does not erase a valid snapshot
+    GUITHREADINFO interaction{}; interaction.cbSize = sizeof(interaction);
+    if (m_quickDragIndex >= 0 || m_inDoDragDrop || m_pCtxMenu2 || m_pCtxMenu3
+        || (GetGUIThreadInfo(0, &interaction) && (interaction.flags & GUI_INMENUMODE)))
+        return; // do not destroy rows during a press, native menu or nested OLE loop
+    const auto equal = [](const QuickRow& a, const QuickRow& b) {
+        return a.path == b.path && a.label == b.label && a.shellPath == b.shellPath
+            && a.shellId == b.shellId && a.isFolder == b.isFolder && a.pinned == b.pinned;
+    };
+    if (m_quickRows.size() == snapshot.rows.size() && std::equal(m_quickRows.begin(), m_quickRows.end(), snapshot.rows.begin(), equal)) return;
+    m_quickRows = snapshot.rows;
     RebuildLeftQuickRows();
 }
 
-void CMainWnd::SaveQuickAccess() const
+void CMainWnd::LoadQuickAccess()
 {
-    FILE* fp = nullptr;
-    const std::wstring file = GetQuickAccessFilePath();
-    if (_wfopen_s(&fp, file.c_str(), L"wb") != 0 || !fp) return;
-    const wchar_t bom = 0xFEFF;
-    fwrite(&bom, sizeof(bom), 1, fp);
-    for (const auto& row : m_quickRows) {
-        fwrite(row.path.c_str(), sizeof(wchar_t), row.path.size(), fp);
-        const wchar_t nl = L'\n';
-        fwrite(&nl, sizeof(nl), 1, fp);
-    }
-    fclose(fp);
+    if (!m_hWnd || m_quickReadPending || m_quickReadStopping) return;
+    if (m_quickReadThread.joinable()) m_quickReadThread.join();
+    m_quickReadPending = true;
+    const HWND target = m_hWnd;
+    const std::wstring source = m_quickReadSource;
+    m_quickReadThread = std::thread([this, target, source] {
+        auto snapshot = std::make_unique<QuickSnapshot>();
+        const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        snapshot->result = SUCCEEDED(init) ? ReadSystemQuickRows(snapshot->rows, source) : init;
+        if (SUCCEEDED(init)) CoUninitialize();
+        if (!m_quickReadStopping && ::PostMessageW(target, kMsgQuickAccessReady, 0, reinterpret_cast<LPARAM>(snapshot.get()))) snapshot.release();
+    });
 }
+
+void CMainWnd::StopQuickAccessSync()
+{
+    m_quickReadStopping = true;
+    if (m_hWnd) KillTimer(m_hWnd, kTimerQuickAccessSync);
+    if (m_quickReadThread.joinable()) m_quickReadThread.join();
+    MSG message{};
+    while (m_hWnd && PeekMessageW(&message, m_hWnd, kMsgQuickAccessReady, kMsgQuickAccessReady, PM_REMOVE))
+        delete reinterpret_cast<QuickSnapshot*>(message.lParam);
+    m_quickReadPending = false;
+}
+
+void CMainWnd::SaveQuickAccess() const { } // system owns persistence
 
 bool CMainWnd::IsQuickAccessPinned(const std::wstring& path) const
 {
     for (const auto& row : m_quickRows)
-        if (!row.isThisPc && PathEquals(row.path, path)) return true;
+        if (row.pinned && PathEquals(row.path, path)) return true;
     return false;
 }
 
 bool CMainWnd::PinQuickAccess(const std::wstring& path)
 {
-    const std::wstring normalized = NormalizePath(path);
-    if (normalized.empty() || IsThisPcPath(normalized) || IsQuickAccessPinned(normalized)) return false;
-    DWORD attrs = ::GetFileAttributesW(normalized.c_str());
-    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) return false;
-    QuickRow row;
-    row.path = normalized;
-    row.label = GetLeafName(normalized);
-    if (row.label.empty()) row.label = normalized;
-    m_quickRows.push_back(std::move(row));
-    SaveQuickAccess();
-    RebuildLeftQuickRows();
-    return true;
+    const bool success = SUCCEEDED(InvokeQuickVerb(m_hWnd, path, "pintohome"));
+    LoadQuickAccess();
+    return success;
 }
 
 bool CMainWnd::UnpinQuickAccess(const std::wstring& path)
 {
-    // The four built-in rows are permanent; only user-pinned folders can be removed.
-    const auto end = std::remove_if(m_quickRows.begin(), m_quickRows.end(),
-        [&](const QuickRow& row) { return !row.builtIn && !row.isThisPc && PathEquals(row.path, path); });
-    if (end == m_quickRows.end()) return false;
-    m_quickRows.erase(end, m_quickRows.end());
-    SaveQuickAccess();
-    RebuildLeftQuickRows();
-    return true;
+    for (const auto& row : m_quickRows) {
+        if (row.pinned && PathEquals(row.path, path)) {
+            const bool success = SUCCEEDED(InvokeQuickVerb(m_hWnd, row.shellPath, "unpinfromhome", row.shellId));
+            LoadQuickAccess();
+            return success;
+        }
+    }
+    return false;
 }
-
 void CMainWnd::LoadFavorites()
 {
     m_favorites.clear();
@@ -831,55 +858,14 @@ void CMainWnd::ScrollFavoritesBy(int dx)
     RefitFavoritesChips();
 }
 
-void CMainWnd::EnsureDefaultQuickRows()
-{
-    const std::wstring docs = GetKnownFolderPath(CSIDL_PERSONAL);
-    const std::wstring desk = GetKnownFolderPath(CSIDL_DESKTOPDIRECTORY);
-    const std::wstring downs = GetDownloadsPath();
-
-    // Missing built-ins are inserted after the built-ins that are already there, so an
-    // existing (possibly reordered) list keeps its rows in place.
-    int insertAt = 0;
-    auto addIfMissing = [&](bool isThisPc, const std::wstring& path, const wchar_t* label) {
-        bool found = false;
-        for (const auto& row : m_quickRows) {
-            if (isThisPc ? row.isThisPc : (!row.isThisPc && PathEquals(row.path, path))) {
-                found = true;
-                break;
-            }
-        }
-        if (found) {
-            ++insertAt;
-            return;
-        }
-        QuickRow row;
-        row.isThisPc = isThisPc;
-        row.builtIn = true;
-        row.path = isThisPc ? kThisPcPath : path;
-        row.label = label;
-        if (insertAt > static_cast<int>(m_quickRows.size()))
-            insertAt = static_cast<int>(m_quickRows.size());
-        m_quickRows.insert(m_quickRows.begin() + insertAt, std::move(row));
-        ++insertAt;
-    };
-
-    addIfMissing(true, std::wstring(), L"此电脑");
-    if (!docs.empty()) addIfMissing(false, docs, L"文档");
-    if (!desk.empty()) addIfMissing(false, desk, L"桌面");
-    if (!downs.empty()) addIfMissing(false, downs, L"下载");
-    const std::wstring pictures = GetKnownFolderPath(CSIDL_MYPICTURES);
-    if (!pictures.empty()) addIfMissing(false, pictures, L"图片");
-}
+void CMainWnd::EnsureDefaultQuickRows() { } // no app-owned default pins
 
 void CMainWnd::BuildDefaultQuickRows()
 {
-    m_quickRows.clear();
-    EnsureDefaultQuickRows();
-    RebuildLeftQuickRows();
+    LoadQuickAccess();
 }
 
-// Runtime rows for the 快速访问 list. The four built-in folders and the user's pins are one
-// ordered list, so a vertical drag can put any row anywhere and the order is persisted.
+// Project the system snapshot without replacing names, ranking or pin order.
 void CMainWnd::RebuildLeftQuickRows()
 {
     if (!m_pLeftQuickRows) return;
@@ -895,10 +881,6 @@ void CMainWnd::RebuildLeftQuickRows()
         // Navigation-pane labels follow the shell's localized name so a pinned
         // "D:\...\Pictures" reads "图片" instead of the raw folder name.
         std::wstring label = row.label;
-        if (!row.isThisPc) {
-            const std::wstring localized = GetShellDisplayName(row.path);
-            if (!localized.empty()) label = localized;
-        }
         btn->SetText(label.c_str());
         btn->SetUserData(row.path.c_str());
         btn->SetFixedHeight(rowH);
@@ -919,7 +901,7 @@ void CMainWnd::RebuildLeftQuickRows()
         if (row.isThisPc)
             icon = GetStockIconBmp(SIID_DESKTOPPC, iconPx);
         else
-            icon = GetShellIconBmp(row.path, true, iconPx);
+            icon = GetShellIconBmp(row.path, row.isFolder, iconPx);
         if (icon.empty()) icon = GetStockIconBmp(SIID_FOLDER, iconPx);
         ApplyQuickAccessRow(btn, icon);
         m_pLeftQuickRows->Add(btn);
@@ -931,7 +913,8 @@ void CMainWnd::RebuildLeftQuickRows()
     // 快速访问 block actually occupies is therefore 2 * fixed - content, so the minimum has to
     // leave just a small inset around the rows instead of one extra row per pin.
     const int contentH = static_cast<int>(m_quickRows.size()) * m_settings.NavigationRowHeight();
-    const int minimum = (std::max)(UiTokens::LeftQuickMinH, contentH + 2 * UiTokens::SpaceXs);
+    const int minimum = (std::max)(UiTokens::LeftQuickMinH, (std::min)(contentH, 240) + 2 * UiTokens::SpaceXs);
+    m_pLeftQuickRows->EnableScrollBar(true, false);
     if (m_pLeftQuick)
         m_pLeftQuick->SetMinHeight(DpiScale(minimum));
 
@@ -1000,59 +983,38 @@ int CMainWnd::HitTestQuickRow(POINT ptClient) const
 void CMainWnd::ActivateQuickRow(int index)
 {
     if (index < 0 || index >= static_cast<int>(m_quickRows.size())) return;
-    const QuickRow& row = m_quickRows[index];
+    const QuickRow row = m_quickRows[index];
+    if (!row.isFolder) {
+        if (!ShellPresentation::OpenDefaultFile(m_hWnd, row.path)) UpdateStatus(L"无法打开最近使用的文件");
+        return;
+    }
     OpenQuickAccessTab(row.isThisPc ? std::wstring(kThisPcPath) : row.path);
 }
 
-void CMainWnd::MoveQuickRow(int from, int to)
-{
-    if (from < 0 || to < 0
-        || from >= static_cast<int>(m_quickRows.size())
-        || to >= static_cast<int>(m_quickRows.size())
-        || from == to)
-        return;
-    QuickRow moved = m_quickRows[from];
-    m_quickRows.erase(m_quickRows.begin() + from);
-    m_quickRows.insert(m_quickRows.begin() + to, std::move(moved));
-    // Keep the drag anchored to the row under the cursor after the list is rebuilt.
-    m_quickDragIndex = to;
-    RebuildLeftQuickRows();
-}
+void CMainWnd::MoveQuickRow(int, int) { } // retain system order
 
-// Native Shell menu for a quick-access row (Explorer shows the same verbs for these folders),
-// with FastFile's own entries for the rows this app owns.
+// Native Shell item menu for a quick-access row: exactly the menu Windows shows for that
+// entry (固定到快速访问 / 从快速访问中取消固定 come from Windows itself). 此电脑 gets the
+// Computer item's own menu. FastFile adds nothing and handles no command itself.
 void CMainWnd::ShowQuickRowContextMenu(int index, POINT ptScreen)
 {
     if (index < 0 || index >= static_cast<int>(m_quickRows.size())) return;
     const QuickRow row = m_quickRows[index];
-
+    bool shown = false;
     if (row.isThisPc) {
-        // The Computer folder has its own native verbs (查看 / 排序 / 刷新 / 属性 …).
-        if (!ShowShellBackgroundContextMenu(kThisPcPath, ptScreen))
-            UpdateStatus(_T("此电脑没有可用的右键菜单"));
-        return;
+        shown = ShowThisPcContextMenu(ptScreen, false);
+    } else if (!row.shellId.empty()) {
+        // The Home (快速访问) identity keeps the menu bound to the system's own entry.
+        shown = ShowPidlContextMenu(reinterpret_cast<PCIDLIST_ABSOLUTE>(row.shellId.data()), ptScreen, false);
+    } else if (!row.shellPath.empty()) {
+        PIDLIST_ABSOLUTE absolute = nullptr;
+        if (SUCCEEDED(SHParseDisplayName(row.shellPath.c_str(), nullptr, &absolute, 0, nullptr)) && absolute) {
+            shown = ShowPidlContextMenu(absolute, ptScreen, false);
+            CoTaskMemFree(absolute);
+        }
     }
-
-    std::vector<std::wstring> paths{ row.path };
-    std::vector<std::pair<UINT, std::wstring>> extra;
-    extra.emplace_back(static_cast<UINT>(kCmdQuickOpen), L"打开");
-    if (!row.builtIn)
-        extra.emplace_back(static_cast<UINT>(kCmdQuickUnpin), L"从快速访问中取消固定");
-
-    UINT picked = 0;
-    if (!ShowShellContextMenu(paths, ptScreen, &extra, &picked)) {
-        ClipboardItem item;
-        item.path = row.path;
-        item.isDir = true;
-        ShowFallbackContextMenu({ item }, ptScreen);
-        return;
-    }
-    if (picked == static_cast<UINT>(kCmdQuickOpen)) {
-        ActivateQuickRow(index);
-    } else if (picked == static_cast<UINT>(kCmdQuickUnpin)) {
-        if (UnpinQuickAccess(row.path))
-            UpdateStatus(_T("已从快速访问中取消固定"));
-    }
+    if (!shown && !row.path.empty()) shown = ShowShellContextMenu({ row.path }, ptScreen);
+    if (!shown) UpdateStatus(_T("无法显示 Windows 右键菜单"));
 }
 
 void CMainWnd::OnPinnedFavoriteClick(CControlUI* btn)
@@ -1075,39 +1037,14 @@ void CMainWnd::OpenQuickAccessTab(const std::wstring& path)
     AddTab(path, true);
 }
 
+// Favourite chips show the target folder's native Windows item menu (此电脑 its own).
 void CMainWnd::ShowFavoriteContextMenu(CControlUI* btn, POINT ptScreen)
 {
     if (!btn) return;
     CDuiString ud = btn->GetUserData();
     if (ud.IsEmpty()) return;
-    std::wstring path = ud.GetData();
-    const bool quickAccess = btn->GetName().Find(_T("fav_dyn_")) == 0;
-
-    HMENU hMenu = ::CreatePopupMenu();
-    if (!hMenu) return;
-    ::AppendMenuW(hMenu, MF_STRING, kCmdFavOpen, L"\u6253\u5f00");
-    ::AppendMenuW(hMenu, MF_STRING, kCmdFavOpenNewTab, L"\u5728\u65b0\u6807\u7b7e\u9875\u4e2d\u6253\u5f00");
-    ::AppendMenuW(hMenu, MF_STRING, kCmdFavOpenNewWindow, L"\u5728\u65b0\u7a97\u53e3\u4e2d\u6253\u5f00");
-    ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
-    ::AppendMenuW(hMenu, MF_STRING, kCmdFavCopyPath, L"\u590d\u5236\u8def\u5f84");
-    ::AppendMenuW(hMenu, MF_STRING, kCmdFavUnpin,
-        quickAccess ? L"\u4ece\u5feb\u901f\u8bbf\u95ee\u53d6\u6d88\u56fa\u5b9a" : L"\u4ece\u6536\u85cf\u680f\u53d6\u6d88\u56fa\u5b9a");
-    UINT cmd = ::TrackPopupMenuEx(hMenu,
-        TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
-        ptScreen.x, ptScreen.y, m_hWnd, nullptr);
-    ::DestroyMenu(hMenu);
-    if (cmd == kCmdFavOpen) {
-        AddTab(path, true);
-    } else if (cmd == kCmdFavOpenNewTab) {
-        AddTab(path, true);
-    } else if (cmd == kCmdFavOpenNewWindow) {
-        POINT pt = ptScreen;
-        OpenPathInNewWindow(path, pt);
-    } else if (cmd == kCmdFavCopyPath) {
-        CopyTextToClipboard(m_hWnd, path.empty() ? L"\u6b64\u7535\u8111" : path);
-        UpdateStatus(_T("\u5df2\u590d\u5236\u8def\u5f84"));
-    } else if (cmd == kCmdFavUnpin) {
-        if ((quickAccess ? UnpinQuickAccess(path) : UnpinFavorite(path)))
-            UpdateStatus(quickAccess ? _T("已从快速访问取消固定") : _T("已从收藏栏取消固定"));
-    }
+    const std::wstring path = ud.GetData();
+    const bool shown = (path.empty() || IsThisPcPath(path)) ? ShowThisPcContextMenu(ptScreen, false)
+        : ShowShellContextMenu({ path }, ptScreen);
+    if (!shown) UpdateStatus(_T("无法显示 Windows 右键菜单"));
 }

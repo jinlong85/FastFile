@@ -1,4 +1,4 @@
-﻿#include "MainWndInternal.h"
+#include "MainWndInternal.h"
 #include "FavoriteStarUI.h"
 #include "ShellMenuUtil.h"
 #include "ExplorerAgentProtocol.h"
@@ -34,6 +34,7 @@ public:
 #include "ShellWindowRegistration.h"
 #include <sddl.h>
 #pragma comment(lib, "advapi32.lib")
+#include <shldisp.h>
 
 namespace {
 // A live OleGetClipboard proxy cannot be put back after clearing its backing
@@ -65,10 +66,6 @@ public:
     POINT ThumbPoint() const { return {m_rcThumb.left+1,m_rcThumb.top+2}; }
     WPARAM TimerId() const { return DEFAULT_TIMERID; }
 };
-HWND deleteTestOwner = nullptr;
-int deleteTestReply = IDNO;
-int deleteDialogCount = 0;
-bool createFixtureFolder = false;
 // Counts files and the newest write time in the user's real icon cache tree
 // (%TEMP%\FastFileIconCache), read-only, to prove a test run never touches it.
 void UserIconCacheSnapshot(size_t& files, ULONGLONG& newest) {
@@ -120,22 +117,126 @@ bool AppIconMatchesSource() {
     }
     FreeLibrary(app);return ok;
 }
-LRESULT CALLBACK ConfirmFixtureDelete(int code, WPARAM wParam, LPARAM lParam) {
-    if (code == HCBT_ACTIVATE) {
-        HWND dialog = reinterpret_cast<HWND>(wParam);
-        wchar_t title[128]{}; GetWindowTextW(dialog, title, _countof(title));
-        if (GetWindow(dialog, GW_OWNER) == deleteTestOwner &&
-            wcscmp(title, L"FastFile - 确认删除") == 0) {
-            ++deleteDialogCount;
-            PostMessageW(dialog, WM_COMMAND, deleteTestReply, 0);
-        }
-        if (createFixtureFolder && GetWindow(dialog, GW_OWNER) == deleteTestOwner &&
-            wcscmp(title, L"新建文件夹") == 0) {
-            SetDlgItemTextW(dialog, 1002, L"快捷键新目录");
-            PostMessageW(dialog, WM_COMMAND, IDOK, 0);
+// Dismisses (and counts) any dialog box this process opens on the harness's hidden desktop,
+// so a native confirmation can only fail a check, never block the suite or reach the user.
+class NativeDialogGuard {
+public:
+    NativeDialogGuard() : m_desktop(GetThreadDesktop(GetCurrentThreadId())) {
+        m_worker = std::thread([this] {
+            if (m_desktop) SetThreadDesktop(m_desktop);
+            while (!m_stop.load()) {
+                EnumDesktopWindows(m_desktop, [](HWND window, LPARAM data) -> BOOL {
+                    auto* self = reinterpret_cast<NativeDialogGuard*>(data);
+                    DWORD process = 0; GetWindowThreadProcessId(window, &process);
+                    wchar_t name[64]{}; GetClassNameW(window, name, _countof(name));
+                    if (process == GetCurrentProcessId() && IsWindowVisible(window) && wcscmp(name, L"#32770") == 0) {
+                        wchar_t title[256]{}; GetWindowTextW(window, title, _countof(title));
+                        char utf8[768]{}; WideCharToMultiByte(CP_UTF8, 0, title, -1, utf8, sizeof(utf8), nullptr, nullptr);
+                        std::cerr << "  dialog dismissed on the hidden desktop: " << utf8 << '\n';
+                        ++self->m_dismissed;
+                        PostMessageW(window, WM_COMMAND, IDCANCEL, 0);
+                        PostMessageW(window, WM_CLOSE, 0, 0);
+                    }
+                    return TRUE;
+                }, reinterpret_cast<LPARAM>(this));
+                Sleep(100);
+            }
+        });
+    }
+    ~NativeDialogGuard() { m_stop.store(true); if (m_worker.joinable()) m_worker.join(); }
+    int Dismissed() const { return m_dismissed.load(); }
+private:
+    HDESK m_desktop = nullptr;
+    std::atomic<bool> m_stop{false};
+    std::atomic<int> m_dismissed{0};
+    std::thread m_worker;
+};
+// Item-by-item comparison (ids, types, states, texts, submenu shape) of two queried menus.
+bool SameShellMenu(HMENU left, HMENU right, std::string* why = nullptr, bool compareIds = true) {
+    const int count = GetMenuItemCount(left);
+    if (count != GetMenuItemCount(right)) {
+        if (why) *why = "count " + std::to_string(count) + " vs " + std::to_string(GetMenuItemCount(right));
+        return false;
+    }
+    for (int i = 0; i < count; ++i) {
+        wchar_t a[512]{}, b[512]{};
+        MENUITEMINFOW x{}, y{}; x.cbSize = y.cbSize = sizeof(MENUITEMINFOW);
+        x.fMask = y.fMask = MIIM_ID | MIIM_FTYPE | MIIM_STATE | MIIM_SUBMENU | MIIM_STRING;
+        x.dwTypeData = a; x.cch = _countof(a); y.dwTypeData = b; y.cch = _countof(b);
+        if (!GetMenuItemInfoW(left, i, TRUE, &x) || !GetMenuItemInfoW(right, i, TRUE, &y)) return false;
+        // A cascading item's wID is its HMENU handle, which differs per query.
+        if ((compareIds && !x.hSubMenu && x.wID != y.wID) || x.fType != y.fType || (x.fState & ~MFS_HILITE) != (y.fState & ~MFS_HILITE)
+            || wcscmp(a, b) != 0 || (x.hSubMenu != nullptr) != (y.hSubMenu != nullptr)) {
+            if (why) {
+                char ua[512]{}, ub[512]{};
+                WideCharToMultiByte(CP_UTF8, 0, a, -1, ua, sizeof(ua), nullptr, nullptr);
+                WideCharToMultiByte(CP_UTF8, 0, b, -1, ub, sizeof(ub), nullptr, nullptr);
+                char line[1400]{};
+                sprintf_s(line, "item %d shown{id=%u type=0x%x state=0x%x sub=%d \"%s\"} raw{id=%u type=0x%x state=0x%x sub=%d \"%s\"}",
+                    i, x.wID, x.fType, x.fState, x.hSubMenu != nullptr, ua, y.wID, y.fType, y.fState, y.hSubMenu != nullptr, ub);
+                *why = line;
+            }
+            return false;
         }
     }
+    return true;
+}
+// The raw Windows menu for comparison: GetUIObjectOf / CreateViewObject + QueryContextMenu
+// with no host involvement (callers may site it the way FastFile sites its own menus).
+struct RawShellMenu {
+    IContextMenu* menu = nullptr; HMENU popup = nullptr; UINT last = 0;
+    RawShellMenu() = default;
+    RawShellMenu(const RawShellMenu&) = delete;
+    RawShellMenu& operator=(const RawShellMenu&) = delete;
+    ~RawShellMenu() { if (popup) DestroyMenu(popup); if (menu) menu->Release(); }
+    bool Query(UINT flags) {
+        if (!menu) return false;
+        if (popup) DestroyMenu(popup);
+        popup = CreatePopupMenu();
+        const HRESULT hr = menu->QueryContextMenu(popup, 0, 1, 0x7FFF, flags);
+        last = SUCCEEDED(hr) ? 1 + HRESULT_CODE(hr) : 0;
+        return SUCCEEDED(hr);
+    }
+    bool Item(PCIDLIST_ABSOLUTE item, HWND owner) {
+        IShellFolder* parent = nullptr; PCUITEMID_CHILD child = nullptr;
+        if (!item || FAILED(SHBindToParent(item, IID_PPV_ARGS(&parent), &child))) return false;
+        parent->GetUIObjectOf(owner, 1, &child, IID_IContextMenu, nullptr, reinterpret_cast<void**>(&menu));
+        parent->Release();
+        return menu != nullptr;
+    }
+    bool Path(const std::wstring& path, HWND owner) {
+        PIDLIST_ABSOLUTE item = nullptr;
+        if (FAILED(SHParseDisplayName(path.c_str(), nullptr, &item, 0, nullptr))) return false;
+        const bool ok = Item(item, owner); CoTaskMemFree(item); return ok;
+    }
+    bool Computer(HWND owner) {
+        PIDLIST_ABSOLUTE item = nullptr;
+        if (FAILED(SHGetKnownFolderIDList(FOLDERID_ComputerFolder, 0, nullptr, &item))) return false;
+        const bool ok = Item(item, owner); CoTaskMemFree(item); return ok;
+    }
+    bool Background(const std::wstring& folder, HWND owner) {
+        IShellFolder* shellFolder = nullptr; PIDLIST_ABSOLUTE item = nullptr;
+        if (FAILED(SHParseDisplayName(folder.c_str(), nullptr, &item, 0, nullptr))) return false;
+        SHBindToObject(nullptr, item, nullptr, IID_PPV_ARGS(&shellFolder)); CoTaskMemFree(item);
+        if (!shellFolder) return false;
+        shellFolder->CreateViewObject(owner, IID_PPV_ARGS(&menu)); shellFolder->Release();
+        return menu != nullptr;
+    }
+};
+// Counts (and blocks) popup-menu windows (#32768) created on this thread, so a native
+// menu that something tries to show is observed without ever appearing.
+int blockedMenuWindows = 0;
+LRESULT CALLBACK BlockMenuWindows(int code, WPARAM wParam, LPARAM lParam) {
+    if (code == HCBT_CREATEWND) {
+        wchar_t name[32]{}; GetClassNameW(reinterpret_cast<HWND>(wParam), name, _countof(name));
+        if (wcscmp(name, L"#32768") == 0) { ++blockedMenuWindows; return 1; }
+    }
     return CallNextHookEx(nullptr, code, wParam, lParam);
+}
+// Menu id of the canonical verb in a queried menu (0 if absent).
+UINT VerbCommand(IContextMenu* menu, HMENU popup, UINT last, const wchar_t* verb) {
+    const int pos = ShellMenuUtil::FindVerb(menu, popup, 1, last, verb);
+    return pos >= 0 ? GetMenuItemID(popup, pos) : 0;
 }
 }
 
@@ -149,6 +250,7 @@ struct ShellBrowserHostTestAccess {
     static HWND ListWindow(ShellBrowserHost& host) { return host.m_listWindow; }
     static ShellBrowserHost::ViewCounters Counters(ShellBrowserHost& host) { return host.m_counters; }
     static bool HasListSpacer(ShellBrowserHost& host) { return host.m_listSpacer != nullptr; }
+    static int ResolveItemIcon(ShellBrowserHost& host, int index) { return host.ResolveItemIcon(index); }
     static void Probe(ShellBrowserHost& host, int item) { host.m_probeItem = item; host.m_probeTick = 0; }
     static LONGLONG ProbeTick(ShellBrowserHost& host) { return host.m_probeTick; }
     static bool MediaAspectRatio(ShellBrowserHost& host,const std::wstring& path,int sourceW,int sourceH) {
@@ -480,7 +582,423 @@ struct TabStripRegressionAccess {
 
 }
 
+// A provider that implements owner drawing through IContextMenu3 only, plus
+// a legacy mode. Deliberately leaves GDI state changed like an extension can.
+class ShellMenuDrawingFixture : public IContextMenu3 {
+public:
+    bool modern = true;
+    bool modernUnavailable = false;
+    HRESULT status = S_OK;
+    int modernCalls = 0, legacyCalls = 0, measures = 0, draws = 0;
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+        if (!out) return E_POINTER;
+        *out = nullptr;
+        if (iid == IID_IUnknown || iid == IID_IContextMenu || iid == IID_IContextMenu2 || (modern && iid == IID_IContextMenu3)) {
+            *out = static_cast<IContextMenu3*>(this); AddRef(); return S_OK;
+        }
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++refs; }
+    ULONG STDMETHODCALLTYPE Release() override { return --refs; }
+    HRESULT STDMETHODCALLTYPE QueryContextMenu(HMENU menu, UINT pos, UINT first, UINT, UINT) override {
+        InsertMenuW(menu, pos, MF_BYPOSITION | MF_OWNERDRAW, first, reinterpret_cast<LPCWSTR>(this));
+        InsertMenuW(menu, pos + 1, MF_BYPOSITION | MF_STRING, first + 1, L"正常中文菜单");
+        return MAKE_HRESULT(SEVERITY_SUCCESS, 0, 2);
+    }
+    HRESULT STDMETHODCALLTYPE InvokeCommand(LPCMINVOKECOMMANDINFO) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetCommandString(UINT_PTR, UINT, UINT*, LPSTR, UINT) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE HandleMenuMsg(UINT message, WPARAM, LPARAM data) override {
+        ++legacyCalls;
+        return modern && !modernUnavailable ? E_NOTIMPL : Process(message, data, nullptr);
+    }
+    HRESULT STDMETHODCALLTYPE HandleMenuMsg2(UINT message, WPARAM, LPARAM data, LRESULT* result) override {
+        ++modernCalls;
+        return modernUnavailable ? E_NOTIMPL : Process(message, data, result);
+    }
+private:
+    ULONG refs = 1;
+    HRESULT Process(UINT message, LPARAM data, LRESULT* result) {
+        if (status != S_OK) return status;
+        if (result) *result = 0;
+        if (message == WM_MEASUREITEM) {
+            auto* item = reinterpret_cast<MEASUREITEMSTRUCT*>(data);
+            item->itemWidth = 240; item->itemHeight = 36; ++measures;
+            if (result) *result = TRUE;
+        } else if (message == WM_DRAWITEM) {
+            auto* item = reinterpret_cast<DRAWITEMSTRUCT*>(data);
+            RECT text = item->rcItem;
+            DrawTextW(item->hDC, L"第三方中文菜单", -1, &text, DT_SINGLELINE | DT_VCENTER);
+            ++draws;
+            // The next standard item must not inherit this font, color or clip.
+            SelectObject(item->hDC, GetStockObject(SYSTEM_FIXED_FONT));
+            SetTextColor(item->hDC, RGB(12, 34, 56));
+            SetBkMode(item->hDC, OPAQUE);
+            IntersectClipRect(item->hDC, 0, 0, 1, 1);
+            if (result) *result = TRUE;
+        } else if (message == WM_MENUCHAR && result) {
+            *result = MAKELRESULT(1, MNC_EXECUTE);
+        }
+        return S_OK;
+    }
+};
+
 struct MainWndRegressionAccess {
+    static void ClearUndoStacks(CMainWnd& window) {
+        window.m_undoStack.clear();
+        window.m_redoStack.clear();
+    }
+    inline static CMainWnd* menuCaptureOwner = nullptr;
+    inline static std::wstring menuCapturePath;
+    static void CALLBACK CaptureOwnedMenu(HWND, UINT, UINT_PTR timer, DWORD) {
+        KillTimer(nullptr, timer);
+        HWND popup = nullptr;
+        EnumThreadWindows(GetCurrentThreadId(), [](HWND candidate, LPARAM out)->BOOL {
+            wchar_t cls[64]{}; GetClassNameW(candidate, cls, _countof(cls));
+            if (IsWindowVisible(candidate) && wcscmp(cls, L"#32768") == 0) {
+                *reinterpret_cast<HWND*>(out) = candidate; return FALSE;
+            }
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(&popup));
+        if (popup && menuCaptureOwner) {
+            RECT rect{}; GetWindowRect(popup, &rect);
+            HDC screen = GetDC(popup), dc = CreateCompatibleDC(screen);
+            HBITMAP bitmap = CreateCompatibleBitmap(screen, rect.right - rect.left, rect.bottom - rect.top);
+            HGDIOBJ previous = SelectObject(dc, bitmap);
+            const BOOL printed = PrintWindow(popup, dc, 0);
+            CLSID png{};
+            if (printed && menuCaptureOwner->GetPngEncoderClsid(&png)) {
+                Gdiplus::Bitmap image(bitmap, nullptr);
+                image.Save(menuCapturePath.c_str(), &png, nullptr);
+            }
+            SelectObject(dc, previous); DeleteObject(bitmap); DeleteDC(dc); ReleaseDC(popup, screen);
+        }
+        EndMenu();
+    }
+    static int DiagnoseQuickMenu(CMainWnd& window, const std::vector<CMainWnd::QuickRow>& rows, const std::wstring& directory) {
+        if (rows.empty()) return 1;
+        window.StopQuickAccessSync();
+        ShowWindow(window.m_hWnd, SW_SHOWNOACTIVATE);
+        RECT owner{}; GetWindowRect(window.m_hWnd, &owner);
+        const POINT point{owner.left + 80, owner.top + 80};
+        const auto& row = rows.front();
+        auto dump = [&](const char* tag, HMENU popup) {
+            MENUINFO info{}; info.cbSize = sizeof(info); info.fMask = MIM_STYLE; GetMenuInfo(popup, &info);
+            std::cout << tag << " style=" << info.dwStyle << " rows=" << GetMenuItemCount(popup) << '\n';
+            for (int i = 0; i < GetMenuItemCount(popup); ++i) {
+                wchar_t text[512]{}; MENUITEMINFOW item{}; item.cbSize = sizeof(item);
+                item.fMask = MIIM_ID | MIIM_FTYPE | MIIM_BITMAP | MIIM_STRING;
+                item.dwTypeData = text; item.cch = _countof(text);
+                GetMenuItemInfoW(popup, i, TRUE, &item);
+                char utf8[2048]{}; WideCharToMultiByte(CP_UTF8, 0, text, -1, utf8, sizeof(utf8), nullptr, nullptr);
+                std::cout << "  " << i << " id=" << item.wID << " type=" << item.fType
+                    << " callback=" << (item.hbmpItem == HBMMENU_CALLBACK) << " text=" << utf8 << '\n';
+            }
+        };
+        menuCaptureOwner = &window;
+        for (int variant = 0; variant < 3; ++variant) {
+            IContextMenu* menu = nullptr; HMENU popup = nullptr; UINT last = 0;
+            if (variant < 2) {
+                auto* absolute = reinterpret_cast<PCIDLIST_ABSOLUTE>(row.shellId.data());
+                IShellFolder* parent = nullptr; PCUITEMID_CHILD child = nullptr;
+                if (FAILED(SHBindToParent(absolute, IID_PPV_ARGS(&parent), &child))) return 1;
+                const HRESULT ui = parent->GetUIObjectOf(window.m_hWnd, 1, &child, IID_IContextMenu, nullptr, reinterpret_cast<void**>(&menu));
+                parent->Release(); if (FAILED(ui)) return 1;
+                popup = CreatePopupMenu();
+                const HRESULT queried = menu->QueryContextMenu(popup, 0, 1, 0x7fff, CMF_NORMAL);
+                if (FAILED(queried)) { DestroyMenu(popup); menu->Release(); return 1; }
+                last = 1 + HRESULT_CODE(queried);
+            } else if (!window.BuildShellItemMenu({row.path}, &menu, &popup, &last)) return 1;
+            const char* tag = variant == 0 ? "home-raw" : variant == 1 ? "home-current" : "filesystem";
+            dump(tag, popup);
+            menuCapturePath = directory + (variant == 0 ? L"\\home-raw.png" : variant == 1 ? L"\\home-current.png" : L"\\filesystem.png");
+            const UINT_PTR timer = SetTimer(nullptr, 0, 350, CaptureOwnedMenu);
+            if (variant == 0) {
+                // Untouched provider layout: no separator normalization or additions.
+                window.m_pCtxMenu = menu;
+                menu->QueryInterface(IID_PPV_ARGS(&window.m_pCtxMenu2));
+                menu->QueryInterface(IID_PPV_ARGS(&window.m_pCtxMenu3));
+                TrackPopupMenuEx(popup, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, window.m_hWnd, nullptr);
+                if (window.m_pCtxMenu3) window.m_pCtxMenu3->Release();
+                if (window.m_pCtxMenu2) window.m_pCtxMenu2->Release();
+                window.m_pCtxMenu = nullptr; window.m_pCtxMenu2 = nullptr; window.m_pCtxMenu3 = nullptr;
+            } else {
+                window.TrackPopupShellMenu(menu, popup, point, 1, last);
+            }
+            KillTimer(nullptr, timer); dump(tag, popup);
+            DestroyMenu(popup); menu->Release();
+        }
+        menuCaptureOwner = nullptr;
+        return 0;
+    }
+    static int CheckShellMenuDrawing(CMainWnd& window) {
+        int failures = 0;
+        auto check = [&](bool ok, const char* name) { if (!ok) { ++failures; std::cerr << "FAIL " << name << '\n'; } };
+        HDC screen = GetDC(window.m_hWnd), dc = CreateCompatibleDC(screen);
+        HBITMAP bitmap = CreateCompatibleBitmap(screen, 260, 48);
+        HGDIOBJ previous = SelectObject(dc, bitmap);
+        for (bool modern : {true, false}) {
+            ShellMenuDrawingFixture menu; menu.modern = modern;
+            window.m_pCtxMenu2 = &menu;
+            window.m_pCtxMenu3 = modern ? &menu : nullptr;
+            MEASUREITEMSTRUCT measure{}; measure.CtlType = ODT_MENU;
+            LRESULT result = -7; bool handled = false;
+            window.ForwardShellMenuMessage(WM_MEASUREITEM, 0, reinterpret_cast<LPARAM>(&measure), &result, &handled);
+            check(handled && result == TRUE && measure.itemHeight == 36 && measure.itemWidth == 240,
+                modern ? "IContextMenu3 measures owner-drawn rows and returns its result" : "IContextMenu2 measurement returns TRUE");
+            DRAWITEMSTRUCT draw{}; draw.CtlType = ODT_MENU; draw.hDC = dc; draw.rcItem = {0, 0, 260, 48};
+            RECT clipBefore{}, clipAfter{}; GetClipBox(dc, &clipBefore);
+            const auto font = GetCurrentObject(dc, OBJ_FONT);
+            const auto color = GetTextColor(dc); const int mode = GetBkMode(dc);
+            result = -7; handled = false;
+            window.ForwardShellMenuMessage(WM_DRAWITEM, 0, reinterpret_cast<LPARAM>(&draw), &result, &handled);
+            GetClipBox(dc, &clipAfter);
+            check(handled && result == TRUE && menu.draws == 1, "menu drawing is handled exactly once");
+            check(GetCurrentObject(dc, OBJ_FONT) == font && GetTextColor(dc) == color && GetBkMode(dc) == mode
+                && EqualRect(&clipBefore, &clipAfter), "extension drawing cannot leak GDI state into following rows");
+            if (modern) {
+                result = -7; handled = false;
+                window.ForwardShellMenuMessage(WM_MENUCHAR, 0, 0, &result, &handled);
+                check(handled && result == MAKELRESULT(1, MNC_EXECUTE) && menu.legacyCalls == 0,
+                    "modern menu keyboard result is preserved without dispatching legacy messages");
+            }
+            const int before = menu.modernCalls + menu.legacyCalls;
+            measure.CtlType = ODT_BUTTON; handled = false;
+            window.ForwardShellMenuMessage(WM_MEASUREITEM, 0, reinterpret_cast<LPARAM>(&measure), &result, &handled);
+            check(!handled && before == menu.modernCalls + menu.legacyCalls, "menu routing leaves owner-drawn controls alone");
+            measure.CtlType = ODT_MENU; menu.status = S_FALSE; handled = false;
+            window.ForwardShellMenuMessage(WM_MEASUREITEM, 0, reinterpret_cast<LPARAM>(&measure), &result, &handled);
+            check(!handled, "S_FALSE is not reported as a handled menu message");
+            if (modern) {
+                menu.status = S_OK; menu.modernUnavailable = true;
+                measure.itemHeight = 0; handled = false; result = -7;
+                window.ForwardShellMenuMessage(WM_MEASUREITEM, 0, reinterpret_cast<LPARAM>(&measure), &result, &handled);
+                check(handled && result == TRUE && measure.itemHeight == 36,
+                    "unimplemented modern message falls back to the available legacy handler");
+            }
+            window.m_pCtxMenu2 = nullptr; window.m_pCtxMenu3 = nullptr;
+            // Baseline implementation intentionally leaks state; reset the test DC
+            // so the next case still starts with a valid normal drawing context.
+            SelectClipRgn(dc, nullptr); SelectObject(dc, font); SetTextColor(dc, color); SetBkMode(dc, mode);
+        }
+        // Exercise the actual TrackPopupMenu message loop with the modern-only
+        // provider: cancelled popup never invokes a user command.
+        const bool shown = IsWindowVisible(window.m_hWnd) != FALSE;
+        if (!shown) ShowWindow(window.m_hWnd, SW_SHOWNOACTIVATE);
+        ShellMenuDrawingFixture popupMenu;
+        HMENU popup = CreatePopupMenu(); popupMenu.QueryContextMenu(popup, 0, 1, 0x7fff, CMF_NORMAL);
+        // Shell extensions may replace separator-only lazy submenu placeholders
+        // on WM_INITMENUPOPUP. The host must not empty those provider-owned menus.
+        HMENU lazySubmenu = CreatePopupMenu();
+        AppendMenuW(lazySubmenu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(popup, MF_POPUP, reinterpret_cast<UINT_PTR>(lazySubmenu), L"延迟加载子菜单");
+        RECT owner{}; GetWindowRect(window.m_hWnd, &owner);
+        const UINT_PTR timer = SetTimer(nullptr, 0, 250, [](HWND, UINT, UINT_PTR id, DWORD) { EndMenu(); KillTimer(nullptr, id); });
+        check(timer != 0, "owner-draw popup cancellation timer starts");
+        if (timer) {
+            window.TrackPopupShellMenu(&popupMenu, popup, {owner.left + 80, owner.top + 80}, 1, 3);
+            KillTimer(nullptr, timer);
+            check(popupMenu.measures > 0 && popupMenu.draws > 0 && popupMenu.legacyCalls == 0,
+                "real popup measures and paints modern-only Chinese owner-drawn entries");
+            check(!window.m_pCtxMenu2 && !window.m_pCtxMenu3, "popup releases active drawing interfaces on close");
+            check(GetMenuItemCount(lazySubmenu) == 1,
+                "popup preserves provider-owned lazy submenu placeholders");
+        }
+        DestroyMenu(popup);
+        if (!shown) ShowWindow(window.m_hWnd, SW_HIDE);
+        SelectObject(dc, previous); DeleteObject(bitmap); DeleteDC(dc); ReleaseDC(window.m_hWnd, screen);
+        return failures;
+    }
+    static void ConfigureQuickFixture(CMainWnd& window, const std::wstring& source) {
+        window.m_quickReadSource = source;
+    }
+    static bool WaitQuickFixture(CMainWnd& window) {
+        const ULONGLONG deadline = GetTickCount64() + 10000;
+        while (window.m_quickReadPending && GetTickCount64() < deadline) {
+            MSG msg{};
+            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                if (msg.message != WM_QUIT && !CPaintManagerUI::TranslateMessage(&msg)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
+            }
+            Sleep(10);
+        }
+        return !window.m_quickReadPending;
+    }
+    static int CheckSystemQuickAccess(CMainWnd& window, const std::wstring& fixture) {
+        int failures = 0;
+        auto check = [&](bool ok, const char* name) { if (!ok) { ++failures; std::cerr << "FAIL " << name << '\n'; } };
+        const ULONGLONG deadline = GetTickCount64() + 10000;
+        while (window.m_quickReadPending && GetTickCount64() < deadline) {
+            MSG msg{};
+            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
+            Sleep(10);
+        }
+        check(!window.m_quickReadPending, "background Shell snapshot completes");
+        window.StopQuickAccessSync();
+        std::vector<CMainWnd::QuickRow> systemRows;
+        const HRESULT readSystem = CMainWnd::ReadSystemQuickRows(systemRows);
+        check(SUCCEEDED(readSystem), "read live Windows Home namespace without changing pins or privacy");
+        wchar_t captureDirectory[32768]{};
+        if (GetEnvironmentVariableW(L"FASTFILE_QUICK_MENU_DIAGNOSTICS", captureDirectory, _countof(captureDirectory)))
+            return DiagnoseQuickMenu(window, systemRows, captureDirectory);
+        IShellDispatch* systemShell = nullptr;
+        Folder* systemFolder = nullptr;
+        FolderItems* systemItems = nullptr;
+        VARIANT home{}; home.vt = VT_BSTR;
+        home.bstrVal = SysAllocString(L"shell:::{f874310e-b6b7-47dc-bc84-b9e6b38f5903}");
+        HRESULT automation = CoCreateInstance(CLSID_Shell, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&systemShell));
+        if (SUCCEEDED(automation)) automation = systemShell->NameSpace(home, &systemFolder);
+        if (SUCCEEDED(automation) && systemFolder) automation = systemFolder->Items(&systemItems);
+        long systemCount = -1;
+        if (systemItems) automation = systemItems->get_Count(&systemCount);
+        check(SUCCEEDED(automation) && systemCount == long(systemRows.size()),
+            "live snapshot count matches independent Shell.Application Home enumeration");
+        if (systemItems && systemCount == long(systemRows.size())) {
+            for (long i = 0; i < systemCount; ++i) {
+                VARIANT index{}; index.vt = VT_I4; index.lVal = i;
+                FolderItem* item = nullptr;
+                BSTR name = nullptr; VARIANT_BOOL isFolder = VARIANT_FALSE;
+                HRESULT itemHr = systemItems->Item(index, &item);
+                if (SUCCEEDED(itemHr) && item) itemHr = item->get_Name(&name);
+                if (item) item->get_IsFolder(&isFolder);
+                check(SUCCEEDED(itemHr) && name && systemRows[size_t(i)].label == name
+                    && systemRows[size_t(i)].isFolder == (isFolder != VARIANT_FALSE),
+                    "live ordering, names and item types match the independent system enumeration");
+                if (name) SysFreeString(name);
+                if (item) item->Release();
+            }
+        }
+        std::cout << "System Home snapshot: " << systemRows.size() << " entries (paths omitted)\n";
+        if (systemItems) systemItems->Release();
+        if (systemFolder) systemFolder->Release();
+        if (systemShell) systemShell->Release();
+        VariantClear(&home);
+        if (!systemRows.empty()) {
+            CMainWnd::QuickSnapshot live; live.result = S_OK; live.rows = systemRows;
+            window.ApplyQuickSnapshot(live);
+            check(!window.m_quickRows.empty() && window.m_quickRows.front().shellId == systemRows.front().shellId,
+                "live quick row popup keeps the Windows Home parent identity");
+            const bool shown = IsWindowVisible(window.m_hWnd) != FALSE;
+            if (!shown) ShowWindow(window.m_hWnd, SW_SHOWNOACTIVATE);
+            RECT owner{}; GetWindowRect(window.m_hWnd, &owner);
+            const UINT_PTR timer = SetTimer(nullptr, 0, 250, [](HWND, UINT, UINT_PTR id, DWORD) { EndMenu(); KillTimer(nullptr, id); });
+            check(timer != 0, "live Home popup cancellation timer starts");
+            if (timer) {
+                // Query and paint only; never choose a verb on a user item.
+                window.ShowQuickRowContextMenu(0, {owner.left + 80, owner.top + 80});
+                KillTimer(nullptr, timer);
+                check(!window.m_pCtxMenu2 && !window.m_pCtxMenu3, "real Home row menu closes with drawing interfaces cleared");
+            }
+            {
+                // Same row through the track seam: exactly the Windows Home item menu, no extras.
+                RawShellMenu raw; bool same = false; int calls = 0;
+                const UINT flags = CMainWnd::ShellItemMenuFlags(false, false);
+                if (raw.Item(reinterpret_cast<PCIDLIST_ABSOLUTE>(window.m_quickRows.front().shellId.data()), window.m_hWnd)) {
+                    if (window.m_shellBrowser) window.m_shellBrowser->SiteContextMenu(raw.menu);
+                    raw.Query(flags);
+                }
+                window.m_trackMenuHook = [&](IContextMenu*, HMENU shownPopup) -> UINT {
+                    ++calls; same = raw.popup && SameShellMenu(shownPopup, raw.popup); return 0u;
+                };
+                window.ShowQuickRowContextMenu(0, {owner.left + 80, owner.top + 80});
+                window.m_trackMenuHook = nullptr;
+                check(calls == 1 && same && window.m_lastShellMenuFlags == flags,
+                    "live Quick Access row menu is the unmodified Windows Home item menu (no FastFile extras)");
+            }
+            if (!shown) ShowWindow(window.m_hWnd, SW_HIDE);
+        }
+        // Only this run's freshly-created temporary directory is changed. Never
+        // unpin existing user items; the guard removes our own pin on every exit.
+        const std::wstring pinFixture = fixture + L"\\FastFile-QuickAccess-Pin-Test";
+        CreateDirectoryW(pinFixture.c_str(), nullptr);
+        auto findPin = [&](std::vector<CMainWnd::QuickRow>& entries) -> int {
+            for (size_t i = 0; i < entries.size(); ++i)
+                if (CMainWnd::PathEquals(entries[i].path, pinFixture) && entries[i].pinned) return int(i);
+            return -1;
+        };
+        auto removeOwnedPin = [&] {
+            std::vector<CMainWnd::QuickRow> entries;
+            if (SUCCEEDED(CMainWnd::ReadSystemQuickRows(entries))) {
+                const int index = findPin(entries);
+                if (index >= 0) return CMainWnd::InvokeQuickVerb(nullptr, entries[size_t(index)].shellPath,
+                    "unpinfromhome", entries[size_t(index)].shellId);
+            }
+            return S_FALSE;
+        };
+        auto cleanup = std::unique_ptr<int, std::function<void(int*)>>(reinterpret_cast<int*>(1), [&](int*) { removeOwnedPin(); });
+        const HRESULT pinResult = CMainWnd::InvokeQuickVerb(nullptr, pinFixture, "pintohome");
+        check(SUCCEEDED(pinResult), "real system pin verb accepts only the owned temporary fixture");
+        int pinnedIndex = -1;
+        const ULONGLONG pinDeadline = GetTickCount64() + 8000;
+        do {
+            std::vector<CMainWnd::QuickRow> entries;
+            if (SUCCEEDED(CMainWnd::ReadSystemQuickRows(entries))) pinnedIndex = findPin(entries);
+            if (pinnedIndex >= 0 || FAILED(pinResult)) break;
+            Sleep(50);
+        } while (GetTickCount64() < pinDeadline);
+        check(pinnedIndex >= 0, "pin is visible through the system snapshot with its native pinned state");
+        check(SUCCEEDED(removeOwnedPin()), "native Home identity can unpin the owned fixture");
+        std::vector<CMainWnd::QuickRow> afterUnpin;
+        CMainWnd::ReadSystemQuickRows(afterUnpin);
+        check(findPin(afterUnpin) < 0, "owned pin is removed from system state");
+        RemoveDirectoryW(pinFixture.c_str());
+        std::vector<CMainWnd::QuickRow> native;
+        check(SUCCEEDED(CMainWnd::ReadSystemQuickRows(native, fixture)), "enumerate real Shell fixture");
+        bool folder = false, file = false;
+        for (const auto& row : native) {
+            folder = folder || row.isFolder;
+            file = file || !row.isFolder;
+            check(!row.path.empty() && !row.label.empty() && !row.shellPath.empty() && !row.shellId.empty(), "retain Shell identity and display name");
+        }
+        check(folder && file, "one snapshot contains folders and recent-file-shaped entries");
+        auto before = native;
+        check(FAILED(CMainWnd::ReadSystemQuickRows(native, fixture + L"\\missing")) && native.size() == before.size(),
+            "read failure leaves caller's valid snapshot intact");
+        CMainWnd::QuickSnapshot snapshot; snapshot.result = S_OK; snapshot.rows = before;
+        window.ApplyQuickSnapshot(snapshot);
+        check(window.m_quickRows.size() == before.size() && window.m_pLeftQuickRows->GetCount() == int(before.size()),
+            "UI has exactly Shell rows without mandatory default folders");
+        for (size_t i = 0; i < before.size(); ++i)
+            check(window.m_quickRows[i].shellPath == before[i].shellPath
+                && std::wstring(window.m_pLeftQuickRows->GetItemAt(int(i))->GetText()) == before[i].label,
+                "Shell order and localized names survive UI projection");
+        auto* first = before.empty() ? nullptr : window.m_pLeftQuickRows->GetItemAt(0);
+        window.ApplyQuickSnapshot(snapshot);
+        check(before.empty() || first == window.m_pLeftQuickRows->GetItemAt(0), "unchanged snapshot does not rebuild controls");
+        window.MoveQuickRow(0, 1);
+        check(before.empty() || window.m_quickRows[0].shellPath == before[0].shellPath, "local dragging cannot change Shell order");
+        window.m_quickDragIndex = 0;
+        snapshot.rows.clear(); window.ApplyQuickSnapshot(snapshot);
+        check(window.m_quickRows.size() == before.size(), "background refresh cannot destroy a pressed row or change its click target");
+        window.m_quickDragIndex = -1;
+        window.m_inDoDragDrop = true; window.ApplyQuickSnapshot(snapshot);
+        check(window.m_quickRows.size() == before.size(), "background refresh waits for nested OLE interaction to finish");
+        window.m_inDoDragDrop = false;
+        snapshot.result = E_FAIL; snapshot.rows.clear(); window.ApplyQuickSnapshot(snapshot);
+        check(window.m_quickRows.size() == before.size(), "failure does not clear rendered snapshot");
+        snapshot.result = S_FALSE; window.ApplyQuickSnapshot(snapshot);
+        window.EnsureDefaultQuickRows();
+        check(window.m_quickRows.empty() && window.m_pLeftQuickRows->GetCount() == 0,
+            "privacy-filtered empty results stay empty without resurrecting default pins");
+        snapshot.result = S_OK; snapshot.rows = before;
+        if (!snapshot.rows.empty()) snapshot.rows[0].pinned = true;
+        window.ApplyQuickSnapshot(snapshot);
+        if (!snapshot.rows.empty()) check(window.IsQuickAccessPinned(snapshot.rows[0].path), "only explicitly pinned entries are pinned");
+        snapshot.rows.insert(snapshot.rows.end(), before.begin(), before.end());
+        snapshot.rows.insert(snapshot.rows.end(), before.begin(), before.end());
+        snapshot.rows.insert(snapshot.rows.end(), before.begin(), before.end());
+        window.ApplyQuickSnapshot(snapshot);
+        check(window.m_pLeftQuick->GetMinHeight() <= window.DpiScale(256), "recent files cannot grow sidebar beyond scrollable region");
+        check(FAILED(window.InvokeQuickVerb(nullptr, fixture, "fastfile_missing_verb")), "unavailable canonical verbs are rejected");
+        snapshot.rows = before; window.ApplyQuickSnapshot(snapshot);
+        window.m_quickReadStopping = false;
+        window.LoadQuickAccess();
+        const ULONGLONG end = GetTickCount64() + 10000;
+        while (window.m_quickReadPending && GetTickCount64() < end) {
+            MSG msg{}; while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
+            Sleep(10);
+        }
+        check(!window.m_quickReadPending && window.m_quickRows.size() == before.size(), "async refresh restores the authoritative Shell snapshot");
+        return failures;
+    }
     static int CheckTabs(CMainWnd& window) { return DuiLib::TabStripRegressionAccess::Check(*window.m_pTabStrip)?0:1; }
     static int RunIsolatedAgent() {
         // Real Explorer lives on the interactive default desktop; fixture GUI is isolated.
@@ -761,7 +1279,7 @@ struct MainWndRegressionAccess {
         // keep processing messages (no single message handler blocks) and still open it.
         const std::wstring slow=fixture+L"\\Slow";CreateDirectoryW(slow.c_str(),nullptr);
         const std::wstring selectedPath=slow+L"\\select-me.txt";
-        HANDLE selectedFile=CreateFileW(selectedPath.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,0,nullptr);
+        HANDLE selectedFile=CreateFileW(selectedPath.c_str(),GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,0,nullptr);
         check(selectedFile!=INVALID_HANDLE_VALUE,"selection fixture is created");
         if(selectedFile!=INVALID_HANDLE_VALUE)CloseHandle(selectedFile);
         slowRoot=slow;slowProbeCalls=0;CMainWnd::s_folderProbe=&SlowProbe;
@@ -844,7 +1362,18 @@ struct MainWndRegressionAccess {
         std::vector<CMainWnd::ClipboardItem> items;
         if (partial) items.push_back({ordinary, false});
         items.push_back({file, false});
-        const bool deleted = aclOk && window.DeleteItems(items, false, &completed);
+        // Windows' own delete engine with the production (interactive) flags.
+        bool deleted = false;
+        if (aclOk) {
+            ShellFileOps::Request request;
+            request.kind = ShellFileOps::Kind::Recycle;
+            request.owner = window.m_hWnd;
+            request.interactive = true;
+            for (const auto& item : items) request.sources.push_back(item.path);
+            const ShellFileOps::Result result = ShellFileOps::Perform(request);
+            for (const auto& done : result.completed) completed.push_back(done.first);
+            deleted = SUCCEEDED(result.hr) && !result.aborted && completed.size() == items.size();
+        }
         const bool retained = GetFileAttributesW(file.c_str()) != INVALID_FILE_ATTRIBUTES;
         const bool restored = setAcl(folder, restoreAcl) && setAcl(file, restoreAcl);
         std::cout << "permission check: ACL=" << aclOk << " canceled=" << !deleted
@@ -866,21 +1395,29 @@ struct MainWndRegressionAccess {
             return failures + 1;
         }
         CloseClipboard();
-        const DWORD recycleFlags = window.DeleteOperationFlags(false);
-        const DWORD permanentFlags = window.DeleteOperationFlags(true);
-        check((recycleFlags & (FOF_NOERRORUI | FOF_SILENT | FOFX_REQUIREELEVATION)) == 0,
-            "Delete keeps Windows error, progress and permission confirmation UI enabled");
-        check((recycleFlags & FOFX_SHOWELEVATIONPROMPT) != 0 &&
-            (permanentFlags & FOFX_SHOWELEVATIONPROMPT) != 0,
-            "both delete modes allow Windows elevation prompt");
-        check((recycleFlags & (FOFX_RECYCLEONDELETE | FOFX_ADDUNDORECORD | FOF_WANTNUKEWARNING)) ==
-            (FOFX_RECYCLEONDELETE | FOFX_ADDUNDORECORD | FOF_WANTNUKEWARNING),
-            "normal Delete recycles, supports undo and warns if recycling is impossible");
-        check((permanentFlags & (FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE | FOFX_ADDUNDORECORD)) == 0,
-            "permanent Delete cannot accidentally recycle");
-        auto pump = [&]() {
-            const DWORD until = GetTickCount() + 700;
-            const DWORD historyDeadline = GetTickCount() + 8000;
+        // 1.0.21: every file command is Windows' own. Inside the hosted view DefView handles the
+        // key itself; elsewhere FastFile invokes the same verb on the item's native menu. There is
+        // one undo history, the per-process Windows one (FastFile keeps none of its own).
+        NativeDialogGuard dialogs;
+        {
+            using FC = CMainWnd::FileCommand;
+            struct Row { WPARAM key; bool ctrl, shift, alt; FC command; };
+            const Row rows[] = {
+                {'C',true,false,false,FC::Copy}, {VK_INSERT,true,false,false,FC::Copy}, {'C',true,true,false,FC::None},
+                {'X',true,false,false,FC::Cut}, {'V',true,false,false,FC::Paste}, {VK_INSERT,false,true,false,FC::Paste},
+                {'Z',true,false,false,FC::Undo}, {'Y',true,false,false,FC::Redo}, {'Z',true,true,false,FC::Redo},
+                {'A',true,false,false,FC::SelectAll}, {'N',true,true,false,FC::NewFolder}, {'N',true,false,false,FC::None},
+                {VK_DELETE,false,false,false,FC::Delete}, {VK_DELETE,false,true,false,FC::DeletePermanent},
+                {'D',true,false,false,FC::Delete}, {VK_F2,false,false,false,FC::Rename},
+                {VK_RETURN,false,false,true,FC::Properties}, {VK_LEFT,false,false,true,FC::None},
+                {VK_BACK,false,false,false,FC::None}, {VK_F5,false,false,false,FC::None}, {'L',true,false,false,FC::None}};
+            bool table = true;
+            for (const auto& row : rows)
+                table = CMainWnd::FileCommandForKey(row.key, row.ctrl, row.shift, row.alt) == row.command && table;
+            check(table, "file shortcuts map to the Windows file commands; navigation keys stay FastFile's");
+        }
+        auto pumpFor = [&](DWORD ms) {
+            const DWORD until = GetTickCount() + ms;
             do {
                 MSG message;
                 while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
@@ -889,14 +1426,20 @@ struct MainWndRegressionAccess {
                     }
                 }
                 Sleep(5);
-            } while (GetTickCount() < until ||
-                (window.m_shellHistoryPending && GetTickCount() < historyDeadline));
-            check(!window.m_shellHistoryPending, "Shell history completes before the next shortcut");
+            } while (GetTickCount() < until);
         };
+        auto pump = [&]() { pumpFor(700); };
+        auto waitFor = [&](const std::function<bool()>& ready, DWORD timeout = 8000) {
+            const DWORD deadline = GetTickCount() + timeout;
+            while (!ready() && GetTickCount() < deadline) pumpFor(20);
+            return ready();
+        };
+        auto exists = [](const std::wstring& path) { return GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES; };
         const auto source = root + L"\\Keyboard Source";
         const auto target = root + L"\\Keyboard Target";
-        const auto moved = root + L"\\Keyboard Move";
-        for (const auto& path : {source, target, moved}) CreateDirectoryW(path.c_str(), nullptr);
+        const auto batchSource = root + L"\\Batch Source";
+        const auto batchDestination = root + L"\\Batch Destination";
+        for (const auto& path : {source, target, batchSource, batchDestination}) CreateDirectoryW(path.c_str(), nullptr);
         const auto original = source + L"\\keyboard.txt";
         HANDLE file = CreateFileW(original.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, 0, nullptr);
         const char payload[] = "FastFile shortcut regression";
@@ -926,6 +1469,19 @@ struct MainWndRegressionAccess {
             SetKeyboardState(saved);
             return handled;
         };
+        // The same key sent to FastFile's own window (no hosted-view focus).
+        auto frameKey = [&](WPARAM value, bool ctrl, bool shift = false, bool alt = false) {
+            BYTE saved[256]{}, keys[256]{}; GetKeyboardState(saved);
+            if (ctrl) keys[VK_CONTROL] = keys[VK_LCONTROL] = 0x80;
+            if (shift) keys[VK_SHIFT] = keys[VK_LSHIFT] = 0x80;
+            if (alt) keys[VK_MENU] = keys[VK_LMENU] = 0x80;
+            SetKeyboardState(keys);
+            MSG message{}; message.hwnd = window.m_hWnd; message.message = alt ? WM_SYSKEYDOWN : WM_KEYDOWN;
+            message.wParam = value; message.lParam = 1;
+            const bool handled = window.TranslateAccelerator(&message) == S_OK;
+            SetKeyboardState(saved);
+            return handled;
+        };
         auto select = [&]() {
             const DWORD deadline = GetTickCount() + 5000;
             bool ready = false;
@@ -942,41 +1498,78 @@ struct MainWndRegressionAccess {
         auto finish = [&]() {
             const DWORD until = GetTickCount() + 8000;
             do { pump(); } while (window.m_copyRunning && GetTickCount() < until);
-            check(!window.m_copyRunning, "keyboard file job finishes");
+            check(!window.m_copyRunning, "drag-drop file job finishes");
         };
-        // Every keyboard file operation must run through IFileOperation with the native
-        // Windows progress UI (production flags), never FastFile's old status-bar progress.
+        // FastFile's remaining own engine (drag and drop) runs IFileOperation with the native
+        // Windows progress UI (production flags) and adds a Windows undo record.
         auto nativeOperation = [&](ShellFileOps::Kind kind, const char* name) {
             const auto& last = window.m_lastFileOperation;
             const std::wstring status = window.m_pStatus ? window.m_pStatus->GetText().GetData() : L"";
             check(last.engine == ShellFileOps::Engine::FileOperation && last.kind == kind &&
                 window.m_lastFileOpRequestFlags == last.flags &&
                 (last.flags & (FOF_SILENT | FOF_NOERRORUI | FOFX_NOMINIMIZEBOX)) == 0 &&
+                (last.flags & (FOF_ALLOWUNDO | FOFX_ADDUNDORECORD)) == (FOF_ALLOWUNDO | FOFX_ADDUNDORECORD) &&
                 status.find(L'%') == std::wstring::npos, name);
         };
+        // Data object Windows put on the clipboard: exactly the expected file (CF_HDROP).
+        auto clipboardHolds = [&](const std::wstring& expected) {
+            bool ok = false;
+            IDataObject* data = nullptr;
+            if (SUCCEEDED(OleGetClipboard(&data)) && data) {
+                FORMATETC format{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+                STGMEDIUM medium{};
+                if (SUCCEEDED(data->GetData(&format, &medium))) {
+                    HDROP drop = static_cast<HDROP>(GlobalLock(medium.hGlobal));
+                    wchar_t first[MAX_PATH]{};
+                    ok = drop && DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0) == 1
+                        && DragQueryFileW(drop, 0, first, MAX_PATH) && CMainWnd::PathEquals(first, expected);
+                    GlobalUnlock(medium.hGlobal);
+                    ReleaseStgMedium(&medium);
+                }
+                data->Release();
+            }
+            return ok;
+        };
+        // Text of the Windows background menu's 撤销 entry (it names the last operation).
+        auto undoText = [&]() {
+            std::wstring text;
+            IContextMenu* menu = nullptr; bool fromView = false;
+            if (window.CreateNativeVerbMenu(CMainWnd::NativeScope::Background, true, &menu, &fromView)) {
+                HMENU popup = nullptr; UINT last = 0;
+                if (CMainWnd::QueryShellMenu(menu, CMF_NORMAL, &popup, &last)) {
+                    const int pos = ShellMenuUtil::FindVerb(menu, popup, 1, last, L"undo");
+                    wchar_t buffer[256]{};
+                    if (pos >= 0 && !(GetMenuState(popup, pos, MF_BYPOSITION) & (MF_GRAYED | MF_DISABLED))) {
+                        GetMenuStringW(popup, pos, buffer, _countof(buffer), MF_BYPOSITION);
+                        text = buffer;
+                    }
+                    DestroyMenu(popup);
+                }
+                menu->Release();
+            }
+            return text;
+        };
+        // Diagnostic: every verb of the view's background menu with its state (undo / redo).
+        auto dumpHistory = [&](const char* tag) {
+            IContextMenu* menu = nullptr;
+            if (FAILED(window.m_shellBrowser->CreateBackgroundContextMenu(&menu)) || !menu) { std::cerr << "  history " << tag << ": no menu\n"; return; }
+            HMENU popup = CreatePopupMenu();
+            const HRESULT hr = menu->QueryContextMenu(popup, 0, 1, 0x7FFF, CMF_NORMAL);
+            std::cerr << "  history " << tag << ":";
+            for (UINT offset = 0; SUCCEEDED(hr) && offset < UINT(HRESULT_CODE(hr)); ++offset) {
+                wchar_t verb[128]{};
+                if (FAILED(menu->GetCommandString(offset, GCS_VERBW, nullptr, reinterpret_cast<LPSTR>(verb), _countof(verb)))) continue;
+                const UINT state = GetMenuState(popup, offset + 1, MF_BYCOMMAND);
+                wchar_t text[128]{}; GetMenuStringW(popup, offset + 1, text, _countof(text), MF_BYCOMMAND);
+                char v[128]{}, t[256]{};
+                WideCharToMultiByte(CP_UTF8, 0, verb, -1, v, sizeof(v), nullptr, nullptr);
+                WideCharToMultiByte(CP_UTF8, 0, text, -1, t, sizeof(t), nullptr, nullptr);
+                std::cerr << " [" << offset << ' ' << v << " state=0x" << std::hex << state << std::dec << " \"" << t << "\"]";
+            }
+            std::cerr << '\n';
+            DestroyMenu(popup); menu->Release();
+        };
         navigate(source); select();
-        {
-            window.m_pendingShellRename = original;
-            IFileOperation* operation = nullptr;
-            IShellItem* item = nullptr;
-            HRESULT hr = CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&operation));
-            if (SUCCEEDED(hr)) hr = operation->SetOperationFlags(FOF_ALLOWUNDO | FOFX_ADDUNDORECORD | FOF_SILENT | FOF_NOCONFIRMATION);
-            if (SUCCEEDED(hr)) hr = SHCreateItemFromParsingName(original.c_str(), nullptr, IID_PPV_ARGS(&item));
-            if (SUCCEEDED(hr)) hr = operation->RenameItem(item, L"renamed.txt", nullptr);
-            if (SUCCEEDED(hr)) hr = operation->PerformOperations();
-            if (item) item->Release(); if (operation) operation->Release();
-            pump();
-            check(SUCCEEDED(hr) && !window.m_undoStack.empty() &&
-                window.m_undoStack.back().kind == CMainWnd::UndoRecord::Kind::ShellRename,
-                "native rename notification joins application history");
-            check(key('Z', true), "Ctrl Z invokes native rename undo");
-            pump();
-            check(GetFileAttributesW(original.c_str()) != INVALID_FILE_ATTRIBUTES, "native Shell undo restores original name");
-            check(key('Y', true), "Ctrl Y invokes native rename redo"); pump();
-            check(GetFileAttributesW((source + L"\\renamed.txt").c_str()) != INVALID_FILE_ATTRIBUTES, "native Shell redo reapplies rename");
-            key('Z', true); pump();
-            select();
-        }
         check(key('C', true, true), "Ctrl Shift C copies quoted paths");
         bool copiedPath = false;
         std::wstring copiedText;
@@ -990,145 +1583,216 @@ struct MainWndRegressionAccess {
         if (!copiedPath) {
             std::vector<CMainWnd::ClipboardItem> selected;
             window.CollectSelectedItems(selected);
-            const std::wstring status = window.m_pStatus ? window.m_pStatus->GetText().GetData() : L"";
             std::cerr << "  copy-path diagnostic: selected=" << selected.size()
                 << " expectedSelected=" << (selected.size()==1 && CMainWnd::PathEquals(selected[0].path, original))
-                << " copiedChars=" << copiedText.size()
-                << " copySucceeded=" << (status.find(L"已复制完整路径")!=std::wstring::npos)
-                << " accessDenied=" << (status.find(L"剪贴板")!=std::wstring::npos)
-                << " clipboardOwner=" << GetOpenClipboardWindow() << "\n";
+                << " copiedChars=" << copiedText.size() << " clipboardOwner=" << GetOpenClipboardWindow() << "\n";
         }
         check(copiedPath, "copy as path publishes Unicode quoted selection");
-        if (!copiedPath) {
-            OleSetClipboard(savedClipboard);
-            if (savedClipboard) { OleFlushClipboard(); savedClipboard->Release(); }
-            return failures; // later file-operation checks depend on this clipboard setup
-        }
-        check(key(VK_INSERT, true), "Ctrl Insert copies native selection");
-        // Paste must read Windows data, even when the old internal cache is empty.
-        window.m_clipboard.clear(); navigate(target);
+        // Copy: the Windows view puts its own data object (CF_HDROP + preferred effect) on the clipboard.
+        OleSetClipboard(nullptr);
+        check(key(VK_INSERT, true), "Ctrl Insert is handled in the Windows view");
+        check(waitFor([&] { return clipboardHolds(original); }, 3000), "Ctrl Insert puts the Windows file data object on the clipboard");
+        OleSetClipboard(nullptr);
+        check(key('C', true), "Ctrl C is handled in the Windows view");
+        check(waitFor([&] { return clipboardHolds(original) && IsClipboardFormatAvailable(CF_HDROP); }, 3000),
+            "Ctrl C puts the Windows file data object (CF_HDROP) on the clipboard");
+        // Paste: Windows copies (its own progress / conflict UI, its own undo record).
+        navigate(target);
         check(window.m_pBtnPaste->IsEnabled(), "system clipboard enables paste button");
-        check(key(VK_INSERT, false, true), "Shift Insert pastes native file clipboard"); finish();
-        nativeOperation(ShellFileOps::Kind::Copy, "paste copies through IFileOperation with native progress UI");
         const auto copied = target + L"\\keyboard.txt";
-        file = CreateFileW(copied.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
-        char actual[sizeof(payload)]{}; DWORD read = 0;
-        if (file != INVALID_HANDLE_VALUE) { ReadFile(file, actual, sizeof(actual), &read, nullptr); CloseHandle(file); }
-        check(read == sizeof(payload) && memcmp(actual, payload, sizeof(payload)) == 0 &&
-            GetFileAttributesW(original.c_str()) != INVALID_FILE_ATTRIBUTES, "Ctrl C V copies exact file bytes and retains source");
-        // A Shell rename after an internal copy must be undone before that copy.
-        {
-            window.m_pendingShellRename = copied;
-            IFileOperation* operation = nullptr; IShellItem* item = nullptr;
-            HRESULT hr = CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&operation));
-            if (SUCCEEDED(hr)) hr = operation->SetOperationFlags(FOF_ALLOWUNDO | FOFX_ADDUNDORECORD | FOF_SILENT | FOF_NOCONFIRMATION);
-            if (SUCCEEDED(hr)) hr = SHCreateItemFromParsingName(copied.c_str(), nullptr, IID_PPV_ARGS(&item));
-            if (SUCCEEDED(hr)) hr = operation->RenameItem(item, L"mixed.txt", nullptr);
-            if (SUCCEEDED(hr)) hr = operation->PerformOperations();
-            if (item) item->Release(); if (operation) operation->Release(); pump();
-            key('Z', true); pump();
-            check(SUCCEEDED(hr) && GetFileAttributesW(copied.c_str()) != INVALID_FILE_ATTRIBUTES,
-                "mixed history undoes Shell rename before internal copy");
-        }
-        check(key('Z', true), "Ctrl Z handles copy undo"); pump();
-        check(GetFileAttributesW(copied.c_str()) == INVALID_FILE_ATTRIBUTES &&
-            GetFileAttributesW(original.c_str()) != INVALID_FILE_ATTRIBUTES, "copy undo only removes created copy");
-        file = CreateFileW(copied.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, 0, nullptr); CloseHandle(file);
-        const auto redoBeforeConflict = window.m_redoStack.size();
-        key('Y', true); pump();
-        check(window.m_redoStack.size() == redoBeforeConflict && GetFileAttributesW(copied.c_str()) != INVALID_FILE_ATTRIBUTES,
-            "copy redo refuses to overwrite unrelated same-name file and remains retryable");
-        DeleteFileW(copied.c_str());
-        check(key('Y', true), "Ctrl Y handles copy redo"); pump();
-        check(GetFileAttributesW(copied.c_str()) != INVALID_FILE_ATTRIBUTES, "copy redo restores retained bytes");
-        key('Y', true); pump();
-        check(GetFileAttributesW((target + L"\\mixed.txt").c_str()) != INVALID_FILE_ATTRIBUTES,
-            "mixed history redoes copy before Shell rename");
-        key('Z', true); pump();
-        pump(); select(); check(key('X', true), "native cut shortcut handled");
-        std::vector<CMainWnd::ClipboardItem> clipboard; bool cut = false;
-        bool clipboardReady=false;const DWORD clipboardDeadline=GetTickCount()+1000;
-        do {
-            clipboardReady=window.ReadFileClipboard(clipboard,cut) && cut && clipboard.size()==1
-                && CMainWnd::PathEquals(clipboard[0].path,copied);
-            if(clipboardReady)break;
-            MSG message{};while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)) {
-                if(message.message!=WM_QUIT && !CPaintManagerUI::TranslateMessage(&message)) {
-                    TranslateMessage(&message);DispatchMessageW(&message);
+        check(key('V', true), "Ctrl V is handled in the Windows view");
+        auto sameBytes = [&](const std::wstring& path) {
+            HANDLE handle = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+            char actual[sizeof(payload)]{}; DWORD read = 0;
+            if (handle != INVALID_HANDLE_VALUE) { ReadFile(handle, actual, sizeof(actual), &read, nullptr); CloseHandle(handle); }
+            return read == sizeof(payload) && memcmp(actual, payload, sizeof(payload)) == 0;
+        };
+        check(waitFor([&] { return exists(copied) && sameBytes(copied); }) && exists(original),
+            "Windows paste copies exact file bytes and retains the source");
+        if (!exists(copied)) {
+            std::cerr << "  paste diagnostic: hdropAvailable=" << IsClipboardFormatAvailable(CF_HDROP)
+                << " holds=" << clipboardHolds(original) << " nativeCount=" << window.m_lastNativeVerb.count
+                << " hr=0x" << std::hex << window.m_lastNativeVerb.hr << std::dec << " formats:";
+            if (OpenClipboard(window.m_hWnd)) {
+                for (UINT format = EnumClipboardFormats(0); format; format = EnumClipboardFormats(format)) {
+                    char name[128]{}; GetClipboardFormatNameA(format, name, sizeof(name));
+                    std::cerr << ' ' << format << '(' << name << ')';
                 }
-            }Sleep(5); // Clipboard observers may briefly hold OpenClipboard.
-        }while(GetTickCount()<clipboardDeadline);
-        check(clipboardReady,
-            "Ctrl X publishes the Windows move effect");
-        navigate(moved); check(key('V', true), "cut paste shortcut handled"); finish();
-        nativeOperation(ShellFileOps::Kind::Move, "cut paste moves through IFileOperation with native progress UI");
-        check(GetFileAttributesW(copied.c_str()) == INVALID_FILE_ATTRIBUTES &&
-            GetFileAttributesW((moved + L"\\keyboard.txt").c_str()) != INVALID_FILE_ATTRIBUTES,
-            "Ctrl X V moves the selected fixture");
-        key('Z', true); pump();
-        check(GetFileAttributesW(copied.c_str()) != INVALID_FILE_ATTRIBUTES &&
-            GetFileAttributesW((moved + L"\\keyboard.txt").c_str()) == INVALID_FILE_ATTRIBUTES, "move Ctrl Z restores source");
-        key('Y', true); pump();
-        check(GetFileAttributesW(copied.c_str()) == INVALID_FILE_ATTRIBUTES &&
-            GetFileAttributesW((moved + L"\\keyboard.txt").c_str()) != INVALID_FILE_ATTRIBUTES, "move Ctrl Y restores destination");
-        select();
-        deleteTestOwner = window.m_hWnd;
-        HHOOK hook = SetWindowsHookExW(WH_CBT, ConfirmFixtureDelete, nullptr, GetCurrentThreadId());
-        check(hook != nullptr, "fixture-only delete confirmation hook installed");
-        if (hook) {
-            deleteTestReply = IDNO; deleteDialogCount = 0;
-            check(key(VK_DELETE, false), "Delete runs recycle operation without custom confirmation"); finish();
-            nativeOperation(ShellFileOps::Kind::Recycle, "Delete recycles through IFileOperation with native progress UI");
-            check(deleteDialogCount == 0, "ordinary Delete never opens FastFile confirmation");
-            check(GetFileAttributesW((moved + L"\\keyboard.txt").c_str()) == INVALID_FILE_ATTRIBUTES,
-                "ordinary Delete immediately recycles fixture");
-            {
-                // A FastFile copy after a recycle must not push its own Explorer undo record:
-                // undoing the copy and then the recycle has to restore the recycled item.
-                window.PublishFileClipboard({{original, false}}, false);
-                navigate(target); key('V', true); finish();
-                const auto alignedCopy = target + L"\\keyboard.txt";
-                check(GetFileAttributesW(alignedCopy.c_str()) != INVALID_FILE_ATTRIBUTES &&
-                    window.m_undoStack.back().kind == CMainWnd::UndoRecord::Kind::Copy, "copy after recycle joins history");
-                key('Z', true); pump();
-                check(GetFileAttributesW(alignedCopy.c_str()) == INVALID_FILE_ATTRIBUTES &&
-                    GetFileAttributesW(original.c_str()) != INVALID_FILE_ATTRIBUTES, "copy after recycle is undone first");
-                navigate(moved);
+                CloseClipboard();
             }
-            key('Z', true); pump();
-            check(GetFileAttributesW((moved + L"\\keyboard.txt").c_str()) != INVALID_FILE_ATTRIBUTES,
-                "Delete Ctrl Z restores recycled item, also after a later FastFile copy was undone (stacks stay aligned)");
-            key('Y', true); pump();
-            check(GetFileAttributesW((moved + L"\\keyboard.txt").c_str()) == INVALID_FILE_ATTRIBUTES,
-                "Delete Ctrl Y repeats recycle operation");
-            navigate(source); select(); deleteTestReply = IDNO;
-            check(key(VK_DELETE, false, true), "Shift Delete cancellation handled"); finish();
-            check(GetFileAttributesW(original.c_str()) != INVALID_FILE_ATTRIBUTES,
-                "cancelled permanent Delete retains fixture");
-            deleteTestReply = IDYES;
-            check(key(VK_DELETE, false, true), "Shift Delete handled"); finish();
-            nativeOperation(ShellFileOps::Kind::Delete, "Shift Delete removes through IFileOperation with native progress UI");
-            check(GetFileAttributesW(original.c_str()) == INVALID_FILE_ATTRIBUTES, "Shift Delete permanently removes fixture");
-            createFixtureFolder = true;
-            check(key('N', true, true), "Ctrl Shift N opens new folder prompt"); pump();
-            createFixtureFolder = false;
-            const auto newFolder = source + L"\\快捷键新目录";
-            check(GetFileAttributesW(newFolder.c_str()) != INVALID_FILE_ATTRIBUTES, "new folder shortcut creates entered name");
-            key('Z', true); pump();
-            check(GetFileAttributesW(newFolder.c_str()) == INVALID_FILE_ATTRIBUTES, "new folder undo removes empty directory");
-            key('Y', true); pump();
-            check(GetFileAttributesW(newFolder.c_str()) != INVALID_FILE_ATTRIBUTES, "new folder redo recreates directory");
-            const auto childFile = newFolder + L"\\keep.txt";
-            file = CreateFileW(childFile.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, 0, nullptr); CloseHandle(file);
-            key('Z', true); pump();
-            check(GetFileAttributesW(childFile.c_str()) != INVALID_FILE_ATTRIBUTES, "new folder undo cannot delete newly added contents");
-            DeleteFileW(childFile.c_str()); key('Z', true); pump(); key('Y', true); pump();
-            UnhookWindowsHookEx(hook);
+            char status[512]{};
+            WideCharToMultiByte(CP_UTF8, 0, window.m_pStatus ? window.m_pStatus->GetText().GetData() : L"", -1, status, sizeof(status), nullptr, nullptr);
+            char verb[64]{}; WideCharToMultiByte(CP_UTF8, 0, window.m_lastNativeVerb.verb.c_str(), -1, verb, sizeof(verb), nullptr, nullptr);
+            std::cerr << " lastVerb=" << verb << " status=" << status << " atTarget=" << window.m_shellBrowser->IsAtPath(target) << '\n';
         }
-        deleteTestOwner = nullptr;
-        OleSetClipboard(nullptr); window.m_clipboard = {{moved, true}};
-        check(key('V', true) && !window.m_copyRunning, "empty Windows clipboard cannot paste stale internal data");
-        window.m_clipboard.clear();
+        // F2 in the view is Windows' in-place rename; Ctrl+Z / Ctrl+Y are Windows' undo / redo.
+        select();
+        check(key(VK_F2, false), "F2 is handled in the Windows view");
+        HWND renameEdit = nullptr;
+        waitFor([&] { return (renameEdit = ShellBrowserHostTestAccess::EditControl(*window.m_shellBrowser)) != nullptr; }, 3000);
+        check(renameEdit != nullptr, "F2 starts the view's own in-place rename");
+        const auto inplace = target + L"\\inplace.txt";
+        if (renameEdit) {
+            SetWindowTextW(renameEdit, L"inplace.txt");
+            SendMessageW(renameEdit, WM_KEYDOWN, VK_RETURN, 0);
+            if (IsWindow(renameEdit)) SendMessageW(renameEdit, WM_CHAR, VK_RETURN, 0);
+        }
+        check(waitFor([&] { return exists(inplace) && !exists(copied); }), "the Windows view commits the in-place rename");
+        // The Windows undo history: when Windows offers it in this process (its background
+        // menu lists 撤销), Ctrl+Z / Ctrl+Y must reverse the view's rename. Some Windows builds
+        // (observed on 26H2 26300) keep no undo history for operations in other processes'
+        // hosted views; then Ctrl+Z must do nothing at all (FastFile has no private history).
+        const bool systemUndo = window.NativeVerbAvailable(L"undo", CMainWnd::NativeScope::Background);
+        if (!systemUndo) {
+            std::cerr << "  info: Windows offers no undo history in this process; native Ctrl+Z / 撤销 are no-ops here\n";
+            dumpHistory("no-undo background menu");
+        }
+        check(key('Z', true), "Ctrl Z is handled in the Windows view");
+        if (systemUndo) {
+            check(waitFor([&] { return exists(copied) && !exists(inplace); }), "Windows undo reverts the in-place rename");
+            check(key('Y', true), "Ctrl Y is handled in the Windows view");
+            check(waitFor([&] { return exists(inplace) && !exists(copied); }), "Windows redo reapplies the in-place rename");
+            key('Z', true);
+            waitFor([&] { return exists(copied) && !exists(inplace); });
+        } else {
+            pumpFor(500);
+            check(exists(inplace) && !exists(copied), "without a Windows undo history Ctrl Z changes nothing");
+            MoveFileW(inplace.c_str(), copied.c_str());
+        }
+        // Tree / search-list rename (FastFile's edit box) is a Windows rename with a Windows
+        // undo record, so the toolbar 撤销 / 重做 (native verbs) reverse it as well.
+        const auto engineName = target + L"\\engine.txt";
+        check(window.RenameItem({copied, false}, L"engine.txt") && exists(engineName) && !exists(copied),
+            "tree / search rename runs IFileOperation::RenameItem");
+        const bool renameUndo = window.NativeVerbAvailable(L"undo", CMainWnd::NativeScope::Background);
+        check(renameUndo == systemUndo, "the IFileOperation rename and the view's rename share one undo history");
+        window.OnUndo();
+        if (renameUndo) {
+            check(waitFor([&] { return exists(copied) && !exists(engineName); }), "撤销 reverses FastFile's rename through the Windows history");
+            check(window.m_lastNativeVerb.verb == L"undo" && window.m_lastNativeVerb.byOffset
+                && window.m_lastNativeVerb.scope == CMainWnd::NativeScope::Background && SUCCEEDED(window.m_lastNativeVerb.hr),
+                "撤销 invokes the native background undo verb");
+            window.OnRedo();
+            check(waitFor([&] { return exists(engineName) && !exists(copied); }), "重做 reapplies it through the Windows history");
+        } else {
+            check(waitFor([&] { return exists(copied) && !exists(engineName); }),
+                "撤销 reverses FastFile's rename through the fallback undo stack");
+            window.OnRedo();
+            check(waitFor([&] { return exists(engineName) && !exists(copied); }),
+                "重做 reapplies FastFile's rename through the fallback redo stack");
+        }
+        // Drag-and-drop copies (FastFile's only remaining engine use) join the same history.
+        const auto directory = batchSource + L"\\Folder";
+        CreateDirectoryW(directory.c_str(), nullptr);
+        const auto nested = directory + L"\\data.txt";
+        file = CreateFileW(nested.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, 0, nullptr);
+        WriteFile(file, payload, sizeof(payload), &written, nullptr); CloseHandle(file);
+        const auto standalone = batchSource + L"\\one.txt";
+        CopyFileW(nested.c_str(), standalone.c_str(), TRUE);
+        const std::wstring undoBeforeCopy = undoText();
+        check(window.StartFileOperation(ShellFileOps::Kind::Copy, {directory, standalone}, batchDestination),
+            "drag-drop copy starts"); finish();
+        nativeOperation(ShellFileOps::Kind::Copy, "drag-drop copy runs IFileOperation with native UI and a Windows undo record");
+        check(exists(batchDestination + L"\\Folder\\data.txt") && exists(batchDestination + L"\\one.txt") && exists(nested),
+            "drag-drop copy copies every top-level item");
+        const std::wstring undoAfterCopy = undoText();
+        if (systemUndo && (undoAfterCopy.empty() || undoAfterCopy == undoBeforeCopy)) {
+            char before[512]{}, after[512]{};
+            WideCharToMultiByte(CP_UTF8, 0, undoBeforeCopy.c_str(), -1, before, sizeof(before), nullptr, nullptr);
+            WideCharToMultiByte(CP_UTF8, 0, undoAfterCopy.c_str(), -1, after, sizeof(after), nullptr, nullptr);
+            std::cerr << "  undo diagnostic: before=\"" << before << "\" after=\"" << after << "\"\n";
+        }
+        if (systemUndo)
+            check(!undoAfterCopy.empty() && undoAfterCopy != undoBeforeCopy,
+                "the Windows 撤销 entry now names the drag-drop copy (one shared history)");
+        else
+            check(undoAfterCopy.empty() && !window.NativeVerbAvailable(L"undo", CMainWnd::NativeScope::Background),
+                "without a Windows undo history the drag-drop copy adds no private entry");
+        // Buttons and keys outside the view: each invokes the native verb on the native menu.
+        // The seam records the call instead of executing, so nothing is deleted here.
+        MainWndRegressionAccess::ClearUndoStacks(window);
+        navigate(target); select();
+        std::vector<CMainWnd::NativeVerbCall> calls;
+        struct HookReset {
+            CMainWnd& window;
+            ~HookReset() { window.m_nativeInvokeHook = nullptr; }
+        } hookReset{window};
+        window.m_nativeInvokeHook = [&](IContextMenu*) { calls.push_back(window.m_lastNativeVerb); return S_OK; };
+        auto expect = [&](const std::function<void()>& action, const wchar_t* verb, CMainWnd::NativeScope scope,
+                int shiftMask, bool fromView, int byOffset, const char* name) {
+            calls.clear();
+            action();
+            const DWORD required = CMIC_MASK_UNICODE | CMIC_MASK_PTINVOKE;
+            const bool ok = calls.size() == 1 && _wcsicmp(calls[0].verb.c_str(), verb) == 0 && calls[0].scope == scope
+                && (calls[0].mask & required) == required && (shiftMask < 0 || ((calls[0].mask & CMIC_MASK_SHIFT_DOWN) != 0) == (shiftMask != 0))
+                && calls[0].fromView == fromView && (byOffset < 0 || calls[0].byOffset == (byOffset != 0));
+            if (!ok && !calls.empty()) {
+                char verbText[128]{};
+                WideCharToMultiByte(CP_UTF8, 0, calls[0].verb.c_str(), -1, verbText, sizeof(verbText), nullptr, nullptr);
+                std::cerr << "  native verb diagnostic: calls=" << calls.size() << " verb=" << verbText
+                    << " scope=" << int(calls[0].scope) << " mask=0x" << std::hex << calls[0].mask << std::dec
+                    << " fromView=" << calls[0].fromView << " byOffset=" << calls[0].byOffset << '\n';
+            } else if (!ok) std::cerr << "  native verb diagnostic: no native invoke\n";
+            check(ok, name);
+        };
+        using Scope = CMainWnd::NativeScope;
+        expect([&] { window.OnCopyClicked(); }, L"copy", Scope::Selection, false, true, 1, "复制 button invokes the view's native copy");
+        expect([&] { window.OnCutClicked(); }, L"cut", Scope::Selection, false, true, 1, "剪切 button invokes the view's native cut");
+        expect([&] { window.OnPasteClicked(); }, L"paste", Scope::Background, false, true, 1, "粘贴 button invokes the view's native paste");
+        expect([&] { window.OnDeleteClicked(false); }, L"delete", Scope::Selection, false, true, 1, "删除 button invokes native delete");
+        expect([&] { window.OnDeleteClicked(true); }, L"delete", Scope::Selection, true, true, true,
+            "permanent delete invokes native delete with Shift (Windows' own confirmation)");
+        expect([&] { window.OnNewFolderClicked(); }, CMDSTR_NEWFOLDERW, Scope::Background, false, true, -1,
+            "新建文件夹 invokes the native NewFolder verb of the folder background");
+        expect([&] { window.ShowPropertiesForSelection(); }, L"properties", Scope::Selection, false, true, true,
+            "属性 invokes the native properties verb");
+        if (systemUndo) expect([&] { window.OnUndo(); }, L"undo", Scope::Background, false, true, 1, "撤销 invokes the native undo verb");
+        else { calls.clear(); window.OnUndo(); check(calls.empty(), "撤销 with no Windows undo entry invokes nothing"); }
+        calls.clear(); window.OnRedo();
+        check(calls.empty(), "重做 with no Windows redo entry invokes nothing");
+        expect([&] { frameKey(VK_DELETE, false); }, L"delete", Scope::Selection, false, true, 1, "Delete invokes native delete");
+        expect([&] { frameKey(VK_DELETE, false, true); }, L"delete", Scope::Selection, true, true, true,
+            "Shift Delete invokes native delete with Shift");
+        expect([&] { frameKey('C', true); }, L"copy", Scope::Selection, false, true, 1, "Ctrl C outside the view invokes native copy");
+        expect([&] { frameKey('X', true); }, L"cut", Scope::Selection, false, true, 1, "Ctrl X outside the view invokes native cut");
+        expect([&] { frameKey('V', true); }, L"paste", Scope::Background, false, true, 1, "Ctrl V outside the view invokes native paste");
+        if (systemUndo) expect([&] { frameKey('Z', true); }, L"undo", Scope::Background, false, true, 1, "Ctrl Z outside the view invokes native undo");
+        else { calls.clear(); frameKey('Z', true); check(calls.empty(), "Ctrl Z outside the view with no Windows undo entry invokes nothing"); }
+        expect([&] { frameKey(VK_RETURN, false, false, true); }, L"properties", Scope::Selection, false, true, true,
+            "Alt Enter invokes native properties");
+        expect([&] { frameKey('N', true, true); }, CMDSTR_NEWFOLDERW, Scope::Background, -1, true, -1,
+            "Ctrl Shift N invokes the native NewFolder verb");
+        // F2 outside the view still opens the view's own in-place edit (no FastFile prompt).
+        calls.clear();
+        check(frameKey(VK_F2, false), "F2 outside the view is handled");
+        HWND frameEdit = nullptr;
+        waitFor([&] { return (frameEdit = ShellBrowserHostTestAccess::EditControl(*window.m_shellBrowser)) != nullptr; }, 3000);
+        check(frameEdit != nullptr && calls.empty(), "F2 begins the Windows in-place rename in the view");
+        ShellBrowserHostTestAccess::CancelEdit(*window.m_shellBrowser); pumpFor(100);
+        check(exists(engineName), "cancelled in-place rename keeps the name");
+        // Tree focus: the verb runs on the tree folder's own Shell item menu.
+        window.m_pDirTree->SetFocus(); SetFocus(window.m_hWnd);
+        expect([&] { frameKey(VK_DELETE, false); }, L"delete", Scope::Selection, false, false, true,
+            "tree Delete invokes native delete on the folder item menu");
+        expect([&] { frameKey('C', true); }, L"copy", Scope::Selection, false, false, true,
+            "tree Ctrl C invokes native copy on the folder item menu");
+        window.m_nativeInvokeHook = nullptr;
+        check(exists(engineName) && exists(target), "recorded verbs never touched the fixtures");
+        window.FocusFileView();
+        // Nothing to paste: Windows does nothing, and FastFile has no private clipboard to fall back on.
+        OleSetClipboard(nullptr);
+        auto entries = [](const std::wstring& folder) {
+            int count = 0; WIN32_FIND_DATAW data{};
+            HANDLE find = FindFirstFileW((folder + L"\\*").c_str(), &data);
+            if (find != INVALID_HANDLE_VALUE) {
+                do { if (wcscmp(data.cFileName, L".") && wcscmp(data.cFileName, L"..")) ++count; } while (FindNextFileW(find, &data));
+                FindClose(find);
+            }
+            return count;
+        };
+        const int beforePaste = entries(target);
+        check(key('V', true), "Ctrl V with an empty clipboard is handled"); pump();
+        check(entries(target) == beforePaste && !window.m_copyRunning, "empty Windows clipboard pastes nothing");
         IFolderView2* view = ShellBrowserHostTestAccess::View(*window.m_shellBrowser);
         IShellView* shellView = nullptr; HWND shellWindow = nullptr;
         if (view && SUCCEEDED(view->QueryInterface(IID_PPV_ARGS(&shellView)))) {
@@ -1211,32 +1875,7 @@ struct MainWndRegressionAccess {
         check(key(VK_F4, false), "F4 opens address history dropdown"); KillTimer(nullptr, menuTimer);
         check(window.m_addressEditMode, "F4 leaves editable address after dismissing dropdown");
         key(VK_ESCAPE, false);
-        // Batch copy with a directory verifies that undo records top-level items,
-        // preserves originals, and can leave a directory removed by its own undo.
-        const auto batchSource = root + L"\\Batch Source";
-        const auto batchDestination = root + L"\\Batch Destination";
-        CreateDirectoryW(batchSource.c_str(), nullptr); CreateDirectoryW(batchDestination.c_str(), nullptr);
-        const auto directory = batchSource + L"\\Folder";
-        CreateDirectoryW(directory.c_str(), nullptr);
-        const auto nested = directory + L"\\data.txt";
-        file = CreateFileW(nested.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, 0, nullptr);
-        WriteFile(file, payload, sizeof(payload), &written, nullptr); CloseHandle(file);
-        const auto standalone = batchSource + L"\\one.txt";
-        CopyFileW(nested.c_str(), standalone.c_str(), TRUE);
-        window.PublishFileClipboard({{directory,true},{standalone,false}}, false);
-        navigate(batchDestination); key('V', true); finish();
-        nativeOperation(ShellFileOps::Kind::Copy, "batch paste copies through IFileOperation");
-        check(window.m_undoStack.back().moved.size() == 2, "batch copy records both completed top-level items");
-        navigate(batchDestination + L"\\Folder"); key('Z', true); pump();
-        check(window.m_currentPath == batchDestination &&
-            GetFileAttributesW((batchDestination + L"\\Folder").c_str()) == INVALID_FILE_ATTRIBUTES &&
-            GetFileAttributesW((batchDestination + L"\\one.txt").c_str()) == INVALID_FILE_ATTRIBUTES &&
-            GetFileAttributesW(nested.c_str()) != INVALID_FILE_ATTRIBUTES,
-            "batch folder undo retains originals and returns removed view to parent");
-        key('Y', true); pump();
-        check(GetFileAttributesW((batchDestination + L"\\Folder\\data.txt").c_str()) != INVALID_FILE_ATTRIBUTES &&
-            GetFileAttributesW((batchDestination + L"\\one.txt").c_str()) != INVALID_FILE_ATTRIBUTES,
-            "batch folder redo restores complete retained contents");
+        navigate(batchDestination);
         check(key('E', true, true), "Ctrl Shift E expands current path in navigation tree");
         check(window.m_PaintManager.GetFocus() == window.m_pDirTree, "Ctrl Shift E focuses tree rather than search");
         auto treeKey = [&](WPARAM value) {
@@ -1259,6 +1898,7 @@ struct MainWndRegressionAccess {
         check(treeSelection.size() == 1 && treeSelection[0].path == batchDestination && treeSelection[0].isDir,
             "tree keyboard operations target current folder rather than stale file selection");
         window.FocusFileView();
+        check(dialogs.Dismissed() == 0, "no dialog appeared during the keyboard and file-operation checks");
         OleSetClipboard(savedClipboard);
         if (savedClipboard) { OleFlushClipboard(); savedClipboard->Release(); }
         return failures;
@@ -1776,8 +2416,11 @@ struct MainWndRegressionAccess {
         SendMessageW(dialog,WM_COMMAND,198,0);
         // Exercise the real Unicode clipboard button, retaining every original
         // clipboard format through its IDataObject instead of copying user text.
-        IDataObject* originalClipboard=nullptr;
-        if(SUCCEEDED(OleGetClipboard(&originalClipboard))) {
+        // A live OleGetClipboard proxy refers to the backing clipboard that the
+        // copy button clears. Restoring then flushing that proxy recursively reads
+        // itself and can overflow the stack; retain an independent format snapshot.
+        IDataObject* originalClipboard=SnapshotClipboard();
+        if(originalClipboard) {
             SendMessageW(dialog,WM_COMMAND,201,0);
             bool copied=false;
             if(OpenClipboard(dialog)) {
@@ -1802,6 +2445,8 @@ struct MainWndRegressionAccess {
     }
     static int CheckPreferences(CMainWnd& window,const std::wstring& fixture) {
         int failures=0;auto check=[&](bool ok,const char* name){if(!ok){std::cerr<<"FAIL "<<name<<'\n';++failures;}};
+        check(WaitQuickFixture(window),"Shell snapshot is ready before preference tests");
+        window.StopQuickAccessSync();
         FastFileAbout::Info diagnostic;
         check(FastFileAbout::Directory(L"C:\\FastFile.exe")==L"C:\\"
             && FastFileAbout::Directory(L"\\\\server\\share\\FastFile.exe")==L"\\\\server\\share",
@@ -1912,68 +2557,50 @@ struct MainWndRegressionAccess {
             check(CMainWnd::PathEquals(window.m_currentPath,sample.first),"native disk/folder activation reaches the existing FastFile tab");
         }
         window.m_settings=original;
+        // Disk / folder item menus are Windows' own: identical to the raw provider menu, with
+        // no FastFile 在新选项卡中打开 and no intercepted open / opennewwindow verbs.
         for(const auto& targetPath:{drive,fixture}) {
-            PIDLIST_ABSOLUTE pidl=nullptr;PCUITEMID_CHILD child=nullptr;
-            IShellFolder* parent=nullptr;IContextMenu* nativeMenu=nullptr;
-            HMENU menu=CreatePopupMenu();bool found=false;
-            if(SUCCEEDED(SHParseDisplayName(targetPath.c_str(),nullptr,&pidl,0,nullptr))
-                && SUCCEEDED(SHBindToParent(pidl,IID_PPV_ARGS(&parent),&child))
-                && SUCCEEDED(parent->GetUIObjectOf(window.m_hWnd,1,&child,IID_IContextMenu,nullptr,reinterpret_cast<void**>(&nativeMenu)))) {
-                const HRESULT result=nativeMenu->QueryContextMenu(menu,0,1,0x7fff,CMF_NORMAL);
-                if(SUCCEEDED(result)) {
-                    window.PruneShellMenu(nativeMenu,menu,1,1+HRESULT_CODE(result),false);
-                    window.AddInternalFolderOpenMenu(nativeMenu,menu,1,1+HRESULT_CODE(result),{targetPath});
-                    for(int i=0;i<GetMenuItemCount(menu);++i) {
-                        const UINT id=GetMenuItemID(menu,i);wchar_t verb[128]{},text[256]{};
-                        if(id==CMainWnd::kCmdShellNewTab || (id>=1 && id<1+HRESULT_CODE(result)
-                            && SUCCEEDED(nativeMenu->GetCommandString(id-1,GCS_VERBW,nullptr,reinterpret_cast<LPSTR>(verb),_countof(verb)))
-                            && _wcsicmp(verb,L"opennewwindow")==0)) {
-                            GetMenuStringW(menu,i,text,_countof(text),MF_BYPOSITION);
-                            found=wcscmp(text,L"在新选项卡中打开")==0;
-                        }
-                    }
-                }
-            }
-            check(found,"real Windows disk/folder menu offers FastFile's new-tab action even when Shell omits its new-window verb");
-            if(nativeMenu)nativeMenu->Release();if(parent)parent->Release();
-            CoTaskMemFree(pidl);DestroyMenu(menu);
+            RawShellMenu raw,rawAfter;
+            const UINT flags=CMainWnd::ShellItemMenuFlags(false,false);
+            IContextMenu* built=nullptr;HMENU popup=nullptr;UINT last=0;
+            if(raw.Path(targetPath,window.m_hWnd))window.m_shellBrowser->SiteContextMenu(raw.menu);
+            const bool ok=raw.Query(flags) && window.BuildShellItemMenu({targetPath},&built,&popup,&last);
+            if(rawAfter.Path(targetPath,window.m_hWnd))window.m_shellBrowser->SiteContextMenu(rawAfter.menu);
+            rawAfter.Query(flags);
+            // Some Windows handlers hand out different command ids on successive queries in a
+            // fresh process. Exact identity with a raw query before or after FastFile's is
+            // required; when the provider itself is not repeatable, the items (text, type,
+            // state, cascades) must still be identical to both raw queries.
+            std::string why,whyAfter,whyItems;
+            const bool exact=ok && ((last==raw.last && SameShellMenu(popup,raw.popup,&why))
+                || (last==rawAfter.last && SameShellMenu(popup,rawAfter.popup,&whyAfter)));
+            const bool providerVaries=!SameShellMenu(raw.popup,rawAfter.popup);
+            const bool sameItems=ok && providerVaries && SameShellMenu(popup,raw.popup,&whyItems,false)
+                && SameShellMenu(popup,rawAfter.popup,nullptr,false);
+            if(!exact && sameItems)std::cerr<<"  info: Windows' own disk/folder menu ids vary between queries; items compared\n";
+            check(exact || sameItems,"real Windows disk/folder menu is the unmodified provider menu (no FastFile item added or removed)");
+            if(!exact && !sameItems)std::cerr<<"  disk/folder menu diagnostic: "<<why<<" | after: "<<whyAfter<<" | items: "<<whyItems<<'\n';
+            if(popup)DestroyMenu(popup);if(built)built->Release();
         }
-        check(window.HandleInternalFolderOpenVerb(L"open",{drive}),"navigation menu open is handled internally for a drive");
-        MSG folderMenu{};bool routed=false;
-        if(PeekMessageW(&folderMenu,window.m_hWnd,CMainWnd::kMsgShellFolderOpen,CMainWnd::kMsgShellFolderOpen,PM_REMOVE)) {
-            const auto* target=reinterpret_cast<std::wstring*>(folderMenu.lParam);
-            routed=target && CMainWnd::PathEquals(*target,drive);
-            window.HandleMessage(folderMenu.message,folderMenu.wParam,folderMenu.lParam);
-        }
-        check(routed && CMainWnd::PathEquals(window.m_currentPath,drive),"directory menu command reaches FastFile instead of invoking the registered open verb");
-        for(const auto& sample:{std::pair<std::wstring,std::wstring>{L"opennewwindow",drive},
-                {L"opennewtab",fixture},{L"OPENNEWWINDOW",fixture+L"\\Program Files"}}) {
-            const auto count=window.m_tabs.size();const int active=window.m_activeTab;
-            const auto originalPath=window.m_tabs[active].path;
-            check(window.HandleInternalFolderOpenVerb(sample.first,{sample.second}),"new-window/tab Shell verbs are consumed by FastFile");
-            bool newTab=false;MSG request{};
-            if(PeekMessageW(&request,window.m_hWnd,CMainWnd::kMsgShellFolderOpen,CMainWnd::kMsgShellFolderOpen,PM_REMOVE)) {
-                newTab=request.wParam!=0;
+        // Double-click / Enter on a folder in the hosted view (ICommDlgBrowser::OnDefaultCommand)
+        // still opens it inside FastFile; with several folders the extra ones open as tabs.
+        auto folderOpen=[&](const std::wstring& path,bool newTab) {
+            PostMessageW(window.m_hWnd,CMainWnd::kMsgShellFolderOpen,newTab?1:0,reinterpret_cast<LPARAM>(new std::wstring(path)));
+            MSG request{};
+            if(PeekMessageW(&request,window.m_hWnd,CMainWnd::kMsgShellFolderOpen,CMainWnd::kMsgShellFolderOpen,PM_REMOVE))
                 window.HandleMessage(request.message,request.wParam,request.lParam);
-            }
-            check(newTab && window.m_tabs.size()==count+1 && window.m_tabs[active].path==originalPath
-                && CMainWnd::PathEquals(window.m_currentPath,sample.second),"new-window command opens a new FastFile tab and retains source tab");
+        };
+        folderOpen(drive,false);
+        check(CMainWnd::PathEquals(window.m_currentPath,drive),"view folder activation navigates the FastFile tab");
+        for(const auto& sample:{fixture,fixture+L"\\Program Files",drive}) {
+            folderOpen(sample,true);
             const DWORD deadline=GetTickCount()+200;
             do {MSG message{};while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)) {
                 if(message.message!=WM_QUIT){TranslateMessage(&message);DispatchMessageW(&message);}
             }Sleep(5);}while(GetTickCount()<deadline);
-            if(window.m_activeTab!=static_cast<int>(count) || !CMainWnd::PathEquals(window.m_currentPath,sample.second))
-                std::wcerr<<L"duplicate tab diagnostic: expected="<<count<<L" actual="<<window.m_activeTab
-                    <<L" target="<<sample.second<<L" current="<<window.m_currentPath
-                    <<L" externalPending="<<window.m_externalOpensPending<<L"\n";
-            check(window.m_activeTab==static_cast<int>(count) && CMainWnd::PathEquals(window.m_currentPath,sample.second),
-                "navigation completion must keep an explicitly duplicated tab active");
+            check(CMainWnd::PathEquals(window.m_currentPath,sample),
+                "multi-folder activation opens each folder inside FastFile (tab reuse rules apply)");
         }
-        check(!window.HandleInternalFolderOpenVerb(L"opennewwindow",{fixture+L"\\Program Files\\sample.txt"})
-            && !window.HandleInternalFolderOpenVerb(L"opennewwindow",{drive,fixture+L"\\missing"}),
-            "new-tab routing leaves files and invalid mixed selections to Shell");
-        check(!window.HandleInternalFolderOpenVerb(L"open",{fixture+L"\\Program Files\\sample.txt"})
-            && !window.HandleInternalFolderOpenVerb(L"properties",{drive}),"menu routing preserves file associations and non-navigation Shell commands");
         // Appearance-only dialog checks must never rewrite the real user's Shell
         // commands to this test executable (enabled state is deliberately reapplied).
         FastFileSettings realIntegration;CMainWnd::ReadSystemIntegration(realIntegration);
@@ -2488,10 +3115,14 @@ struct MainWndRegressionAccess {
                 && UiTokens::TabIconPx==16 && UiTokens::FavIconPx==16,"compact chrome preserves readable fonts and shell icon sizes");
         }
         window.m_dpi=initialDpi;window.ApplyDpiScaledChrome();window.ApplyUiChromeTokens();window.ApplyDpiScaledFonts();window.RebuildFavoritesBar();
+        if (!WaitQuickFixture(window) || window.m_pLeftQuickRows->GetCount() == 0) {
+            check(false, "isolated Shell quick rows are ready for row-metric checks");
+            return failures;
+        }
         const int quickHeight=window.m_pLeftQuickRows->GetItemAt(0)->GetFixedHeight();
         auto* rootNode=static_cast<CTreeNodeUI*>(window.m_pDirTree->GetItemAt(0));
         const int treeHeight=rootNode->GetFixedHeight();
-        check(window.m_pLeftQuickRows->GetCount()>=5,"first-run profile immediately renders default quick rows including Pictures");
+        check(window.m_pLeftQuickRows->GetCount()>0,"first-run profile renders the isolated Shell snapshot");
         const auto initialMode = window.m_viewMode;
         for (UINT dpi : {96u, 144u, 192u}) {
             window.m_dpi = dpi;
@@ -2767,10 +3398,10 @@ struct MainWndRegressionAccess {
         if (!previewWasVisible) window.SetPreviewVisible(false);
         return failures;
     }
-    // Shell menus use separators with ids 0, -1 and private ids (0x7FFD / 0x7FFE). The old
-    // tidy pass only recognised id 0, so pruning 授予访问权限 left two stacked lines.
+    // 1.0.21: every Shell menu is the unmodified Windows classic menu, its commands invoked
+    // natively; the hosted view shows its own. Nothing is shown on screen (seams / CBT block).
     static int CheckShellMenus(CMainWnd& window, const std::wstring& folder) {
-        int failures = 0;
+        int failures = CheckShellMenuDrawing(window);
         auto check = [&](bool ok, const char* name) { if (!ok) { ++failures; std::cerr << "FAIL " << name << '\n'; } };
         auto pump = [&](DWORD ms) {
             const DWORD until = GetTickCount() + ms;
@@ -2784,35 +3415,6 @@ struct MainWndRegressionAccess {
                 Sleep(5);
             } while (GetTickCount() < until);
         };
-        auto stacked = [](HMENU menu) {
-            const int count = GetMenuItemCount(menu);
-            for (int i = 0; i < count; ++i) {
-                if (!ShellMenuUtil::IsSeparatorAt(menu, i)) continue;
-                if (i == 0 || i == count - 1 || ShellMenuUtil::IsSeparatorAt(menu, i - 1)) return true;
-            }
-            return false;
-        };
-        {
-            HMENU menu = CreatePopupMenu();
-            auto separator = [&](UINT id) {
-                MENUITEMINFOW info{}; info.cbSize = sizeof(info);
-                info.fMask = MIIM_FTYPE | MIIM_ID; info.fType = MFT_SEPARATOR; info.wID = id;
-                InsertMenuItemW(menu, GetMenuItemCount(menu), TRUE, &info);
-            };
-            separator(0x7FFC);
-            AppendMenuW(menu, MF_STRING, 1, L"刷新");
-            separator(0xFFFFFFFF);
-            AppendMenuW(menu, MF_STRING, 2, L"在终端中打开(&T)");
-            separator(0); separator(0x7FFD);           // the doubled line from the screenshot
-            AppendMenuW(menu, MF_STRING, 3, L"新建(&W)");
-            separator(0x7FFE);
-            AppendMenuW(menu, MF_STRING, 4, L"属性(&R)");
-            separator(0x7FFC);
-            CMainWnd::TidyMenuSeparators(menu);
-            check(!stacked(menu) && GetMenuItemCount(menu) == 7 && GetMenuItemID(menu, 0) == 1 &&
-                GetMenuItemID(menu, 6) == 4, "Shell menu separators with any id are normalized");
-            DestroyMenu(menu);
-        }
         window.NavigateToNow(folder, true);
         const DWORD deadline = GetTickCount() + 4000;
         do { pump(50); } while (!window.ShellBrowserShowsFolder(folder) && GetTickCount() < deadline);
@@ -2838,6 +3440,7 @@ struct MainWndRegressionAccess {
             && !PtVisible(parentDc,nativePoint.x,nativePoint.y),
             "parent painting excludes native files after context-menu repaint");
         ReleaseDC(window.m_hWnd,parentDc);
+        NativeDialogGuard dialogs;
         IContextMenu* menu = nullptr; HMENU popup = nullptr; UINT shellMax = 0; bool fromView = false;
         const bool built = window.BuildShellBackgroundMenu(folder, &menu, &popup, &shellMax, &fromView);
         check(built && fromView, "folder background menu comes from the live Explorer view (SVGIO_BACKGROUND)");
@@ -2845,22 +3448,21 @@ struct MainWndRegressionAccess {
             check(ShellMenuUtil::FindVerb(menu, popup, 1, shellMax, L"paste") >= 0, "background menu contains native paste");
             check(ShellMenuUtil::FindVerb(menu, popup, 1, shellMax, L"properties") >= 0, "background menu contains native properties");
             check(ShellMenuUtil::FindVerb(menu, popup, 1, shellMax, L"groupby") >= 0, "background menu contains native group-by");
-            bool viewMenu = false, sortMenu = false;
-            for (int i = 0; i < GetMenuItemCount(popup); ++i) {
-                HMENU sub = GetSubMenu(popup, i);
-                if (!sub || GetMenuItemCount(sub) == 0) continue;
-                const UINT first = GetMenuItemID(sub, 0);
-                viewMenu = viewMenu || first == static_cast<UINT>(CMainWnd::kCmdBgViewBase + int(CMainWnd::ViewMode::ExtraLargeIcons));
-                sortMenu = sortMenu || first == static_cast<UINT>(CMainWnd::kCmdBgSortBase);
-            }
-            check(viewMenu && sortMenu, "background 查看 and 排序方式 keep driving the FastFile view");
-            check(!stacked(popup), "background menu has no leading, trailing or stacked separators");
+            // Unmodified: item-for-item the same as an untouched SVGIO_BACKGROUND menu queried
+            // with Explorer's flags (no 查看/排序 swap, no refresh/paste/undo inserts, no tidying).
+            RawShellMenu raw;
+            const bool rawOk = SUCCEEDED(window.m_shellBrowser->CreateBackgroundContextMenu(&raw.menu))
+                && raw.Query(CMainWnd::ShellBackgroundMenuFlags(false));
+            std::string why;
+            check(rawOk && shellMax == raw.last && SameShellMenu(popup, raw.popup, &why),
+                "view background menu is the unmodified Windows menu");
+            if (!why.empty()) std::cerr << "  background menu diagnostic: " << why << '\n';
             POINT popupPoint=nativePoint; ClientToScreen(window.m_hWnd,&popupPoint);
             const UINT_PTR cancelTimer=SetTimer(nullptr,0,100,[](HWND,UINT,UINT_PTR id,DWORD) {
                 EndMenu(); KillTimer(nullptr,id);
             });
             if (cancelTimer) {
-                window.TrackPopupShellMenu(menu,popup,popupPoint,1,shellMax,false);
+                window.TrackPopupShellMenu(menu,popup,popupPoint,1,shellMax);
                 KillTimer(nullptr,cancelTimer);
                 InvalidateRect(window.m_hWnd,nullptr,FALSE); UpdateWindow(window.m_hWnd);
                 parentDc=GetDC(window.m_hWnd);
@@ -2870,42 +3472,202 @@ struct MainWndRegressionAccess {
                 ReleaseDC(window.m_hWnd,parentDc);
             } else check(false,"popup cancellation timer starts");
             DestroyMenu(popup); menu->Release();
-            window.ReleaseRetiredShellMenus();
         }
+        // The hosted view's right-click is DefView's own: FastFile never receives or builds it.
+        // Menu windows are blocked by a CBT hook, so nothing is shown even here.
+        int fastFileMenus = 0;
+        window.m_trackMenuHook = [&](IContextMenu*, HMENU) { ++fastFileMenus; return 0u; };
+        if (nativeList) {
+            blockedMenuWindows = 0;
+            HHOOK block = SetWindowsHookExW(WH_CBT, BlockMenuWindows, nullptr, GetCurrentThreadId());
+            check(block != nullptr, "menu-window blocking hook installed");
+            const UINT_PTR safety=SetTimer(nullptr,0,300,[](HWND,UINT,UINT_PTR id,DWORD) { EndMenu(); KillTimer(nullptr,id); });
+            if (block) {
+                POINT screen{(nativeRect.left+nativeRect.right)/2,(nativeRect.top+nativeRect.bottom)/2};
+                SendMessageW(nativeList, WM_CONTEXTMENU, reinterpret_cast<WPARAM>(nativeList), MAKELPARAM(screen.x, screen.y));
+                pump(100);
+                UnhookWindowsHookEx(block);
+            }
+            if (safety) KillTimer(nullptr, safety);
+            check(blockedMenuWindows >= 1 && fastFileMenus == 0,
+                "right-click in the Windows view opens DefView's own menu, not a FastFile-built one");
+        }
+        window.m_trackMenuHook = nullptr;
         if (!paintWasShown) ShowWindow(window.m_hWnd,SW_HIDE);
+        // Every menu FastFile builds itself (tree, search list, Quick Access, favorites) is the
+        // raw Windows menu with Explorer's flags. The track seam returns 0 (cancel) or a chosen
+        // command instead of showing a popup; the invoke seam records instead of executing.
+        struct Capture { int calls = 0; bool same = false; bool sited = false; std::string why; };
+        auto captureMenu = [&](RawShellMenu& raw, Capture& out, const wchar_t* pick = nullptr) {
+            window.m_trackMenuHook = [&raw, &out, pick](IContextMenu* shown, HMENU shownPopup) -> UINT {
+                ++out.calls;
+                out.same = raw.popup && SameShellMenu(shownPopup, raw.popup, &out.why);
+                IUnknown* site = nullptr;
+                out.sited = SUCCEEDED(IUnknown_GetSite(shown, IID_IUnknown, reinterpret_cast<void**>(&site))) && site;
+                if (site) site->Release();
+                return pick ? VerbCommand(shown, shownPopup, 0x7FFF, pick) : 0u;
+            };
+        };
+        auto siteLikeFastFile = [&](RawShellMenu& raw) { if (raw.menu) window.m_shellBrowser->SiteContextMenu(raw.menu); };
+        // Item menus are sited on the hosted ExplorerBrowser (SID_SShellBrowser), as Explorer
+        // sites navigation-pane menus on its frame, so a native 打开 can browse in place.
+        auto report = [&](const Capture& capture, const char* name, bool requireSite = true) {
+            if (!capture.why.empty()) std::cerr << "  " << name << " diagnostic: " << capture.why << '\n';
+            if (requireSite && capture.calls) {
+                if (!capture.sited) std::cerr << "  " << name << " is not sited on the hosted browser\n";
+                check(capture.sited, "FastFile-built item menus are sited on the hosted Windows browser");
+            }
+        };
+        RECT owner{}; GetWindowRect(window.m_hWnd, &owner);
+        const POINT at{owner.left + 80, owner.top + 80};
+        const auto sample = folder + L"\\sample.txt";
+        const auto subfolder = folder + L"\\Battle.net";
+        BYTE savedKeys[256]{}; GetKeyboardState(savedKeys);
+        auto setShift = [&](bool down) {
+            BYTE keys[256]{}; if (down) keys[VK_SHIFT] = keys[VK_LSHIFT] = 0x80; SetKeyboardState(keys);
+        };
         {
-            // Item menus must offer Explorer's 重命名(M) (CMF_CANRENAME) for one renamable
-            // item in the Shell view, and the verb must start the view's in-place edit.
-            const auto sample = folder + L"\\sample.txt";
-            IContextMenu* itemMenu = nullptr; HMENU itemPopup = nullptr; UINT itemMax = 0;
-            const bool itemBuilt = window.BuildShellItemMenu({sample}, &itemMenu, &itemPopup, &itemMax);
-            check(itemBuilt && ShellMenuUtil::FindVerb(itemMenu, itemPopup, 1, itemMax, L"rename") >= 0,
-                "single file item menu contains native rename");
-            check(itemBuilt && !stacked(itemPopup), "item menu has no leading, trailing or stacked separators");
-            if (itemBuilt) { DestroyMenu(itemPopup); itemMenu->Release(); }
-            const bool multiBuilt = window.BuildShellItemMenu({sample, folder + L"\\Battle.net"}, &itemMenu, &itemPopup, &itemMax);
-            check(multiBuilt && ShellMenuUtil::FindVerb(itemMenu, itemPopup, 1, itemMax, L"rename") < 0,
-                "multi-selection item menu does not offer rename");
-            if (multiBuilt) { DestroyMenu(itemPopup); itemMenu->Release(); }
-            window.m_shellMenuPaths = {sample};
-            const bool routed = window.HandleRoutedShellVerb(L"Rename");
-            window.m_shellMenuPaths.clear();
-            HWND edit = nullptr;
-            const DWORD editDeadline = GetTickCount() + 2000;
-            while (routed && !(edit = ShellBrowserHostTestAccess::EditControl(*window.m_shellBrowser)) && GetTickCount() < editDeadline) pump(20);
-            std::vector<std::pair<std::wstring, bool>> renameSelection; window.m_shellBrowser->GetSelection(renameSelection);
-            check(routed && edit && window.m_pendingShellRename == sample && renameSelection.size() == 1 &&
-                CMainWnd::PathEquals(renameSelection[0].first, sample), "context menu rename starts in-place edit on the item");
-            ShellBrowserHostTestAccess::CancelEdit(*window.m_shellBrowser); pump(100);
-            window.m_pendingShellRename.clear();
-            check(GetFileAttributesW(sample.c_str()) != INVALID_FILE_ATTRIBUTES, "cancelled in-place rename keeps the name");
+            RawShellMenu raw; Capture capture;
+            const UINT flags = CMainWnd::ShellItemMenuFlags(false, false);
+            check(flags == (CMF_NORMAL | CMF_ITEMMENU), "item menus use CMF_NORMAL | CMF_ITEMMENU");
+            check(raw.Path(sample, window.m_hWnd), "raw file menu"); siteLikeFastFile(raw); raw.Query(flags);
+            captureMenu(raw, capture);
+            setShift(false);
+            const bool shown = window.ShowShellContextMenu({sample}, at);
+            check(shown && capture.calls == 1 && capture.same && window.m_lastShellMenuFlags == flags,
+                "search-list file menu is the unmodified Windows item menu");
+            check(ShellMenuUtil::FindVerb(raw.menu, raw.popup, 1, raw.last, L"rename") < 0,
+                "menus outside the hosted view never claim CMF_CANRENAME");
+            report(capture, "file menu");
         }
-        window.m_shellMenuBackground = true; window.m_shellMenuFolder = folder;
-        check(window.HandleRoutedShellVerb(L"refresh"), "background refresh is routed to FastFile refresh");
-        check(!window.HandleRoutedShellVerb(L"rename"), "background menu never routes rename");
-        check(!window.HandleRoutedShellVerb(L"pastelink") && !window.HandleRoutedShellVerb(L"properties"),
-            "other native background verbs stay with Windows");
-        window.m_shellMenuBackground = false; window.m_shellMenuFolder.clear();
+        {
+            RawShellMenu raw; Capture capture;
+            const UINT flags = CMainWnd::ShellItemMenuFlags(true, false);
+            check((flags & CMF_EXTENDEDVERBS) && !(CMainWnd::ShellItemMenuFlags(false, false) & CMF_EXTENDEDVERBS)
+                && (CMainWnd::ShellBackgroundMenuFlags(true) & CMF_EXTENDEDVERBS)
+                && CMainWnd::ShellBackgroundMenuFlags(false) == CMF_NORMAL,
+                "Shift adds CMF_EXTENDEDVERBS; background menus use CMF_NORMAL");
+            setShift(true); // some handlers also read the Shift key state themselves
+            raw.Path(sample, window.m_hWnd); siteLikeFastFile(raw); raw.Query(flags);
+            captureMenu(raw, capture);
+            window.ShowShellContextMenu({sample}, at);
+            setShift(false);
+            check(capture.calls == 1 && capture.same && (window.m_lastShellMenuFlags & CMF_EXTENDEDVERBS),
+                "Shift right-click queries the extended Windows item menu");
+            report(capture, "extended file menu");
+        }
+        {
+            RawShellMenu raw; Capture capture;
+            raw.Background(subfolder, window.m_hWnd); raw.Query(CMainWnd::ShellBackgroundMenuFlags(false));
+            captureMenu(raw, capture);
+            const bool shown = window.ShowShellBackgroundContextMenu(subfolder, at);
+            check(shown && capture.calls == 1 && capture.same && window.m_lastShellMenuFlags == CMF_NORMAL,
+                "background menu of a folder not on screen is the folder's own CreateViewObject menu");
+            report(capture, "folder background menu", false);
+        }
+        // Navigation tree: This PC root gets the Computer item's menu, folders their item menu,
+        // both with CMF_EXPLORE like Explorer's navigation pane; placeholders get none.
+        CTreeNodeUI* thisPcNode = nullptr;
+        for (int i = 0; window.m_pDirTree && i < window.m_pDirTree->GetCount() && !thisPcNode; ++i) {
+            auto* node = static_cast<CTreeNodeUI*>(window.m_pDirTree->GetItemAt(i)->GetInterface(DUI_CTR_TREENODE));
+            if (node && CMainWnd::IsThisPcPath(node->GetUserData().GetData())) thisPcNode = node;
+        }
+        check(thisPcNode != nullptr, "navigation tree has a This PC root");
+        if (thisPcNode) {
+            RawShellMenu raw; Capture capture;
+            const UINT flags = CMainWnd::ShellItemMenuFlags(false, true);
+            raw.Computer(window.m_hWnd); siteLikeFastFile(raw); raw.Query(flags);
+            captureMenu(raw, capture);
+            window.ShowTreeContextMenu(thisPcNode, at);
+            check(capture.calls == 1 && capture.same && window.m_lastShellMenuFlags == flags && (flags & CMF_EXPLORE),
+                "tree This PC root shows the Computer item menu with CMF_EXPLORE");
+            check(ShellMenuUtil::FindVerb(raw.menu, raw.popup, 1, raw.last, L"properties") >= 0,
+                "Computer item menu offers Windows' own properties");
+            report(capture, "tree This PC menu");
+        }
+        window.SyncTreeToPath(folder); pump(200);
+        if (CTreeNodeUI* folderNode = window.FindTreeNodeByPath(nullptr, folder)) {
+            RawShellMenu raw; Capture capture;
+            const UINT flags = CMainWnd::ShellItemMenuFlags(false, true);
+            raw.Path(folder, window.m_hWnd); siteLikeFastFile(raw); raw.Query(flags);
+            captureMenu(raw, capture);
+            window.ShowTreeContextMenu(folderNode, at);
+            check(capture.calls == 1 && capture.same && window.m_lastShellMenuFlags == flags,
+                "tree folder shows its unmodified Windows item menu with CMF_EXPLORE");
+            report(capture, "tree folder menu");
+        } else check(false, "navigation tree reveals the fixture folder");
+        {
+            CTreeNodeUI pending; pending.SetUserData(CMainWnd::kPendingMarker);
+            RawShellMenu raw; Capture capture; captureMenu(raw, capture);
+            window.ShowTreeContextMenu(&pending, at);
+            check(capture.calls == 0, "tree loading placeholder has no menu");
+        }
+        // Quick Access 此电脑 row and favorite chips use the same native item menus.
+        {
+            const auto savedRows = window.m_quickRows;
+            CMainWnd::QuickRow thisPc; thisPc.isThisPc = true; thisPc.path = CMainWnd::kThisPcPath;
+            window.m_quickRows = {thisPc};
+            RawShellMenu raw; Capture capture;
+            const UINT flags = CMainWnd::ShellItemMenuFlags(false, false);
+            raw.Computer(window.m_hWnd); siteLikeFastFile(raw); raw.Query(flags);
+            captureMenu(raw, capture);
+            window.ShowQuickRowContextMenu(0, at);
+            window.m_quickRows = savedRows;
+            check(capture.calls == 1 && capture.same && window.m_lastShellMenuFlags == flags,
+                "Quick Access 此电脑 row shows the Computer item menu");
+            report(capture, "Quick Access This PC menu");
+        }
+        {
+            CButtonUI chip; chip.SetUserData(folder.c_str());
+            RawShellMenu raw; Capture capture;
+            const UINT flags = CMainWnd::ShellItemMenuFlags(false, false);
+            raw.Path(folder, window.m_hWnd); siteLikeFastFile(raw); raw.Query(flags);
+            captureMenu(raw, capture);
+            window.ShowFavoriteContextMenu(&chip, at);
+            check(capture.calls == 1 && capture.same && window.m_lastShellMenuFlags == flags,
+                "favorite chip shows the folder's unmodified Windows item menu");
+            report(capture, "favorite chip menu");
+            CButtonUI computerChip; computerChip.SetUserData(CMainWnd::kThisPcPath);
+            RawShellMenu computerRaw; Capture computerCapture;
+            computerRaw.Computer(window.m_hWnd); siteLikeFastFile(computerRaw); computerRaw.Query(flags);
+            captureMenu(computerRaw, computerCapture);
+            window.ShowFavoriteContextMenu(&computerChip, at);
+            check(computerCapture.calls == 1 && computerCapture.same, "此电脑 favorite chip shows the Computer item menu");
+        }
+        // No takeover: a chosen command always goes back to the same native menu by its offset.
+        std::vector<CMainWnd::NativeVerbCall> invoked;
+        window.m_nativeInvokeHook = [&](IContextMenu*) { invoked.push_back(window.m_lastNativeVerb); return S_OK; };
+        auto picked = [&](const wchar_t* verb, bool shift) {
+            const DWORD required = CMIC_MASK_UNICODE | CMIC_MASK_PTINVOKE;
+            return invoked.size() == 1 && _wcsicmp(invoked[0].verb.c_str(), verb) == 0 && invoked[0].byOffset
+                && (invoked[0].mask & required) == required && ((invoked[0].mask & CMIC_MASK_SHIFT_DOWN) != 0) == shift;
+        };
+        {
+            RawShellMenu raw; Capture capture; captureMenu(raw, capture, L"delete");
+            invoked.clear(); setShift(false);
+            window.ShowShellContextMenu({sample}, at);
+            check(picked(L"delete", false) && GetFileAttributesW(sample.c_str()) != INVALID_FILE_ATTRIBUTES,
+                "chosen 删除 is invoked natively by offset (recorded, not executed)");
+            invoked.clear(); setShift(true);
+            window.ShowShellContextMenu({sample}, at);
+            setShift(false);
+            check(picked(L"delete", true), "Shift + chosen 删除 reaches Windows with CMIC_MASK_SHIFT_DOWN");
+        }
+        {
+            const auto before = window.m_currentPath;
+            RawShellMenu raw; Capture capture; captureMenu(raw, capture, L"open");
+            invoked.clear();
+            window.ShowShellContextMenu({subfolder}, at, true);
+            MSG intercepted{};
+            const bool routed = PeekMessageW(&intercepted, window.m_hWnd, CMainWnd::kMsgShellFolderOpen,
+                CMainWnd::kMsgShellFolderOpen, PM_NOREMOVE) != FALSE;
+            check(picked(L"open", false) && !routed && window.m_currentPath == before,
+                "folder 打开 from a FastFile-built menu is Windows' open verb, not intercepted");
+        }
+        window.m_trackMenuHook = nullptr;
+        window.m_nativeInvokeHook = nullptr;
+        SetKeyboardState(savedKeys);
+        check(dialogs.Dismissed() == 0, "no dialog appeared during the menu checks");
         return failures;
     }
     // Copy / move / recycle / delete run through IFileOperation. Production flags keep the
@@ -2922,9 +3684,12 @@ struct MainWndRegressionAccess {
             check((OperationFlags(kind, false) & (FOF_SILENT | FOF_NOERRORUI | FOF_NOCONFIRMATION)) ==
                 (FOF_SILENT | FOF_NOERRORUI | FOF_NOCONFIRMATION), "test mode suppresses every Windows dialog");
         }
-        for (Kind kind : {Kind::Copy, Kind::Move})
-            check((OperationFlags(kind, true) & (FOF_NOCONFIRMATION | FOF_RENAMEONCOLLISION | FOFX_ADDUNDORECORD)) == 0,
-                "copy and move ask the native replace / skip question and stay in FastFile history");
+        for (Kind kind : {Kind::Copy, Kind::Move}) {
+            check((OperationFlags(kind, true) & (FOF_NOCONFIRMATION | FOF_RENAMEONCOLLISION)) == 0,
+                "copy and move ask the native replace / skip question");
+            check((OperationFlags(kind, true) & (FOF_ALLOWUNDO | FOFX_ADDUNDORECORD)) == (FOF_ALLOWUNDO | FOFX_ADDUNDORECORD),
+                "drag-drop copy and move join the single Windows undo history");
+        }
         check((OperationFlags(Kind::Recycle, true) & (FOFX_RECYCLEONDELETE | FOF_ALLOWUNDO | FOFX_ADDUNDORECORD)) ==
             (FOFX_RECYCLEONDELETE | FOF_ALLOWUNDO | FOFX_ADDUNDORECORD), "recycle keeps the Explorer undo record");
         check((OperationFlags(Kind::Delete, true) & (FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE)) == 0,
@@ -3010,6 +3775,25 @@ struct MainWndRegressionAccess {
         window.NavigateToNow(folder, false); pump(700);
         window.SetViewMode(CMainWnd::ViewMode::Details); pump(500);
         ShellBrowserHost& host = *window.m_shellBrowser;
+        {
+            // Verify that right after navigation in Details view, folder and file items resolve icons without F5:
+            HWND list = ShellBrowserHostTestAccess::ListWindow(host);
+            const int count = list ? ListView_GetItemCount(list) : 0;
+            check(count > 0, "Details view has populated items after navigation");
+            for (int itm = 0; itm < (std::min)(5, count); ++itm) {
+                wchar_t c0[256]{}, c1[256]{}, c2[256]{};
+                ListView_GetItemText(list, itm, 0, c0, _countof(c0));
+                ListView_GetItemText(list, itm, 1, c1, _countof(c1));
+                ListView_GetItemText(list, itm, 2, c2, _countof(c2));
+                check(wcslen(c0) > 0, "Details view item name (column 0) is populated");
+                check(wcslen(c1) > 0, "Details view item modified date (column 1) is populated");
+                check(wcslen(c2) > 0, "Details view item type (column 2) is populated");
+            }
+            for (int itm = 0; itm < (std::min)(10, count); ++itm) {
+                const int img = ShellBrowserHostTestAccess::ResolveItemIcon(host, itm);
+                check(img >= 0, "Details view item resolves icon without manual refresh (F5)");
+            }
+        }
         LARGE_INTEGER frequency{}; QueryPerformanceFrequency(&frequency);
         using Mode = CMainWnd::ViewMode;
         const Mode sequence[] = { Mode::LargeIcons, Mode::Details, Mode::ExtraLargeIcons, Mode::List,
@@ -3047,7 +3831,14 @@ struct MainWndRegressionAccess {
             check(window.LoadFolderViewForPath(folder) == sequence[i], "view switch still saves the per-folder view" + tag);
             IFolderView2* view = ShellBrowserHostTestAccess::View(host);
             FOLDERVIEWMODE native = FVM_AUTO; int size = 0; DWORD flags = 0;
-            if (view) { view->GetViewModeAndIconSize(&native, &size); view->GetCurrentFolderFlags(&flags); view->Release(); }
+            if (view) {
+                view->GetViewModeAndIconSize(&native, &size);
+                view->GetCurrentFolderFlags(&flags);
+                view->Release();
+            }
+            if (sequence[i] == Mode::Tiles) {
+                check(size == window.DpiScale(48), "Tiles view sets and reports uniform 48-px icon size" + tag);
+            }
             const bool details = sequence[i] == Mode::Details;
             check(bool(flags & FWF_NOHEADERINALLVIEWS) == !details, "view switch keeps native header in Details only" + tag);
             const bool spacer = sequence[i] == Mode::Details || sequence[i] == Mode::List;
@@ -3457,13 +4248,19 @@ struct MainWndRegressionAccess {
             shortcut.wParam = 'C'; shortcut.lParam = 1;
             check(CPaintManagerUI::TranslateMessage(&shortcut), "native child Ctrl C is handled before dispatch");
             SetKeyboardState(previousKeys);
+            // The Windows view runs its copy verb asynchronously; wait for the clipboard.
             bool copiedSelection = false;
-            if (OpenClipboard(window.m_hWnd)) {
-                HDROP drop = static_cast<HDROP>(GetClipboardData(CF_HDROP));
-                wchar_t copiedPath[32768]{};
-                if (drop && DragQueryFileW(drop, 0, copiedPath, _countof(copiedPath)))
-                    copiedSelection = std::wstring(copiedPath) == fixture + L"\\Battle.net";
-                CloseClipboard();
+            const DWORD copyDeadline = GetTickCount() + 3000;
+            while (!copiedSelection && GetTickCount() < copyDeadline) {
+                pump();
+                if (IsClipboardFormatAvailable(CF_HDROP) && OpenClipboard(window.m_hWnd)) {
+                    HDROP drop = static_cast<HDROP>(GetClipboardData(CF_HDROP));
+                    wchar_t copiedPath[32768]{};
+                    if (drop && DragQueryFileW(drop, 0, copiedPath, _countof(copiedPath)))
+                        copiedSelection = std::wstring(copiedPath) == fixture + L"\\Battle.net";
+                    CloseClipboard();
+                }
+                if (!copiedSelection) Sleep(20);
             }
             check(copiedSelection, "native Ctrl C publishes the selected path to the Windows clipboard");
             if(!copiedSelection) {
@@ -3479,7 +4276,10 @@ struct MainWndRegressionAccess {
         view->Release();
 
         // Make the fixture a quick target; only its quick row may own the highlight.
-        window.PinQuickAccess(fixture);
+        CMainWnd::QuickRow quickFixture;
+        quickFixture.path = fixture; quickFixture.label = L"测试目录"; quickFixture.pinned = true;
+        window.m_quickRows.push_back(quickFixture);
+        window.RebuildLeftQuickRows();
         window.SyncTreeToPath(fixture);
         window.UpdateQuickRowHighlight(); pump();
         check(node && !node->IsSelected(), "quick target suppresses duplicate tree selection");
@@ -3590,7 +4390,7 @@ static LONG WINAPI ReportCrash(EXCEPTION_POINTERS* info) {
     GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
         static_cast<LPCWSTR>(address), &module);
     if (module) GetModuleFileNameW(module, name, MAX_PATH);
-    fwprintf(stderr, L"CRASH code=0x%08lX module=%ls rva=0x%llX\n", info->ExceptionRecord->ExceptionCode, name,
+    fprintf(stderr, "CRASH code=0x%08lX module=%ls rva=0x%llX\n", info->ExceptionRecord->ExceptionCode, name,
         static_cast<unsigned long long>(reinterpret_cast<const char*>(address) - reinterpret_cast<const char*>(module)));
     CONTEXT context = *info->ContextRecord;
     for (int frame = 0; frame < 24 && context.Rip; ++frame) {
@@ -3599,7 +4399,7 @@ static LONG WINAPI ReportCrash(EXCEPTION_POINTERS* info) {
             reinterpret_cast<LPCWSTR>(context.Rip), &frameModule);
         if (frameModule) GetModuleFileNameW(frameModule, frameName, MAX_PATH);
         const wchar_t* shortName = wcsrchr(frameName, L'\\');
-        fwprintf(stderr, L"  #%d %ls+0x%llX\n", frame, shortName ? shortName + 1 : frameName,
+        fprintf(stderr, "  #%d %ls+0x%llX\n", frame, shortName ? shortName + 1 : frameName,
             static_cast<unsigned long long>(context.Rip - reinterpret_cast<DWORD64>(frameModule)));
         DWORD64 imageBase = 0;
         PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(context.Rip, &imageBase, nullptr);
@@ -3607,7 +4407,7 @@ static LONG WINAPI ReportCrash(EXCEPTION_POINTERS* info) {
         void* handlerData = nullptr; DWORD64 establisher = 0;
         RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, context.Rip, function, &context, &handlerData, &establisher, nullptr);
     }
-    fwprintf(stderr, L"  thread=%lu\n", GetCurrentThreadId());
+    fprintf(stderr, "  thread=%lu\n", GetCurrentThreadId());
     fflush(stderr);
     return EXCEPTION_CONTINUE_SEARCH;
 }
@@ -3617,9 +4417,17 @@ std::wstring MainWndRegressionAccess::slowRoot;
 
 int main(int argc, char** argv) {
     std::cout << std::unitbuf;
+    wchar_t diagnosticDpi[2]{};
+    if(GetEnvironmentVariableW(L"FASTFILE_MENU_DPI_AWARE",diagnosticDpi,_countof(diagnosticDpi))) EnablePerMonitorDpiAwareness();
     // Only the Shell activation test registers windows in the user's Shell window list.
     CMainWnd::s_shellWindowRegistrationAllowed = false;
     SetUnhandledExceptionFilter(ReportCrash);
+    wchar_t trace[2]{};
+    if(GetEnvironmentVariableW(L"FASTFILE_TEST_EXCEPTION_TRACE",trace,_countof(trace)))
+        AddVectoredExceptionHandler(1, [](EXCEPTION_POINTERS* info)->LONG {
+            if(info->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) ReportCrash(info);
+            return EXCEPTION_CONTINUE_SEARCH;
+        });
     if(argc>1 && (strcmp(argv[1],"--shell-activation-launcher")==0 || strcmp(argv[1],"--agent-lifecycle-launcher")==0 || strcmp(argv[1],"--agent-ui-launcher")==0)) {
         wchar_t desktopName[256]{},hiveName[256]{};
         GetEnvironmentVariableW(L"FASTFILE_TEST_DESKTOP",desktopName,_countof(desktopName));
@@ -3673,11 +4481,14 @@ int main(int argc, char** argv) {
     size_t userCacheFiles = 0; ULONGLONG userCacheNewest = 0;
     UserIconCacheSnapshot(userCacheFiles, userCacheNewest);
     auto* window = new CMainWnd; // same process-lifetime ownership as application main
+    MainWndRegressionAccess::ConfigureQuickFixture(*window, fixture);
     HWND hwnd = window->Create(nullptr, L"FastFile regression", UI_WNDSTYLE_FRAME, WS_EX_WINDOWEDGE);
     if (!hwnd) return 1;
+    if (!MainWndRegressionAccess::WaitQuickFixture(*window)) { DestroyWindow(hwnd); return 1; }
     const int cacheFailures = MainWndRegressionAccess::CheckIconCache(*window, root, cacheMarker, userCacheFiles, userCacheNewest);
     ShowWindow(hwnd, SW_HIDE);
-    int failures = argc>1 && strcmp(argv[1],"--agent-live-only")==0 ? MainWndRegressionAccess::CheckExplorerAgentLive(*window,fixture)
+    int failures = argc>1 && strcmp(argv[1],"--quick-access-only")==0 ? MainWndRegressionAccess::CheckSystemQuickAccess(*window,fixture)
+        : argc>1 && strcmp(argv[1],"--agent-live-only")==0 ? MainWndRegressionAccess::CheckExplorerAgentLive(*window,fixture)
         : activationOnly ? MainWndRegressionAccess::CheckShellActivation(*window,fixture)
         : argc>1 && strcmp(argv[1],"--explorer-live-only")==0
         ? MainWndRegressionAccess::CheckExplorerLive(*window,fixture)
@@ -3700,7 +4511,7 @@ int main(int argc, char** argv) {
         : argc>1 && strcmp(argv[1],"--integration-only")==0
         ? MainWndRegressionAccess::CheckIntegration(*window,root)
         : MainWndRegressionAccess::Run(*window, fixture);
-    if(!activationOnly && !(argc>1 && (strcmp(argv[1],"--delete-permission-check")==0 || strcmp(argv[1],"--delete-partial-check")==0 || strcmp(argv[1],"--integration-only")==0 || strcmp(argv[1],"--explorer-live-only")==0 || strcmp(argv[1],"--agent-live-only")==0)))
+    if(!activationOnly && !(argc>1 && (strcmp(argv[1],"--quick-access-only")==0 || strcmp(argv[1],"--delete-permission-check")==0 || strcmp(argv[1],"--delete-partial-check")==0 || strcmp(argv[1],"--integration-only")==0 || strcmp(argv[1],"--explorer-live-only")==0 || strcmp(argv[1],"--agent-live-only")==0)))
         failures+=MainWndRegressionAccess::CheckPreferences(*window,root);
     failures += cacheFailures;
     if(!AppIconMatchesSource()) {++failures;std::cerr<<"FAIL all embedded application icon sizes must match res/FastFile.ico\n";}
