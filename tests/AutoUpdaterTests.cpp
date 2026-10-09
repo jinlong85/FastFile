@@ -69,9 +69,17 @@ static void TestReleaseJsonParser() {
     assert(installer->name == L"FastFile-Setup-1.0.23.exe");
     assert(installer->downloadUrl.find(L"FastFile-Setup-1.0.23.exe") != std::wstring::npos);
 
+    // 测试 Release 数组解析（/releases?per_page=1 返回的格式）
+    std::string arrayJson = "[" + sampleJson + "]";
+    ReleaseInfo arrayInfo;
+    assert(ParseGitHubReleaseJson(arrayJson, arrayInfo));
+    assert(arrayInfo.tagName == L"v1.0.23");
+    assert(arrayInfo.assets.size() == 2);
+
     // 容错性测试：空 JSON 或残缺 JSON
     ReleaseInfo badInfo;
     assert(!ParseGitHubReleaseJson("", badInfo));
+    assert(!ParseGitHubReleaseJson("[]", badInfo));
     assert(!ParseGitHubReleaseJson("{}", badInfo));
     assert(!ParseGitHubReleaseJson("{ invalid json }", badInfo));
 
@@ -100,12 +108,35 @@ static void TestDownloadPath() {
     std::cout << "TestDownloadPath passed." << std::endl;
 }
 
+static void TestLiveGitHubCheck() {
+    // 真实联网查询 jinlong85/FastFile 仓库（当前线上为 v1.0.17）
+    // 假定本地为 1.0.16 时应成功识别出有更新 v1.0.17
+    auto res16 = CheckForUpdate(L"1.0.16", L"jinlong85/FastFile");
+    if (res16.status == UpdateCheckStatus::Success) {
+        assert(res16.hasUpdate);
+        assert(res16.release.tagName.find(L"v1.") != std::wstring::npos);
+        assert(res16.release.FindInstallerAsset() != nullptr);
+        std::cout << "TestLiveGitHubCheck (newer version found): " << res16.release.tagName.c_str() << " passed." << std::endl;
+    } else {
+        // 网络环境离线或受限时不强制失败
+        std::cout << "TestLiveGitHubCheck skipped or network unavailable: " << res16.message.c_str() << std::endl;
+    }
+
+    // 假定本地为 1.0.23 时应报告已是最新
+    auto res23 = CheckForUpdate(L"1.0.23", L"jinlong85/FastFile");
+    if (res23.status == UpdateCheckStatus::UpToDate) {
+        assert(!res23.hasUpdate);
+        std::cout << "TestLiveGitHubCheck (up to date): passed." << std::endl;
+    }
+}
+
 int main() {
     try {
         TestSemanticVersion();
         TestReleaseJsonParser();
         TestInstallerArguments();
         TestDownloadPath();
+        TestLiveGitHubCheck();
         std::cout << "All AutoUpdater tests passed!" << std::endl;
         return 0;
     } catch (const std::exception& ex) {

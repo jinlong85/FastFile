@@ -194,6 +194,8 @@ struct SimpleJsonParser {
 bool ParseGitHubReleaseJson(const std::string& jsonUtf8, ReleaseInfo& outInfo) {
     outInfo = ReleaseInfo{};
     SimpleJsonParser p(jsonUtf8);
+    const bool isArray = p.Match('[');
+    if (isArray && p.Peek(']')) return false;
     if (!p.Match('{')) return false;
 
     while (!p.Peek('}') && p.pos < jsonUtf8.size()) {
@@ -308,7 +310,7 @@ UpdateCheckResult CheckForUpdate(const std::wstring& currentVersion, const std::
         return result;
     }
 
-    std::wstring path = L"/repos/" + repo + L"/releases/latest";
+    std::wstring path = L"/repos/" + repo + L"/releases?per_page=1";
     HINTERNET hRequest = WinHttpOpenRequest(
         hConnect, L"GET", path.c_str(),
         nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
@@ -346,7 +348,11 @@ UpdateCheckResult CheckForUpdate(const std::wstring& currentVersion, const std::
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
         result.status = UpdateCheckStatus::NetworkError;
-        result.message = L"更新服务器返回状态码 " + std::to_wstring(statusCode);
+        if (statusCode == 404) {
+            result.message = L"更新服务器未找到发布版本（404）。";
+        } else {
+            result.message = L"更新服务器返回状态码 " + std::to_wstring(statusCode);
+        }
         return result;
     }
 
@@ -365,6 +371,13 @@ UpdateCheckResult CheckForUpdate(const std::wstring& currentVersion, const std::
     WinHttpCloseHandle(hRequest);
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
+
+    if (responseBody.empty() || responseBody == "[]") {
+        result.status = UpdateCheckStatus::UpToDate;
+        result.hasUpdate = false;
+        result.message = L"当前已是最新版本，暂无更新。";
+        return result;
+    }
 
     if (!ParseGitHubReleaseJson(responseBody, result.release)) {
         result.status = UpdateCheckStatus::ParseError;
