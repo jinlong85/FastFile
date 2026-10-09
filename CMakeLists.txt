@@ -15,6 +15,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+if(MSVC)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 # Unicode Win32 (required by DuiLib)
 add_compile_definitions(UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 
@@ -93,6 +97,8 @@ add_executable(FastFile WIN32
   src/FavoritesJson.h
   src/ShellPresentation.h
   src/TabLayout.h
+  src/AutoUpdater.cpp
+  src/AutoUpdater.h
   cmake/FastFile.manifest
 )
 
@@ -104,7 +110,7 @@ if(WIN32)
   set_property(SOURCE res/FastFile.rc APPEND PROPERTY
                OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/res/FastFile.ico")
 endif()
-target_link_libraries(FastFile PRIVATE duilib shell32 shlwapi propsys msimg32 version)
+target_link_libraries(FastFile PRIVATE duilib shell32 shlwapi propsys msimg32 version winhttp)
 if(MSVC)
   target_compile_options(FastFile PRIVATE /W3 /utf-8)
   # Emit FastFile.map: a crash report gives an RVA, the map turns it into a function name.
@@ -119,7 +125,7 @@ endif()
 get_target_property(FASTFILE_AGENT_SOURCES FastFile SOURCES)
 add_executable(FastFileAgent WIN32 ${FASTFILE_AGENT_SOURCES})
 target_compile_definitions(FastFileAgent PRIVATE FASTFILE_AGENT_EXECUTABLE)
-target_link_libraries(FastFileAgent PRIVATE duilib shell32 shlwapi propsys msimg32 version)
+target_link_libraries(FastFileAgent PRIVATE duilib shell32 shlwapi propsys msimg32 version winhttp)
 if(MSVC)
   target_compile_options(FastFileAgent PRIVATE /W3 /utf-8 /Gy)
   target_link_options(FastFileAgent PRIVATE /OPT:REF)
@@ -200,6 +206,17 @@ if(BUILD_TESTING)
   endif()
   add_test(NAME FastFileShellWindowTests COMMAND FastFileShellWindowTests)
   set_tests_properties(FastFileShellWindowTests PROPERTIES TIMEOUT 120)
+  add_executable(FastFileAutoUpdaterTests
+    tests/AutoUpdaterTests.cpp
+    src/AutoUpdater.cpp
+  )
+  target_include_directories(FastFileAutoUpdaterTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(FastFileAutoUpdaterTests PRIVATE winhttp version shlwapi shell32)
+  if(MSVC)
+    target_compile_options(FastFileAutoUpdaterTests PRIVATE /utf-8 /wd4828)
+  endif()
+  add_test(NAME FastFileAutoUpdaterTests COMMAND FastFileAutoUpdaterTests)
+  set_tests_properties(FastFileAutoUpdaterTests PROPERTIES TIMEOUT 30)
   add_test(NAME FastFileBuildSourceParity
     COMMAND "${CMAKE_COMMAND}" "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/CheckBuildSources.cmake")

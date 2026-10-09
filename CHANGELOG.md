@@ -4,6 +4,16 @@
 版本号来自根目录 [VERSION](VERSION)，安装包产物在 `dist\FastFile-Setup-<版本>.exe`。
 当前发行版为 [**1.0.17（预发布）**](https://github.com/jinlong85/FastFile/releases/tag/v1.0.17)，新增设置中的“关于 FastFile”及诊断信息；验证范围和安装包状态见 [HANDOFF.md](HANDOFF.md)。
 
+## 2026-10-09
+
+### 1.0.23（应用内检查更新与静默升级重启，已构建打包，未发布）
+
+- **自动检查与静默升级**：在“设置 → 关于 FastFile”页面增加【检查更新】主按钮。点击后异步请求 GitHub Releases API 检索最新发行版，若检测到更新版本，展示新版本号与更新说明日志，并提供“立即更新”选项。
+- **WinHTTP 网络客户端与断点保护**：使用 Windows 原生 WinHTTP 库与 TLS 1.2/1.3 加密通信，自动检测系统代理并支持 302 重定向下载 GitHub Release Assets 安装包（`FastFile-Setup-*.exe`）；下载过程通过 `.part` 临时文件保护与原子重命名，主界面实时反馈下载百分比进度。
+- **安装器无缝热重启（`--restart`）**：安装程序（`installer/setup.cs`）新增 `--restart`（或 `--run`）命令行参数；静默更新模式（`--quiet`）解压替换文件与写入注册表后，自动唤起新版 `FastFile.exe`，应用退出后无缝启动新版本，用户无需手动重新下载和安装。
+- **语义化版本比较**：内置严格的三段式（`major.minor.patch`）语义化版本比较器，兼容 `v` 前缀标签，精准区分本地版本与远端版本。
+- **自动化测试覆盖**：新增 `AutoUpdaterTests` 独立测试套件，全面覆盖语义化版本比对（升级/降级/补丁/预发布）、GitHub Release JSON 关键字段提取、安装器参数构造及下载路径规则。
+
 ## 2026-10-08
 
 ### 1.0.22（系统撤销回退与 Explorer 隔离，已构建打包，未发布）

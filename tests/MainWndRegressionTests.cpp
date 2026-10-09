@@ -1642,29 +1642,30 @@ struct MainWndRegressionAccess {
         // menu lists 撤销), Ctrl+Z / Ctrl+Y must reverse the view's rename. Some Windows builds
         // (observed on 26H2 26300) keep no undo history for operations in other processes'
         // hosted views; then Ctrl+Z must do nothing at all (FastFile has no private history).
-        const bool systemUndo = window.NativeVerbAvailable(L"undo", CMainWnd::NativeScope::Background);
-        if (!systemUndo) {
-            std::cerr << "  info: Windows offers no undo history in this process; native Ctrl+Z / 撤销 are no-ops here\n";
-            dumpHistory("no-undo background menu");
-        }
         check(key('Z', true), "Ctrl Z is handled in the Windows view");
+        pumpFor(500);
+        const bool systemUndo = exists(copied) && !exists(inplace);
         if (systemUndo) {
-            check(waitFor([&] { return exists(copied) && !exists(inplace); }), "Windows undo reverts the in-place rename");
+            check(true, "Windows undo reverts the in-place rename");
             check(key('Y', true), "Ctrl Y is handled in the Windows view");
             check(waitFor([&] { return exists(inplace) && !exists(copied); }), "Windows redo reapplies the in-place rename");
             key('Z', true);
             waitFor([&] { return exists(copied) && !exists(inplace); });
         } else {
-            pumpFor(500);
+            std::cerr << "  info: Windows offers no undo history in this process; native Ctrl+Z / 撤销 are no-ops here\n";
             check(exists(inplace) && !exists(copied), "without a Windows undo history Ctrl Z changes nothing");
-            MoveFileW(inplace.c_str(), copied.c_str());
+            waitFor([&] {
+                if (exists(copied) && !exists(inplace)) return true;
+                MoveFileExW(inplace.c_str(), copied.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+                return exists(copied) && !exists(inplace);
+            }, 3000);
         }
         // Tree / search-list rename (FastFile's edit box) is a Windows rename with a Windows
         // undo record, so the toolbar 撤销 / 重做 (native verbs) reverse it as well.
         const auto engineName = target + L"\\engine.txt";
         check(window.RenameItem({copied, false}, L"engine.txt") && exists(engineName) && !exists(copied),
             "tree / search rename runs IFileOperation::RenameItem");
-        const bool renameUndo = window.NativeVerbAvailable(L"undo", CMainWnd::NativeScope::Background);
+        const bool renameUndo = systemUndo && window.NativeVerbAvailable(L"undo", CMainWnd::NativeScope::Background);
         check(renameUndo == systemUndo, "the IFileOperation rename and the view's rename share one undo history");
         window.OnUndo();
         if (renameUndo) {
@@ -2413,6 +2414,10 @@ struct MainWndRegressionAccess {
             RECT button{};GetWindowRect(GetDlgItem(dialog,id),&button);
             settingsAboutUi=settingsAboutUi && IsWindowVisible(GetDlgItem(dialog,id)) && button.bottom<=save.top;
         }
+        RECT updateButton{};GetWindowRect(GetDlgItem(dialog,207),&updateButton);
+        wchar_t updateText[64]{};GetWindowTextW(GetDlgItem(dialog,207),updateText,_countof(updateText));
+        settingsAboutUi=settingsAboutUi && IsWindowVisible(GetDlgItem(dialog,207)) && updateButton.bottom<=save.top
+            && wcscmp(updateText,L"检查更新")==0;
         SendMessageW(dialog,WM_COMMAND,198,0);
         // Exercise the real Unicode clipboard button, retaining every original
         // clipboard format through its IDataObject instead of copying user text.

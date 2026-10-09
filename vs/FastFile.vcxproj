@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32"><Configuration>Debug</Configuration><Platform>Win32</Platform></ProjectConfiguration>
@@ -57,7 +57,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
-      <AdditionalDependencies>version.lib;comctl32.lib;gdiplus.lib;msimg32.lib;imm32.lib;ole32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>winhttp.lib;version.lib;comctl32.lib;gdiplus.lib;msimg32.lib;imm32.lib;ole32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalManifestFiles>..\cmake\FastFile.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
     </Link>
@@ -92,6 +92,7 @@
     <ClCompile Include="..\src\ShellFileOperation.cpp" />
     <ClCompile Include="..\src\TabStripUI.cpp" />
     <ClCompile Include="..\src\FluentScrollBarUI.cpp" />
+    <ClCompile Include="..\src\AutoUpdater.cpp" />
     <ClInclude Include="..\src\ExplorerAgentProtocol.h" />
     <ClInclude Include="..\src\MainWnd.h" />
     <ClInclude Include="..\src\MainWndInternal.h" />
@@ -105,6 +106,7 @@
     <ClInclude Include="..\src\TabLayout.h" />
     <ClInclude Include="..\src\TabStripUI.h" />
     <ClInclude Include="..\src\FluentScrollBarUI.h" />
+    <ClInclude Include="..\src\AutoUpdater.h" />
     <ResourceCompile Include="..\res\FastFile.rc">
       <AdditionalIncludeDirectories>$(IntDir)generated;..\res;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>

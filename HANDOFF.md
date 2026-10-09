@@ -1,6 +1,15 @@
 # FastFile — 交接说明（给后续 AI / 开发者）
 
-更新日期：2026-10-08（Asia/Shanghai）
+更新日期：2026-10-09（Asia/Shanghai）
+
+## 本地候选：1.0.23 自动检查更新与静默升级重启（2026-10-09，已构建测试打包，未发布）
+
+- **自动检查与静默升级**：在“设置 → 关于 FastFile”页面增加【检查更新】（`AboutCheckUpdate = 207`）主按钮。点击后异步启动后台 STA 工作线程请求 GitHub Releases API 检索最新发行版（`https://api.github.com/repos/jinlong85/FastFile/releases/latest`）。若检测到更新版本，弹窗展示新版本号与更新说明日志摘要，并提供“立即更新”与“取消”选项。
+- **WinHTTP 网络客户端与下载保护**：使用 Windows 原生 WinHTTP 库与 TLS 1.2/1.3 加密通信，自动检测并应用系统代理设置（`WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY`），支持 302 重定向跟随（`WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS`）从 GitHub CDN 下载安装包资产（`FastFile-Setup-*.exe`）；下载过程采用 `.part` 临时文件保护与原子重命名，主界面实时反馈百分比进度（`AboutResult`）。
+- **安装器无缝热重启（`--restart`）**：安装程序（`installer/setup.cs`）新增 `--restart`（别名 `--run`）命令行参数；静默更新模式（`--quiet`）解压替换文件与写入注册表后，自动拉起安装好的新版 `FastFile.exe`，老版本主程序退出后无缝启动新版本，用户无需手动重新下载和安装。
+- **语义化版本比较**：内置严格的三段式（`major.minor.patch`）语义化版本比较器（`SemanticVersion`），兼容 `v` 前缀标签，精准区分本地版本与远端版本（忽略预发布后缀，确保只比较三段主版本号）。
+- **自动化测试覆盖**：新增 `tests/AutoUpdaterTests.cpp`（对应 CMake 测试目标 `FastFileAutoUpdaterTests`），全面覆盖语义化版本比对（升级/降级/补丁/预发布）、GitHub Release JSON 关键字段提取、安装器参数构造及下载路径规则；更新 `tests/MainWndRegressionTests.cpp` 覆盖关于页面更新按钮存在性断言，并在 Windows 11 26H2 环境下采用以 Ctrl+Z 实际文件变更状态为准的撤销探测逻辑。
+- **回归与构建**：所有核心回归测试（含快捷键、撤销/重做回退、界面、平铺模式统一 48px 图标、详细信息视图第 0/1/2 列完整性断言、详细信息与列表免 F5 图标解析、列表视图下 JPG 文件图标实时渲染、文件夹纯净透明缩略图与异步缩略图、自动更新模块单元测试）全部通过（13/13）；Release x64 编译 0 错误。生成 `dist/FastFile-Setup-1.0.23.exe`。
 
 ## 本地候选：1.0.22 系统撤销回退与 Explorer 隔离（2026-10-08，已构建测试打包，未发布）
 

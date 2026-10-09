@@ -37,6 +37,7 @@ powershell -ExecutionPolicy Bypass -File tests\CheckInstallerProcessOwnership.ps
 | 参数 | 作用 |
 |---|---|
 | `--quiet` | 静默安装（不弹窗、不自动启动） |
+| `--restart` / `--run` | 安装完成后自动启动新版 FastFile（配合 `--quiet` 用于自动更新） |
 | `--dir <路径>` | 安装到指定目录（默认 `%LOCALAPPDATA%\Programs\FastFile`） |
 | `--uninstall` | 卸载（`uninstall.exe` 默认使用） |
 | `--cleanup` | 内部使用：从 `%TEMP%` 重新启动以删除安装目录 |

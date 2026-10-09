@@ -32,6 +32,7 @@ internal static class Setup
         bool uninstall = false;
         bool cleanup = false;
         bool quiet = false;
+        bool restart = false;
         string dir = null;
         for (int i = 0; i < args.Length; i++)
         {
@@ -39,6 +40,7 @@ internal static class Setup
             if (a == "--uninstall") uninstall = true;
             else if (a == "--cleanup") cleanup = true;
             else if (a == "--quiet") quiet = true;
+            else if (a == "--restart" || a == "--run") restart = true;
             else if (a == "--dir" && i + 1 < args.Length) dir = args[++i];
         }
         if (string.IsNullOrEmpty(dir))
@@ -55,7 +57,7 @@ internal static class Setup
         try
         {
             if (cleanup) return DoCleanup(dir);
-            return uninstall ? DoUninstall(dir, quiet) : DoInstall(dir, quiet);
+            return uninstall ? DoUninstall(dir, quiet) : DoInstall(dir, quiet, restart);
         }
         catch (Exception ex)
         {
@@ -67,7 +69,7 @@ internal static class Setup
     }
 
     // ---------------------------------------------------------------- install
-    private static int DoInstall(string dir, bool quiet)
+    private static int DoInstall(string dir, bool quiet, bool restart)
     {
         Assembly asm = Assembly.GetExecutingAssembly();
         KillRunning(dir);
@@ -125,6 +127,10 @@ internal static class Setup
                        + "是否立即启动？";
             if (MessageBox.Show(msg, AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
                 Process.Start(new ProcessStartInfo(exe) { WorkingDirectory = dir });
+        }
+        else if (restart)
+        {
+            Process.Start(new ProcessStartInfo(exe) { WorkingDirectory = dir });
         }
         return 0;
     }

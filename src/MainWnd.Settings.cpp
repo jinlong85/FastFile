@@ -1,8 +1,10 @@
 // FastFile - preferences, native Win32 settings dialog, live appearance.
 #include "MainWndInternal.h"
 #include "FastFileAbout.h"
+#include "AutoUpdater.h"
 #include <functional>
 #include <algorithm>
+#include <thread>
 
 void FastFileSettings::Normalize() {
     startup=std::clamp(startup,0,2); density=std::clamp(density,0,2);
@@ -57,7 +59,7 @@ namespace {
 enum { Startup=110,StartupPath,External,Reuse,ClosePrompt,Density,Font,TabHeight,FavHeight,TabWidth,Scrollbar,
        View,Remember,Sort,Ascending,Grouping,Context,DefaultFolders,DefaultComputer,ExplorerTakeover,
        Browse=190,RestoreWindows,DetectIntegration,RepairIntegration,IntegrationDetails,ConfigureManager,
-       AboutSummary,AboutPath,AboutRefresh,AboutInstall,AboutLogs,AboutCopy,AboutProject,AboutChanges,AboutFeedback,AboutLicense,AboutResult };
+       AboutSummary,AboutPath,AboutRefresh,AboutInstall,AboutLogs,AboutCopy,AboutProject,AboutChanges,AboutFeedback,AboutLicense,AboutResult,AboutCheckUpdate };
 struct SettingsDialog {
     struct Control { HWND window;RECT bounds;int page; };
     FastFileSettings draft;std::function<bool(FastFileSettings)> save;
@@ -71,6 +73,17 @@ struct SettingsDialog {
         const auto text=L"FastFile · 多标签 Windows 文件管理器\r\n\r\n"+about.Diagnostics();
         SetWindowTextW(Item(AboutSummary),text.c_str());
         SetWindowTextW(Item(AboutPath),about.executable.c_str());
+    }
+    void CheckUpdate() {
+        HWND btn=Item(AboutCheckUpdate);
+        HWND result=Item(AboutResult);
+        EnableWindow(btn,FALSE);
+        SetWindowTextW(result,L"正在检查新版本，请稍候...");
+        HWND dlg=dialog;
+        std::thread([dlg]() {
+            auto check=FastFileUpdate::CheckForUpdate();
+            PostMessageW(dlg,WM_APP+101,reinterpret_cast<WPARAM>(new FastFileUpdate::UpdateCheckResult(check)),0);
+        }).detach();
     }
     void OpenProjectLink(const wchar_t* url) {
         SHELLEXECUTEINFOW command{};command.cbSize=sizeof(command);command.hwnd=dialog;
@@ -144,15 +157,16 @@ struct SettingsDialog {
         Add(L"EDIT",L"",AboutSummary,30,74,566,224,ES_MULTILINE|ES_READONLY|WS_VSCROLL|WS_TABSTOP,4);
         Add(L"STATIC",L"当前程序位置",0,30,310,566,22,SS_LEFT,4);
         Add(L"EDIT",L"",AboutPath,30,334,566,28,ES_READONLY|ES_AUTOHSCROLL|WS_TABSTOP,4);
-        Add(L"BUTTON",L"刷新信息",AboutRefresh,30,382,132,32,WS_TABSTOP|BS_PUSHBUTTON,4);
-        Add(L"BUTTON",L"打开安装目录",AboutInstall,174,382,132,32,WS_TABSTOP|BS_PUSHBUTTON,4);
-        Add(L"BUTTON",L"打开日志目录",AboutLogs,318,382,132,32,WS_TABSTOP|BS_PUSHBUTTON,4);
-        Add(L"BUTTON",L"复制诊断信息",AboutCopy,462,382,134,32,WS_TABSTOP|BS_PUSHBUTTON,4);
-        Add(L"BUTTON",L"项目主页",AboutProject,30,426,132,32,WS_TABSTOP|BS_PUSHBUTTON,4);
-        Add(L"BUTTON",L"更新日志",AboutChanges,174,426,132,32,WS_TABSTOP|BS_PUSHBUTTON,4);
-        Add(L"BUTTON",L"反馈问题",AboutFeedback,318,426,132,32,WS_TABSTOP|BS_PUSHBUTTON,4);
-        Add(L"BUTTON",L"许可与组件",AboutLicense,462,426,134,32,WS_TABSTOP|BS_PUSHBUTTON,4);
-        Add(L"STATIC",L"诊断信息不包含浏览路径或文件名，也不包含程序及日志位置。",AboutResult,30,472,566,28,SS_LEFT,4);
+        Add(L"BUTTON",L"检查更新",AboutCheckUpdate,30,382,132,32,WS_TABSTOP|BS_DEFPUSHBUTTON,4);
+        Add(L"BUTTON",L"刷新信息",AboutRefresh,174,382,132,32,WS_TABSTOP|BS_PUSHBUTTON,4);
+        Add(L"BUTTON",L"打开安装目录",AboutInstall,318,382,132,32,WS_TABSTOP|BS_PUSHBUTTON,4);
+        Add(L"BUTTON",L"打开日志目录",AboutLogs,462,382,134,32,WS_TABSTOP|BS_PUSHBUTTON,4);
+        Add(L"BUTTON",L"复制诊断信息",AboutCopy,30,426,132,32,WS_TABSTOP|BS_PUSHBUTTON,4);
+        Add(L"BUTTON",L"项目主页",AboutProject,174,426,132,32,WS_TABSTOP|BS_PUSHBUTTON,4);
+        Add(L"BUTTON",L"更新日志",AboutChanges,318,426,132,32,WS_TABSTOP|BS_PUSHBUTTON,4);
+        Add(L"BUTTON",L"反馈问题",AboutFeedback,462,426,134,32,WS_TABSTOP|BS_PUSHBUTTON,4);
+        Add(L"BUTTON",L"许可与组件",AboutLicense,30,470,110,28,WS_TABSTOP|BS_PUSHBUTTON,4);
+        Add(L"STATIC",L"点击“检查更新”可获取最新版本并自动静默更新。",AboutResult,148,474,448,28,SS_LEFT,4);
         Add(L"BUTTON",L"恢复默认设置",IDRETRY,24,508,130,32,WS_TABSTOP|BS_PUSHBUTTON,-1);
         Add(L"BUTTON",L"保存",IDOK,428,508,88,32,WS_TABSTOP|BS_DEFPUSHBUTTON,-1);
         Add(L"BUTTON",L"取消",IDCANCEL,532,508,88,32,WS_TABSTOP|BS_PUSHBUTTON,-1);
@@ -220,6 +234,74 @@ struct SettingsDialog {
             self->dpi=HIWORD(w);RECT r=*reinterpret_cast<RECT*>(l);
             SetWindowPos(window,nullptr,r.left,r.top,r.right-r.left,r.bottom-r.top,SWP_NOZORDER);self->Layout();return TRUE;
         }
+        if(message==WM_APP+101) {
+            auto* check=reinterpret_cast<FastFileUpdate::UpdateCheckResult*>(w);
+            HWND btn=self->Item(AboutCheckUpdate);
+            HWND result=self->Item(AboutResult);
+            EnableWindow(btn,TRUE);
+            if(!check)return TRUE;
+            if(check->status==FastFileUpdate::UpdateCheckStatus::UpToDate) {
+                SetWindowTextW(result,check->message.c_str());
+                MessageBoxW(window,(L"当前已是最新版本（v"+std::wstring(FASTFILE_VERSION_W)+L"）。").c_str(),L"检查更新",MB_OK|MB_ICONINFORMATION);
+            } else if(check->status==FastFileUpdate::UpdateCheckStatus::Success && check->hasUpdate) {
+                SetWindowTextW(result,(L"发现新版本："+check->release.tagName).c_str());
+                const auto* installer=check->release.FindInstallerAsset();
+                std::wstring promptMsg=L"发现 FastFile 新版本 "+check->release.tagName+L"！\r\n\r\n";
+                if(!check->release.title.empty())promptMsg+=L"标题："+check->release.title+L"\r\n\r\n";
+                if(!check->release.notes.empty())promptMsg+=L"更新说明：\r\n"+check->release.notes.substr(0,400)+L"\r\n\r\n";
+                promptMsg+=L"是否立即自动下载并安装？更新完成后将自动重启应用。";
+                if(MessageBoxW(window,promptMsg.c_str(),L"发现新版本",MB_YESNO|MB_ICONQUESTION)==IDYES) {
+                    if(!installer) {
+                        MessageBoxW(window,L"未在 Release 中找到安装包资产，将为您打开发布页面。",L"提示",MB_OK|MB_ICONINFORMATION);
+                        self->OpenProjectLink(L"https://github.com/jinlong85/FastFile/releases");
+                    } else {
+                        EnableWindow(btn,FALSE);
+                        SetWindowTextW(result,L"正在下载更新安装包...");
+                        std::wstring dlUrl=installer->downloadUrl;
+                        std::wstring dlVer=check->release.version.ToString();
+                        std::wstring dst=FastFileUpdate::GetUpdateDownloadPath(dlVer);
+                        HWND dlg=window;
+                        std::thread([dlg,dlUrl,dst]() {
+                            std::wstring err;
+                            bool ok=FastFileUpdate::DownloadUpdateFile(dlUrl,dst,[dlg](uint64_t down,uint64_t total) {
+                                if(total>0) {
+                                    int pct=static_cast<int>((down*100)/total);
+                                    wchar_t buf[128]{};
+                                    swprintf_s(buf,L"正在下载更新：%d%% (%llu KB / %llu KB)...",pct,down/1024,total/1024);
+                                    HWND resWnd=GetDlgItem(dlg,AboutResult);
+                                    if(resWnd)SetWindowTextW(resWnd,buf);
+                                }
+                            },nullptr,&err);
+                            PostMessageW(dlg,WM_APP+102,ok?1:0,ok?reinterpret_cast<LPARAM>(new std::wstring(dst)):reinterpret_cast<LPARAM>(new std::wstring(err)));
+                        }).detach();
+                    }
+                }
+            } else {
+                SetWindowTextW(result,(L"检查更新失败："+check->message).c_str());
+                MessageBoxW(window,(L"检查更新失败：\r\n\r\n"+check->message).c_str(),L"检查更新",MB_OK|MB_ICONWARNING);
+            }
+            delete check;return TRUE;
+        }
+        if(message==WM_APP+102) {
+            bool ok=(w==1);
+            auto* pStr=reinterpret_cast<std::wstring*>(l);
+            HWND btn=self->Item(AboutCheckUpdate);
+            HWND result=self->Item(AboutResult);
+            EnableWindow(btn,TRUE);
+            if(ok && pStr) {
+                SetWindowTextW(result,L"下载完成，正在启动静默更新并重启应用...");
+                std::wstring installerPath=*pStr;delete pStr;
+                if(!FastFileUpdate::LaunchInstallerAndExit(installerPath,window)) {
+                    SetWindowTextW(result,L"启动更新安装程序失败。");
+                    MessageBoxW(window,L"启动更新安装程序失败，请尝试手动运行下载的安装包。",L"更新错误",MB_OK|MB_ICONERROR);
+                }
+            } else {
+                std::wstring err=pStr?*pStr:L"未知网络错误";delete pStr;
+                SetWindowTextW(result,(L"下载失败："+err).c_str());
+                MessageBoxW(window,(L"下载更新失败：\r\n\r\n"+err).c_str(),L"更新错误",MB_OK|MB_ICONERROR);
+            }
+            return TRUE;
+        }
         if(message==WM_COMMAND) {
             const int id=LOWORD(w);
             if(id==IDCANCEL) {EndDialog(window,IDCANCEL);return TRUE;}
@@ -230,6 +312,7 @@ struct SettingsDialog {
                 SendMessageW(self->Item(TabHeight),CB_SETCURSEL,height-24,0);SendMessageW(self->Item(FavHeight),CB_SETCURSEL,height-24,0);return TRUE;
             }
             if(id==Browse) {self->BrowseFolder();return TRUE;}
+            if(id==AboutCheckUpdate) {self->CheckUpdate();return TRUE;}
             if(id==AboutRefresh) {self->RefreshAbout();return TRUE;}
             if(id==AboutCopy) {
                 self->RefreshAbout();
