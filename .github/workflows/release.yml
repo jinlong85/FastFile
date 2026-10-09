@@ -1,3 +1,4 @@
+# FastFile automated release pipeline on GitHub Actions
 name: Release
 
 on:
