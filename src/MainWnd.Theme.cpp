@@ -1,4 +1,4 @@
-﻿// FastFile - Win11 light chrome: UI tokens, window corners, item formatting
+// FastFile - Win11 light chrome: UI tokens, window corners, item formatting
 // Implements CMainWnd members moved out of the original monolithic MainWnd.cpp.
 // Behaviour is unchanged; declarations live in MainWnd.h.
 
@@ -122,6 +122,18 @@ void CMainWnd::ApplyDwmChrome()
 #ifndef DWMWA_SYSTEMBACKDROP_TYPE
 #define DWMWA_SYSTEMBACKDROP_TYPE 38
 #endif
+#ifndef DWMSBT_AUTO
+#define DWMSBT_AUTO 0
+#endif
+#ifndef DWMSBT_NONE
+#define DWMSBT_NONE 1
+#endif
+#ifndef DWMSBT_MAINWINDOW
+#define DWMSBT_MAINWINDOW 2
+#endif
+#ifndef DWMSBT_TRANSIENTWINDOW
+#define DWMSBT_TRANSIENTWINDOW 3
+#endif
 #ifndef DWMSBT_TABBEDWINDOW
 #define DWMSBT_TABBEDWINDOW 4
 #endif
@@ -141,18 +153,14 @@ void CMainWnd::ApplyDwmChrome()
     const COLORREF borderNone = DWMWA_COLOR_NONE;
     ::DwmSetWindowAttribute(m_hWnd, DWMWA_BORDER_COLOR, &borderNone, sizeof(borderNone));
 
-    // DWMSBT_TABBEDWINDOW = Mica Alt. Asking for it is safe on every OS (older builds just
-    // fail the call), but *showing* it requires extending the DWM frame over the client area -
-    // and once that happens DWM composites the client pixels by their alpha, so DuiLib's
-    // GDI-drawn dark text (tabs' labels, window buttons, list text) turns transparent.
-    // Until the whole title band is painted with GDI+/AlphaBlend (see TabStripUI, which
-    // already does), the backdrop stays off and the title row keeps the chrome surface so the
-    // UI stays readable. Flip kShowMicaBackdrop once the band paints alpha-correct pixels.
-    constexpr bool kShowMicaBackdrop = true;
     int backdrop = DWMSBT_TABBEDWINDOW;
+    if (m_settings.backdropType == 1) backdrop = DWMSBT_MAINWINDOW;
+    else if (m_settings.backdropType == 2) backdrop = DWMSBT_TRANSIENTWINDOW;
+    else if (m_settings.backdropType == 3) backdrop = DWMSBT_NONE;
+
     const HRESULT hr = ::DwmSetWindowAttribute(m_hWnd, DWMWA_SYSTEMBACKDROP_TYPE,
         &backdrop, sizeof(backdrop));
-    m_micaActive = kShowMicaBackdrop && SUCCEEDED(hr);
+    m_micaActive = (backdrop != DWMSBT_NONE) && SUCCEEDED(hr);
     MARGINS margins = { 0, 0, 0, 0 };
     ::DwmExtendFrameIntoClientArea(m_hWnd, &margins);
     if (CControlUI* bar = m_PaintManager.FindControl(_T("titlebar"))) {

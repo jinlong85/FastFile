@@ -93,6 +93,7 @@
     <ClCompile Include="..\src\TabStripUI.cpp" />
     <ClCompile Include="..\src\FluentScrollBarUI.cpp" />
     <ClCompile Include="..\src\AutoUpdater.cpp" />
+    <ClCompile Include="..\src\FileTagManager.cpp" />
     <ClInclude Include="..\src\ExplorerAgentProtocol.h" />
     <ClInclude Include="..\src\MainWnd.h" />
     <ClInclude Include="..\src\MainWndInternal.h" />
@@ -107,6 +108,7 @@
     <ClInclude Include="..\src\TabStripUI.h" />
     <ClInclude Include="..\src\FluentScrollBarUI.h" />
     <ClInclude Include="..\src\AutoUpdater.h" />
+    <ClInclude Include="..\src\FileTagManager.h" />
     <ResourceCompile Include="..\res\FastFile.rc">
       <AdditionalIncludeDirectories>$(IntDir)generated;..\res;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>

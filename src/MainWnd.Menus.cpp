@@ -165,6 +165,20 @@ void CMainWnd::OnMoreMenuClicked()
         4, L"撤销\tCtrl+Z");
     ::AppendMenuW(hMenu, CanRedo() ? MF_STRING : (MF_STRING | MF_GRAYED),
         7, L"重做\tCtrl+Y");
+    ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+
+    HMENU tagMenu = ::CreatePopupMenu();
+    ::AppendMenuW(tagMenu, MF_STRING, 101, L"红色\tAlt+1");
+    ::AppendMenuW(tagMenu, MF_STRING, 102, L"橙色\tAlt+2");
+    ::AppendMenuW(tagMenu, MF_STRING, 103, L"黄色\tAlt+3");
+    ::AppendMenuW(tagMenu, MF_STRING, 104, L"绿色\tAlt+4");
+    ::AppendMenuW(tagMenu, MF_STRING, 105, L"蓝色\tAlt+5");
+    ::AppendMenuW(tagMenu, MF_STRING, 106, L"紫色\tAlt+6");
+    ::AppendMenuW(tagMenu, MF_SEPARATOR, 0, nullptr);
+    ::AppendMenuW(tagMenu, MF_STRING, 107, L"★ 星标 / 置顶\tAlt+B");
+    ::AppendMenuW(tagMenu, MF_SEPARATOR, 0, nullptr);
+    ::AppendMenuW(tagMenu, MF_STRING, 100, L"清除标签\tAlt+0");
+    ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(tagMenu), L"文件标签与标记");
 
     CControlUI* anchor = m_PaintManager.FindControl(_T("btn_more"));
     if (!anchor || !m_hWnd) {
@@ -189,7 +203,12 @@ void CMainWnd::OnMoreMenuClicked()
         OnUndo();
     } else if (cmd == 7) {
         OnRedo();
-
+    } else if (cmd >= 101 && cmd <= 106) {
+        ApplyTagColorToSelection(static_cast<FileTagColor>(cmd - 100));
+    } else if (cmd == 100) {
+        ApplyTagColorToSelection(FileTagColor::None);
+    } else if (cmd == 107) {
+        ToggleStarSelection();
     } else if (cmd == 6) {
         if (!cfgDir.empty())
             AddTab(cfgDir, true);

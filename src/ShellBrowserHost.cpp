@@ -1,5 +1,6 @@
 #include "ShellBrowserHost.h"
 #include "ShellPresentation.h"
+#include "FileTagManager.h"
 #include <algorithm>
 
 #include <KnownFolders.h>
@@ -957,12 +958,24 @@ bool ShellBrowserHost::ApplyViewMode(IFolderView2* view)
         m_redrawBatch=nullptr;
         if (IsWindow(batch)) {
             SendMessageW(batch,WM_SETREDRAW,TRUE,0);
+            if (mode == FVM_LIST) {
+                SendMessageW(batch, LVM_SETCOLUMNWIDTH, (WPARAM)-1, MAKELPARAM(LVSCW_AUTOSIZE, 0));
+            }
             ListView_RedrawItems(batch, 0, ListView_GetItemCount(batch) - 1);
             // Measured: an extra RDW_UPDATENOW here only moved the paint into the switch
             // call (longer sync, same busy time), so the repaint stays asynchronous.
             RedrawWindow(batch,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_FRAME);
         }
-        if (m_listWindow && m_listWindow!=batch) InvalidateRect(m_listWindow,nullptr,TRUE);
+        if (m_listWindow && m_listWindow!=batch) {
+            if (mode == FVM_LIST) {
+                SendMessageW(m_listWindow, LVM_SETCOLUMNWIDTH, (WPARAM)-1, MAKELPARAM(LVSCW_AUTOSIZE, 0));
+            }
+            InvalidateRect(m_listWindow,nullptr,TRUE);
+        }
+    } else if (m_listWindow && IsWindow(m_listWindow)) {
+        if (mode == FVM_LIST) {
+            SendMessageW(m_listWindow, LVM_SETCOLUMNWIDTH, (WPARAM)-1, MAKELPARAM(LVSCW_AUTOSIZE, 0));
+        }
     }
     return SUCCEEDED(hr) && SUCCEEDED(flags);
 }
@@ -1065,11 +1078,12 @@ int ShellBrowserHost::ResolveItemIcon(int index, HIMAGELIST* outIml)
     if (outIml) *outIml = nullptr;
     HIMAGELIST sys = GetSystemSmallImageList();
     HIMAGELIST shell = (m_shellSmallImages && m_shellSmallImages != sys && ImageList_GetImageCount(m_shellSmallImages) > 0) ? m_shellSmallImages : nullptr;
+    HIMAGELIST iml = shell ? shell : sys;
 
     LVITEMW item{}; item.mask = LVIF_IMAGE; item.iItem = index;
     if (ListView_GetItem(m_listWindow, &item) && item.iImage >= 0) {
-        if (shell && item.iImage < ImageList_GetImageCount(shell)) {
-            if (outIml) *outIml = shell;
+        if (iml && item.iImage < ImageList_GetImageCount(iml)) {
+            if (outIml) *outIml = iml;
             return item.iImage;
         }
     }
@@ -1082,8 +1096,8 @@ int ShellBrowserHost::ResolveItemIcon(int index, HIMAGELIST* outIml)
         di.item.iItem = index;
         di.item.iSubItem = 0;
         SendMessageW(m_viewWindow, WM_NOTIFY, di.hdr.idFrom, reinterpret_cast<LPARAM>(&di));
-        if (shell && di.item.iImage >= 0 && di.item.iImage < ImageList_GetImageCount(shell)) {
-            if (outIml) *outIml = shell;
+        if (iml && di.item.iImage >= 0 && di.item.iImage < ImageList_GetImageCount(iml)) {
+            if (outIml) *outIml = iml;
             return di.item.iImage;
         }
     }
@@ -1092,26 +1106,43 @@ int ShellBrowserHost::ResolveItemIcon(int index, HIMAGELIST* outIml)
         if (SUCCEEDED(m_browser->GetCurrentView(IID_PPV_ARGS(&fv))) && fv) {
             IShellItem* si = nullptr;
             if (SUCCEEDED(fv->GetItem(index, IID_PPV_ARGS(&si))) && si) {
-                SFGAOF attrs = 0;
-                si->GetAttributes(SFGAO_FOLDER, &attrs);
-                SHFILEINFO sfi{};
                 int resolved = -1;
-                if (attrs & SFGAO_FOLDER) {
-                    if (SHGetFileInfoW(L"folder", FILE_ATTRIBUTE_DIRECTORY, &sfi, sizeof(sfi),
-                        SHGFI_SYSICONINDEX | SHGFI_USEFILEATTRIBUTES))
+                PIDLIST_ABSOLUTE pidl = nullptr;
+                if (SUCCEEDED(SHGetIDListFromObject(si, &pidl)) && pidl) {
+                    SHFILEINFO sfi{};
+                    if (SHGetFileInfoW(reinterpret_cast<LPCWSTR>(pidl), 0, &sfi, sizeof(sfi),
+                        SHGFI_PIDL | SHGFI_SYSICONINDEX | SHGFI_SMALLICON)) {
                         resolved = sfi.iIcon;
-                } else {
+                    }
+                    CoTaskMemFree(pidl);
+                }
+                if (resolved < 0) {
                     PWSTR path = nullptr;
                     if (SUCCEEDED(si->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) {
-                        if (SHGetFileInfoW(path, FILE_ATTRIBUTE_NORMAL, &sfi, sizeof(sfi),
-                            SHGFI_SYSICONINDEX | SHGFI_USEFILEATTRIBUTES))
+                        SHFILEINFO sfi{};
+                        if (SHGetFileInfoW(path, 0, &sfi, sizeof(sfi),
+                            SHGFI_SYSICONINDEX | SHGFI_SMALLICON)) {
                             resolved = sfi.iIcon;
+                        }
                         CoTaskMemFree(path);
-                    } else if (SUCCEEDED(si->GetDisplayName(SIGDN_NORMALDISPLAY, &path)) && path) {
-                        if (SHGetFileInfoW(path, FILE_ATTRIBUTE_NORMAL, &sfi, sizeof(sfi),
-                            SHGFI_SYSICONINDEX | SHGFI_USEFILEATTRIBUTES))
+                    }
+                }
+                if (resolved < 0) {
+                    SFGAOF attrs = 0;
+                    si->GetAttributes(SFGAO_FOLDER, &attrs);
+                    SHFILEINFO sfi{};
+                    if (attrs & SFGAO_FOLDER) {
+                        if (SHGetFileInfoW(L"folder", FILE_ATTRIBUTE_DIRECTORY, &sfi, sizeof(sfi),
+                            SHGFI_SYSICONINDEX | SHGFI_USEFILEATTRIBUTES | SHGFI_SMALLICON))
                             resolved = sfi.iIcon;
-                        CoTaskMemFree(path);
+                    } else {
+                        PWSTR path = nullptr;
+                        if (SUCCEEDED(si->GetDisplayName(SIGDN_NORMALDISPLAY, &path)) && path) {
+                            if (SHGetFileInfoW(path, FILE_ATTRIBUTE_NORMAL, &sfi, sizeof(sfi),
+                                SHGFI_SYSICONINDEX | SHGFI_USEFILEATTRIBUTES | SHGFI_SMALLICON))
+                                resolved = sfi.iIcon;
+                            CoTaskMemFree(path);
+                        }
                     }
                 }
                 si->Release();
@@ -1160,6 +1191,25 @@ void ShellBrowserHost::RestoreListSpacing()
     ImageList_Destroy(spacer);m_shellSmallImages=nullptr;
 }
 
+bool ShellBrowserHost::GetItemPath(int itemIndex, std::wstring& outPath) const
+{
+    outPath.clear();
+    if (!m_browser) return false;
+    IFolderView2* view = nullptr;
+    if (FAILED(m_browser->GetCurrentView(IID_PPV_ARGS(&view))) || !view) return false;
+    IShellItem* shellItem = nullptr;
+    HRESULT hr = view->GetItem(itemIndex, IID_PPV_ARGS(&shellItem));
+    view->Release();
+    if (FAILED(hr) || !shellItem) return false;
+    PWSTR path = nullptr;
+    if (SUCCEEDED(shellItem->GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING, &path)) && path) {
+        outPath = path;
+        CoTaskMemFree(path);
+    }
+    shellItem->Release();
+    return !outPath.empty();
+}
+
 LRESULT ShellBrowserHost::DrawListIcon(NMLVCUSTOMDRAW* draw)
 {
     if(draw->nmcd.dwDrawStage==CDDS_PREPAINT)return CDRF_NOTIFYITEMDRAW;
@@ -1180,18 +1230,32 @@ LRESULT ShellBrowserHost::DrawListIcon(NMLVCUSTOMDRAW* draw)
             && ListView_GetItemRect(m_listWindow, itemIndex, &icon, LVIR_ICON)
             && ListView_GetItemRect(m_listWindow, itemIndex, &row, LVIR_BOUNDS)
             && ImageList_GetIconSize(iml, &w, &h)) {
+            const int iconY = row.top + (row.bottom - row.top - h) / 2;
             ImageList_DrawEx(iml, img, draw->nmcd.hdc, icon.left,
-                row.top + (row.bottom - row.top - h) / 2, w, h, CLR_NONE, CLR_NONE,
+                iconY, w, h, CLR_NONE, CLR_NONE,
                 ILD_TRANSPARENT | (item.state & LVIS_OVERLAYMASK) | ((item.state & LVIS_CUT) ? ILD_BLEND50 : 0));
+            std::wstring itemPath;
+            if (GetItemPath(itemIndex, itemPath)) {
+                FileTagInfo tag = FileTagManager::Instance().GetTag(itemPath);
+                if (tag.color != FileTagColor::None) {
+                    const int radius = MulDiv(3, m_dpi, 96) + 1;
+                    FileTagManager::DrawTagDot(draw->nmcd.hdc, icon.left + w - radius, iconY + h - radius, radius, FileTagManager::GetColorRef(tag.color));
+                }
+                if (tag.starred) {
+                    const int starR = MulDiv(4, m_dpi, 96) + 1;
+                    FileTagManager::DrawStar(draw->nmcd.hdc, icon.left + starR, iconY + starR, starR);
+                }
+            }
         }
         return CDRF_DODEFAULT;
     }
     if (draw->nmcd.dwDrawStage != CDDS_ITEMPREPAINT) return CDRF_DODEFAULT;
-    // Details keeps native text, columns, focus and selection painting. Draw
-    // only its real icon in CDDS_ITEMPOSTPAINT after the native row has drawn columns.
+    // Details keeps native text, columns, focus and selection painting.
+    // Draw only its real icon in CDDS_ITEMPOSTPAINT.
     if (isDetails)
         return CDRF_NOTIFYPOSTPAINT;
 
+    // List mode: custom draw item row to accommodate custom 26-px row height.
     LVITEMW item{}; item.mask = LVIF_IMAGE | LVIF_STATE; item.iItem = itemIndex;
     item.stateMask = LVIS_OVERLAYMASK | LVIS_CUT | LVIS_SELECTED | LVIS_FOCUSED;
     RECT icon{}, row{}; int w = 0, h = 0;
@@ -1204,16 +1268,33 @@ LRESULT ShellBrowserHost::DrawListIcon(NMLVCUSTOMDRAW* draw)
         HBRUSH fill = CreateSolidBrush(selected ? RGB(0xE5, 0xF1, 0xFB)
             : (draw->nmcd.uItemState & CDIS_HOT) ? RGB(0xF5, 0xF5, 0xF5) : RGB(255, 255, 255));
         FillRect(draw->nmcd.hdc, &row, fill); DeleteObject(fill);
+        int iconLeft = icon.left;
+        if (icon.right <= icon.left || iconLeft < row.left) {
+            iconLeft = row.left + MulDiv(4, m_dpi, 96);
+        }
         if (img >= 0 && iml && ImageList_GetIconSize(iml, &w, &h)) {
-            ImageList_DrawEx(iml, img, draw->nmcd.hdc, icon.left,
-                row.top + (row.bottom - row.top - h) / 2, w, h, CLR_NONE, CLR_NONE,
+            const int iconY = row.top + (row.bottom - row.top - h) / 2;
+            ImageList_DrawEx(iml, img, draw->nmcd.hdc, iconLeft,
+                iconY, w, h, CLR_NONE, CLR_NONE,
                 ILD_TRANSPARENT | (item.state & LVIS_OVERLAYMASK) | ((item.state & LVIS_CUT) ? ILD_BLEND50 : 0));
+            std::wstring itemPath;
+            if (GetItemPath(itemIndex, itemPath)) {
+                FileTagInfo tag = FileTagManager::Instance().GetTag(itemPath);
+                if (tag.color != FileTagColor::None) {
+                    const int radius = MulDiv(3, m_dpi, 96) + 1;
+                    FileTagManager::DrawTagDot(draw->nmcd.hdc, iconLeft + w - radius, iconY + h - radius, radius, FileTagManager::GetColorRef(tag.color));
+                }
+                if (tag.starred) {
+                    const int starR = MulDiv(4, m_dpi, 96) + 1;
+                    FileTagManager::DrawStar(draw->nmcd.hdc, iconLeft + starR, iconY + starR, starR);
+                }
+            }
         }
         wchar_t title[32768]{}; ListView_GetItemText(m_listWindow, itemIndex, 0, title, _countof(title));
         const int saved = SaveDC(draw->nmcd.hdc);
         SelectObject(draw->nmcd.hdc, reinterpret_cast<HFONT>(SendMessageW(m_listWindow, WM_GETFONT, 0, 0)));
         SetBkMode(draw->nmcd.hdc, TRANSPARENT); SetTextColor(draw->nmcd.hdc, RGB(0x1A, 0x1A, 0x1A));
-        const int iconRight = (img >= 0 && iml && w > 0) ? (icon.left + w) : icon.right;
+        const int iconRight = (w > 0) ? (iconLeft + w) : (iconLeft + MulDiv(16, m_dpi, 96));
         RECT text{iconRight + MulDiv(4, m_dpi, 96), row.top, row.right - MulDiv(4, m_dpi, 96), row.bottom};
         DrawTextW(draw->nmcd.hdc, title, -1, &text, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
         if ((item.state & LVIS_FOCUSED) && OwnsWindow(GetFocus())) DrawFocusRect(draw->nmcd.hdc, &row);
@@ -1592,6 +1673,16 @@ void ShellBrowserHost::DrawPlaceholder(HDC dc, const std::wstring& path, const R
     if (!icon) return;
     const int pad = MulDiv(8, m_dpi, 96);
     DrawIconEx(dc, cell.left + pad, cell.top + pad, icon, m_iconSlot, m_iconSlot, 0, nullptr, DI_NORMAL);
+
+    FileTagInfo tag = FileTagManager::Instance().GetTag(path);
+    if (tag.color != FileTagColor::None) {
+        const int radius = MulDiv(6, m_dpi, 96);
+        FileTagManager::DrawTagDot(dc, cell.left + pad + m_iconSlot - radius, cell.top + pad + radius, radius, FileTagManager::GetColorRef(tag.color));
+    }
+    if (tag.starred) {
+        const int starR = MulDiv(7, m_dpi, 96);
+        FileTagManager::DrawStar(dc, cell.left + pad + starR, cell.top + pad + starR, starR);
+    }
 }
 
 HICON ShellBrowserHost::AssociatedAppIcon(const std::wstring& path)
@@ -1716,6 +1807,18 @@ LRESULT ShellBrowserHost::DrawIconItem(NMLVCUSTOMDRAW* draw)
                     if (badge.media && badge.icon && badge.size > 0)
                         DrawIconEx(dc,cell.left+pad+(m_iconSlot+width)/2-badge.size,
                             cell.top+pad+(m_iconSlot+height)/2-badge.size,badge.icon,badge.size,badge.size,0,nullptr,DI_NORMAL);
+
+                    FileTagInfo tag = FileTagManager::Instance().GetTag(fullPath);
+                    const int ix = cell.left + pad + (m_iconSlot - width) / 2;
+                    const int iy = cell.top + pad + (m_iconSlot - height) / 2;
+                    if (tag.color != FileTagColor::None) {
+                        const int radius = MulDiv(6, m_dpi, 96);
+                        FileTagManager::DrawTagDot(dc, ix + width - radius, iy + radius, radius, FileTagManager::GetColorRef(tag.color));
+                    }
+                    if (tag.starred) {
+                        const int starR = MulDiv(7, m_dpi, 96);
+                        FileTagManager::DrawStar(dc, ix + starR, iy + starR, starR);
+                    }
                 }
                 CoTaskMemFree(fullPath);
             }
@@ -1783,6 +1886,13 @@ void ShellBrowserHost::EnsureSelectionVisible()
 void ShellBrowserHost::FlushPaint()
 {
     if (m_listWindow && ::IsWindowVisible(m_listWindow)) ::UpdateWindow(m_listWindow);
+}
+
+void ShellBrowserHost::Redraw()
+{
+    if (m_listWindow && ::IsWindow(m_listWindow)) {
+        ::InvalidateRect(m_listWindow, nullptr, TRUE);
+    }
 }
 
 void ShellBrowserHost::PaintScrollBar(HWND window)

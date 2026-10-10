@@ -14,6 +14,7 @@ void FastFileSettings::Normalize() {
     navigationScrollbar=std::clamp(navigationScrollbar,6,14);
     defaultView=std::clamp(defaultView,0,7);sortColumn=std::clamp(sortColumn,0,3);
     grouping=std::clamp(grouping,-1,2);
+    backdropType=std::clamp(backdropType,0,3);
 }
 std::wstring FastFileSettings::FilePath() {
     wchar_t buffer[32768]{};DWORD n=GetEnvironmentVariableW(L"APPDATA",buffer,_countof(buffer));
@@ -28,7 +29,7 @@ FastFileSettings FastFileSettings::Load(const std::wstring& path) {
     FF_READ(startup);FF_READ(externalNewWindow);FF_READ(reuseTabs);FF_READ(confirmClose);
     FF_READ(density);FF_READ(navigationFont);FF_READ(tabHeight);FF_READ(favoritesHeight);
     FF_READ(tabWidthPercent);FF_READ(navigationScrollbar);FF_READ(defaultView);FF_READ(rememberViews);
-    FF_READ(sortColumn);FF_READ(sortAscending);FF_READ(grouping);
+    FF_READ(sortColumn);FF_READ(sortAscending);FF_READ(grouping);FF_READ(backdropType);
 #undef FF_READ
     wchar_t text[32768]{};GetPrivateProfileStringW(L"Preferences",L"startupPath",L"",text,_countof(text),path.c_str());
     s.startupPath=text;s.Normalize();return s;
@@ -42,7 +43,7 @@ bool FastFileSettings::Save(const std::wstring& path) const {
     FF_WRITE(startup);FF_WRITE(externalNewWindow);FF_WRITE(reuseTabs);FF_WRITE(confirmClose);
     FF_WRITE(density);FF_WRITE(navigationFont);FF_WRITE(tabHeight);FF_WRITE(favoritesHeight);
     FF_WRITE(tabWidthPercent);FF_WRITE(navigationScrollbar);FF_WRITE(defaultView);FF_WRITE(rememberViews);
-    FF_WRITE(sortColumn);FF_WRITE(sortAscending);FF_WRITE(grouping);
+    FF_WRITE(sortColumn);FF_WRITE(sortAscending);FF_WRITE(grouping);FF_WRITE(backdropType);
 #undef FF_WRITE
     text+=L"startupPath="+s.startupPath+L"\r\n";
     const auto temporary=path+L".tmp-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64());
@@ -56,7 +57,7 @@ bool FastFileSettings::Save(const std::wstring& path) const {
 }
 
 namespace {
-enum { Startup=110,StartupPath,External,Reuse,ClosePrompt,Density,Font,TabHeight,FavHeight,TabWidth,Scrollbar,
+enum { Startup=110,StartupPath,External,Reuse,ClosePrompt,Density,Font,TabHeight,FavHeight,TabWidth,Scrollbar,Backdrop,
        View,Remember,Sort,Ascending,Grouping,Context,DefaultFolders,DefaultComputer,ExplorerTakeover,
        Browse=190,RestoreWindows,DetectIntegration,RepairIntegration,IntegrationDetails,ConfigureManager,
        AboutSummary,AboutPath,AboutRefresh,AboutInstall,AboutLogs,AboutCopy,AboutProject,AboutChanges,AboutFeedback,AboutLicense,AboutResult,AboutCheckUpdate };
@@ -142,7 +143,8 @@ struct SettingsDialog {
         Number(FavHeight,L"收藏栏高度",200,1,draft.favoritesHeight,24,48);
         Number(TabWidth,L"标签宽度（%）",242,1,draft.tabWidthPercent,100,200,50);
         Number(Scrollbar,L"导航滚动条宽度",284,1,draft.navigationScrollbar,6,14);
-        Add(L"STATIC",L"尺寸按窗口 DPI 自动缩放；图标保持原有清晰尺寸。",0,30,332,566,44,SS_LEFT,1);
+        Combo(Backdrop,L"窗口背景材质",326,1,{L"云母材质（Mica Alt / Tabbed，推荐）",L"标准云母（Mica）",L"亚克力模糊（Acrylic）",L"经典实色"},draft.backdropType);
+        Add(L"STATIC",L"尺寸按窗口 DPI 自动缩放；背景半透明材质在 Windows 11 生效。",0,30,372,566,32,SS_LEFT,1);
         Combo(View,L"默认视图",74,2,{L"超大图标",L"大图标",L"中等图标",L"列表",L"详细信息",L"平铺",L"小图标",L"内容"},draft.defaultView);
         Check(Remember,L"记住每个文件夹的视图",120,2,draft.rememberViews);
         Combo(Sort,L"默认排序",164,2,{L"名称",L"修改日期",L"类型",L"大小"},draft.sortColumn);
@@ -197,6 +199,7 @@ struct SettingsDialog {
         s.externalNewWindow=Choice(External)==1;s.reuseTabs=Checked(Reuse);s.confirmClose=Checked(ClosePrompt);
         s.density=Choice(Density);s.navigationFont=11+Choice(Font);s.tabHeight=24+Choice(TabHeight);
         s.favoritesHeight=24+Choice(FavHeight);s.tabWidthPercent=100+50*Choice(TabWidth);s.navigationScrollbar=6+Choice(Scrollbar);
+        s.backdropType=Choice(Backdrop);
         s.defaultView=Choice(View);s.rememberViews=Checked(Remember);s.sortColumn=Choice(Sort);
         s.sortAscending=Choice(Ascending)==0;s.grouping=Choice(Grouping)-1;
         s.SetDefaultManager(Checked(DefaultFolders));
@@ -446,6 +449,7 @@ bool CMainWnd::CommitIntegrationSettings(const FastFileSettings& settings) {
 }
 void CMainWnd::ApplySettingsAppearance() {
     ApplyDpiScaledFonts();ApplyDpiScaledChrome();ApplyUiChromeTokens();
+    ApplyDwmChrome();
     RebuildFavoritesBar();RebuildTabStrip();RebuildLeftQuickRows();
     std::function<void(CTreeNodeUI*)> update=[&](CTreeNodeUI* node){
         if(!node)return;node->SetFixedHeight(DpiScale(m_settings.NavigationRowHeight()));

@@ -1,4 +1,4 @@
-﻿// FastFile - tab strip, session persistence, per-folder view memory
+// FastFile - tab strip, session persistence, per-folder view memory
 // Implements CMainWnd members moved out of the original monolithic MainWnd.cpp.
 // Behaviour is unchanged; declarations live in MainWnd.h.
 
@@ -53,7 +53,7 @@ void CMainWnd::RebuildTabStrip()
             ? GetStockIconBmp(SIID_DESKTOPPC, tabIconPx)
             : GetShellIconBmp(m_tabs[i].path, true, tabIconPx);
         if (icon.empty()) icon = GetStockIconBmp(SIID_FOLDER, tabIconPx);
-        m_pTabStrip->Add(m_tabs[i].path, title, icon, tabIconPx, i == m_activeTab);
+        m_pTabStrip->Add(m_tabs[i].path, title, icon, tabIconPx, i == m_activeTab, m_tabs[i].isPinned);
         m_tabs[i].button = nullptr;
     }
     m_pTabStrip->NeedParentUpdate();
@@ -230,14 +230,139 @@ void CMainWnd::OnTabStripAdd()
 void CMainWnd::CloseOtherTabs(int keepIndex, bool rightSideOnly)
 {
     if (keepIndex < 0 || keepIndex >= static_cast<int>(m_tabs.size())) return;
+    if (m_activeTab >= 0 && m_activeTab < static_cast<int>(m_tabs.size())) {
+        m_tabs[m_activeTab].path = m_currentPath;
+        m_tabs[m_activeTab].searchFilter = m_searchFilter;
+    }
     for (int i = static_cast<int>(m_tabs.size()) - 1; i >= 0; --i) {
         if (i == keepIndex) continue;
+        if (m_tabs[i].isPinned) continue; // 保护：绝不关闭已固定的标签！
         if (rightSideOnly && i < keepIndex) continue;
+        ClosedTabInfo closed;
+        closed.path = m_tabs[i].path;
+        closed.searchFilter = m_tabs[i].searchFilter;
+        closed.backStack = m_tabs[i].backStack;
+        closed.forwardStack = m_tabs[i].forwardStack;
+        closed.isPinned = m_tabs[i].isPinned;
+        m_closedTabsHistory.push_back(std::move(closed));
         m_tabs.erase(m_tabs.begin() + i);
         if (i < keepIndex) --keepIndex;
     }
+    if (m_closedTabsHistory.size() > 20) {
+        m_closedTabsHistory.erase(m_closedTabsHistory.begin(), m_closedTabsHistory.begin() + (m_closedTabsHistory.size() - 20));
+    }
     m_activeTab = -1;
     ActivateTab(keepIndex);
+    RebuildTabStrip();
+    SaveSession();
+}
+
+void CMainWnd::CloseLeftTabs(int keepIndex)
+{
+    if (keepIndex < 0 || keepIndex >= static_cast<int>(m_tabs.size())) return;
+    if (m_activeTab >= 0 && m_activeTab < static_cast<int>(m_tabs.size())) {
+        m_tabs[m_activeTab].path = m_currentPath;
+        m_tabs[m_activeTab].searchFilter = m_searchFilter;
+    }
+    for (int i = keepIndex - 1; i >= 0; --i) {
+        if (m_tabs[i].isPinned) continue; // 保护：绝不关闭已固定的标签！
+        ClosedTabInfo closed;
+        closed.path = m_tabs[i].path;
+        closed.searchFilter = m_tabs[i].searchFilter;
+        closed.backStack = m_tabs[i].backStack;
+        closed.forwardStack = m_tabs[i].forwardStack;
+        closed.isPinned = m_tabs[i].isPinned;
+        m_closedTabsHistory.push_back(std::move(closed));
+        m_tabs.erase(m_tabs.begin() + i);
+        --keepIndex;
+    }
+    if (m_closedTabsHistory.size() > 20) {
+        m_closedTabsHistory.erase(m_closedTabsHistory.begin(), m_closedTabsHistory.begin() + (m_closedTabsHistory.size() - 20));
+    }
+    m_activeTab = -1;
+    ActivateTab(keepIndex);
+    RebuildTabStrip();
+    SaveSession();
+}
+
+void CMainWnd::DuplicateTab(int index)
+{
+    if (index < 0 || index >= static_cast<int>(m_tabs.size())) return;
+    if (m_activeTab >= 0 && m_activeTab < static_cast<int>(m_tabs.size())) {
+        m_tabs[m_activeTab].path = m_currentPath;
+        m_tabs[m_activeTab].searchFilter = m_searchFilter;
+    }
+    TabInfo copy = m_tabs[index];
+    copy.button = nullptr;
+    const int insertIdx = index + 1;
+    m_tabs.insert(m_tabs.begin() + insertIdx, std::move(copy));
+    m_activeTab = -1;
+    RebuildTabStrip();
+    ActivateTab(insertIdx);
+    SaveSession();
+}
+
+void CMainWnd::TogglePinTab(int index)
+{
+    if (index < 0 || index >= static_cast<int>(m_tabs.size())) return;
+    if (m_activeTab >= 0 && m_activeTab < static_cast<int>(m_tabs.size())) {
+        m_tabs[m_activeTab].path = m_currentPath;
+        m_tabs[m_activeTab].searchFilter = m_searchFilter;
+    }
+    bool wasPinned = m_tabs[index].isPinned;
+    TabInfo tab = m_tabs[index];
+    tab.isPinned = !wasPinned;
+    m_tabs.erase(m_tabs.begin() + index);
+
+    int targetIdx = 0;
+    int pinnedCount = 0;
+    for (const auto& t : m_tabs) {
+        if (t.isPinned) pinnedCount++;
+    }
+    targetIdx = pinnedCount; // 如果固定，放在已有固定标签末尾；若取消固定，放在固定标签后第一个
+    if (targetIdx > static_cast<int>(m_tabs.size())) targetIdx = static_cast<int>(m_tabs.size());
+    m_tabs.insert(m_tabs.begin() + targetIdx, std::move(tab));
+    m_activeTab = -1;
+    RebuildTabStrip();
+    ActivateTab(targetIdx);
+    SaveSession();
+}
+
+void CMainWnd::RestoreClosedTab()
+{
+    if (m_closedTabsHistory.empty()) {
+        UpdateStatus(_T("没有最近关闭的标签页"));
+        return;
+    }
+    if (m_activeTab >= 0 && m_activeTab < static_cast<int>(m_tabs.size())) {
+        m_tabs[m_activeTab].path = m_currentPath;
+        m_tabs[m_activeTab].searchFilter = m_searchFilter;
+    }
+    ClosedTabInfo info = m_closedTabsHistory.back();
+    m_closedTabsHistory.pop_back();
+
+    TabInfo tab;
+    tab.path = info.path;
+    tab.searchFilter = info.searchFilter;
+    tab.backStack = info.backStack;
+    tab.forwardStack = info.forwardStack;
+    tab.isPinned = info.isPinned;
+
+    int insertIdx = static_cast<int>(m_tabs.size());
+    if (info.isPinned) {
+        int pinnedCount = 0;
+        for (const auto& t : m_tabs) {
+            if (t.isPinned) pinnedCount++;
+        }
+        insertIdx = pinnedCount;
+    }
+    m_tabs.insert(m_tabs.begin() + insertIdx, std::move(tab));
+    m_activeTab = -1;
+    RebuildTabStrip();
+    ActivateTab(insertIdx);
+    std::wstring msg = L"已恢复标签页：" + TabTitleForPath(info.path);
+    UpdateStatus(msg.c_str());
+    SaveSession();
 }
 
 void CMainWnd::OpenPathInNewWindow(const std::wstring& path, POINT screenPt)
@@ -273,29 +398,69 @@ void CMainWnd::OpenPathInNewWindow(const std::wstring& path, POINT screenPt)
 void CMainWnd::OnTabStripContextMenu(int index, POINT screenPt)
 {
     if (index < 0 || index >= static_cast<int>(m_tabs.size())) return;
-    enum { kClose = 1, kCloseRight, kCloseOthers, kCopyPath, kNewWindow };
+    enum {
+        kClose = 1,
+        kTogglePin,
+        kDuplicate,
+        kCloseLeft,
+        kCloseRight,
+        kCloseOthers,
+        kRestoreClosed,
+        kCopyPath,
+        kNewWindow
+    };
     HMENU menu = ::CreatePopupMenu();
     if (!menu) return;
-    const bool hasOthers = m_tabs.size() > 1;
+
+    const bool isPinned = m_tabs[index].isPinned;
+    bool hasUnpinnedLeft = false;
+    for (int i = 0; i < index; ++i) {
+        if (!m_tabs[i].isPinned) { hasUnpinnedLeft = true; break; }
+    }
     const bool hasRight = index + 1 < static_cast<int>(m_tabs.size());
-    ::AppendMenuW(menu, MF_STRING, kClose, L"关闭标签页");
+    bool hasCloseableOthers = false;
+    for (int i = 0; i < static_cast<int>(m_tabs.size()); ++i) {
+        if (i != index && !m_tabs[i].isPinned) { hasCloseableOthers = true; break; }
+    }
+    const bool canRestore = !m_closedTabsHistory.empty();
+
+    ::AppendMenuW(menu, MF_STRING | (isPinned ? MF_GRAYED : 0), kClose, L"关闭标签页\tCtrl+W");
+    ::AppendMenuW(menu, MF_STRING, kTogglePin, isPinned ? L"取消固定标签页" : L"固定标签页");
+    ::AppendMenuW(menu, MF_STRING, kDuplicate, L"复制标签页");
+    ::AppendMenuW(menu, MF_STRING | (hasUnpinnedLeft ? 0 : MF_GRAYED), kCloseLeft, L"关闭左侧标签页");
     ::AppendMenuW(menu, MF_STRING | (hasRight ? 0 : MF_GRAYED), kCloseRight, L"关闭右侧标签页");
-    ::AppendMenuW(menu, MF_STRING | (hasOthers ? 0 : MF_GRAYED), kCloseOthers, L"关闭其他标签页");
+    ::AppendMenuW(menu, MF_STRING | (hasCloseableOthers ? 0 : MF_GRAYED), kCloseOthers, L"关闭其他标签页");
+    ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    ::AppendMenuW(menu, MF_STRING | (canRestore ? 0 : MF_GRAYED), kRestoreClosed, L"重新打开关闭的标签页\tCtrl+Shift+T");
     ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     ::AppendMenuW(menu, MF_STRING, kCopyPath, L"复制路径");
     ::AppendMenuW(menu, MF_STRING, kNewWindow, L"在新窗口打开");
+
     const UINT cmd = ::TrackPopupMenuEx(menu,
         TPM_RETURNCMD | TPM_RIGHTBUTTON, screenPt.x, screenPt.y, m_hWnd, nullptr);
     ::DestroyMenu(menu);
+
     switch (cmd) {
     case kClose:
         CloseTab(index);
+        break;
+    case kTogglePin:
+        TogglePinTab(index);
+        break;
+    case kDuplicate:
+        DuplicateTab(index);
+        break;
+    case kCloseLeft:
+        CloseLeftTabs(index);
         break;
     case kCloseRight:
         CloseOtherTabs(index, true);
         break;
     case kCloseOthers:
         CloseOtherTabs(index, false);
+        break;
+    case kRestoreClosed:
+        RestoreClosedTab();
         break;
     case kCopyPath: {
         const std::wstring text = (m_tabs[index].path == kThisPcPath) ? L"此电脑" : m_tabs[index].path;
@@ -318,6 +483,24 @@ void CMainWnd::OnTabStripContextMenu(int index, POINT screenPt)
         break;
     default:
         break;
+    }
+}
+
+void CMainWnd::OnTabStripEmptyContextMenu(POINT screenPt)
+{
+    enum { kNewTab = 1, kRestoreClosed };
+    HMENU menu = ::CreatePopupMenu();
+    if (!menu) return;
+    const bool canRestore = !m_closedTabsHistory.empty();
+    ::AppendMenuW(menu, MF_STRING, kNewTab, L"新建标签页\tCtrl+T");
+    ::AppendMenuW(menu, MF_STRING | (canRestore ? 0 : MF_GRAYED), kRestoreClosed, L"重新打开关闭的标签页\tCtrl+Shift+T");
+    const UINT cmd = ::TrackPopupMenuEx(menu,
+        TPM_RETURNCMD | TPM_RIGHTBUTTON, screenPt.x, screenPt.y, m_hWnd, nullptr);
+    ::DestroyMenu(menu);
+    if (cmd == kNewTab) {
+        OnNewTabRequested();
+    } else if (cmd == kRestoreClosed) {
+        RestoreClosedTab();
     }
 }
 
@@ -362,6 +545,17 @@ void CMainWnd::CloseTab(int index)
 {
     if (index < 0 || index >= static_cast<int>(m_tabs.size()))
         return;
+    ClosedTabInfo closed;
+    closed.path = m_tabs[index].path;
+    closed.searchFilter = m_tabs[index].searchFilter;
+    closed.backStack = m_tabs[index].backStack;
+    closed.forwardStack = m_tabs[index].forwardStack;
+    closed.isPinned = m_tabs[index].isPinned;
+    m_closedTabsHistory.push_back(std::move(closed));
+    if (m_closedTabsHistory.size() > 20) {
+        m_closedTabsHistory.erase(m_closedTabsHistory.begin());
+    }
+
     if (m_tabs.size() <= 1) {
         // Last tab: closing it closes the program (like Explorer's tabbed windows).
         // WM_CLOSE runs the normal shutdown path, so the session is saved on the way out.
@@ -671,6 +865,8 @@ void CMainWnd::SaveSession() const
         writeLine(std::wstring(key) + p);
         swprintf_s(key, L"Filter%d=", i);
         writeLine(std::wstring(key) + ((i == m_activeTab) ? m_searchFilter : m_tabs[i].searchFilter));
+        swprintf_s(key, L"Pinned%d=", i);
+        writeLine(std::wstring(key) + (m_tabs[i].isPinned ? L"1" : L"0"));
     }
     fclose(fp);
 }
@@ -698,6 +894,7 @@ bool CMainWnd::LoadSession()
     int count = 0;
     std::map<int, std::wstring> paths;
     std::map<int, std::wstring> filters;
+    std::map<int, bool> pinned;
 
     size_t pos = 0;
     while (pos < content.size()) {
@@ -731,13 +928,15 @@ bool CMainWnd::LoadSession()
             paths[_wtoi(key.c_str() + 4)] = val;
         else if (key.size() > 6 && key.compare(0, 6, L"Filter") == 0)
             filters[_wtoi(key.c_str() + 6)] = val;
+        else if (key.size() > 6 && key.compare(0, 6, L"Pinned") == 0)
+            pinned[_wtoi(key.c_str() + 6)] = (_wtoi(val.c_str()) != 0);
     }
 
     if (count <= 0 || paths.empty())
         return false;
 
     if(m_settings.startup!=0) {
-        paths.clear();filters.clear();
+        paths.clear();filters.clear();pinned.clear();
         const auto custom=m_settings.startup==2 && m_startupOpenPaths.empty()
             ? ResolveFolderOpenTarget(m_settings.startupPath) : std::wstring();
         paths[0]=m_settings.startup==2 && !custom.empty() ? custom : std::wstring(kThisPcPath);
@@ -758,6 +957,9 @@ bool CMainWnd::LoadSession()
         auto fit = filters.find(i);
         if (fit != filters.end())
             tab.searchFilter = fit->second;
+        auto pit = pinned.find(i);
+        if (pit != pinned.end())
+            tab.isPinned = pit->second;
         m_tabs.push_back(tab);
     }
     if (m_tabs.empty())

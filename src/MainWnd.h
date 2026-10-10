@@ -5,6 +5,7 @@
 #include "TabStripUI.h"
 #include "FastFileSettings.h"
 #include "ShellFileOperation.h"
+#include "FileTagManager.h"
 
 #include <shtypes.h>
 
@@ -155,6 +156,7 @@ private:
         std::vector<std::wstring> backStack;
         std::vector<std::wstring> forwardStack;
         CButtonUI* button = nullptr;
+        bool isPinned = false;
     };
 
     enum class ViewMode {
@@ -207,6 +209,8 @@ private:
     void OnMoreMenuClicked();
     void FocusSearchBox();
     void ShowPropertiesForSelection();
+    void ApplyTagColorToSelection(FileTagColor color);
+    void ToggleStarSelection();
 
     // ---- Windows-native file commands & fallback undo stack --------------------------
     // Every file operation runs the canonical Shell verb of the Windows context menu.
@@ -351,8 +355,13 @@ private:
     void OnTabStripReorder(int from, int to);
     void OnTabStripDragOut(int index, POINT screenPt);
     void OnTabStripContextMenu(int index, POINT screenPt);
+    void OnTabStripEmptyContextMenu(POINT screenPt);
     void OnTabStripAdd();
     void CloseOtherTabs(int keepIndex, bool rightSideOnly);
+    void CloseLeftTabs(int keepIndex);
+    void DuplicateTab(int index);
+    void TogglePinTab(int index);
+    void RestoreClosedTab();
     void OpenPathInNewWindow(const std::wstring& path, POINT screenPt);
     // Caption buttons report HTMINBUTTON/HTMAXBUTTON/HTCLOSE, so their hover is painted here.
     void UpdateCaptionButtonHover(POINT ptClient, bool hovering);
@@ -512,6 +521,7 @@ private:
     void ForwardShellMenuMessage(UINT uMsg, WPARAM wParam, LPARAM lParam, LRESULT* pResult, bool* handled);
     void RebuildBreadcrumb();
     void OnBreadcrumbSegmentClick(CControlUI* btn);
+    void OnBreadcrumbArrowClick(CControlUI* btn);
     // Explorer-style path: breadcrumb default; click/focus -> editable address
     void EnterAddressEditMode();
     void ExitAddressEditMode(bool commitNavigate);
@@ -906,7 +916,15 @@ private:
     CListContainerElementUI* m_detailsSpacerTop = nullptr;
     CListContainerElementUI* m_detailsSpacerBottom = nullptr;
 
+    struct ClosedTabInfo {
+        std::wstring path;
+        std::wstring searchFilter;
+        std::vector<std::wstring> backStack;
+        std::vector<std::wstring> forwardStack;
+        bool isPinned = false;
+    };
     std::vector<TabInfo> m_tabs;
+    std::vector<ClosedTabInfo> m_closedTabsHistory;
     int m_activeTab = -1;
     bool m_updatingTabs = false;
     bool m_syncingTree = false;

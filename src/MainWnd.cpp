@@ -1,4 +1,4 @@
-﻿// FastFile - main window: lifecycle, message routing, selection, window activation
+// FastFile - main window: lifecycle, message routing, selection, window activation
 // Implements CMainWnd members moved out of the original monolithic MainWnd.cpp.
 // Behaviour is unchanged; declarations live in MainWnd.h.
 
@@ -470,8 +470,12 @@ void CMainWnd::OnClick(TNotifyUI& msg)
         if (m_previewVisible) UpdatePreviewForSelection();
         return;
     }
-    if (name == _T("bc_seg")) {
+    if (name == _T("bc_seg") || name == _T("bc_more")) {
         OnBreadcrumbSegmentClick(msg.pSender);
+        return;
+    }
+    if (name == _T("bc_arrow")) {
+        OnBreadcrumbArrowClick(msg.pSender);
         return;
     }
     // Icon tile: Ctrl/Shift multi-select; double-click opens
@@ -601,11 +605,36 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         if (uMsg == WM_NCMOUSEMOVE) ::ScreenToClient(m_hWnd, &pt);
         UpdateCaptionButtonHover(pt, uMsg == WM_NCMOUSEMOVE);
     }
+    // Middle-click (wheel button) on tab closes unpinned tab; on empty area opens new tab.
+    if (uMsg == WM_MBUTTONUP) {
+        POINT pt = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
+        if (m_pTabStrip && m_pTabStrip->IsVisible() && ::PtInRect(&m_pTabStrip->GetPos(), pt)) {
+            const CTabStripUI::HitInfo h = m_pTabStrip->HitTest(pt);
+            if (h.part == CTabStripUI::Part::Body || h.part == CTabStripUI::Part::Close) {
+                if (h.index >= 0 && h.index < static_cast<int>(m_tabs.size())) {
+                    if (!m_tabs[h.index].isPinned) {
+                        CloseTab(h.index);
+                        return 0;
+                    }
+                }
+            } else if (h.part == CTabStripUI::Part::Empty) {
+                OnNewTabRequested();
+                return 0;
+            }
+        }
+    }
     // Messages posted by the self-drawn tab strip (see TabStripUI.h).
     if (uMsg == CTabStripUI::kMsgTabSelect) { OnTabStripSelect((int)wParam); return 0; }
     if (uMsg == CTabStripUI::kMsgTabClose) { OnTabStripClose((int)wParam); return 0; }
     if (uMsg == CTabStripUI::kMsgTabReorder) { OnTabStripReorder((int)wParam, (int)lParam); return 0; }
     if (uMsg == CTabStripUI::kMsgTabAdd) { OnTabStripAdd(); return 0; }
+    if (uMsg == CTabStripUI::kMsgTabEmptyContextMenu) {
+        POINT* screenPt = reinterpret_cast<POINT*>(lParam);
+        const POINT pt = screenPt ? *screenPt : POINT{};
+        delete screenPt;
+        OnTabStripEmptyContextMenu(pt);
+        return 0;
+    }
     if (uMsg == CTabStripUI::kMsgTabDragOut || uMsg == CTabStripUI::kMsgTabContextMenu) {
         POINT* screenPt = reinterpret_cast<POINT*>(lParam);
         const POINT pt = screenPt ? *screenPt : POINT{};
@@ -1154,6 +1183,20 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 EnterAddressEditMode();
                 return 0;
             }
+            if (alt && !ctrl && !shift) {
+                if (wParam >= '1' && wParam <= '6') {
+                    ApplyTagColorToSelection(static_cast<FileTagColor>(wParam - '0'));
+                    return 0;
+                }
+                if (wParam == '0') {
+                    ApplyTagColorToSelection(FileTagColor::None);
+                    return 0;
+                }
+                if (wParam == 'B') {
+                    ToggleStarSelection();
+                    return 0;
+                }
+            }
             // ---- file operations: Windows-native verbs (see RunFileCommand) ----
             if (const FileCommand command = FileCommandForKey(wParam, ctrl, shift, alt); command != FileCommand::None) {
                 RunFileCommand(command);
@@ -1165,7 +1208,7 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             }
             // ---- tabs ----
             if (ctrl && wParam == 'T') {
-                OnNewTabRequested();
+                if (shift) RestoreClosedTab(); else OnNewTabRequested();
                 return 0;
             }
             if (ctrl && wParam == 'W') {
@@ -1235,12 +1278,29 @@ LRESULT CMainWnd::TranslateAccelerator(MSG* message)
         return S_OK;
     }
     if (!ctrl && alt && key == 'P') { SetPreviewVisible(!m_previewVisible); return S_OK; }
+    if (!ctrl && alt && !shift) {
+        if (key >= '1' && key <= '6') {
+            ApplyTagColorToSelection(static_cast<FileTagColor>(key - '0'));
+            return S_OK;
+        }
+        if (key == '0') {
+            ApplyTagColorToSelection(FileTagColor::None);
+            return S_OK;
+        }
+        if (key == 'B') {
+            ToggleStarSelection();
+            return S_OK;
+        }
+    }
     if (!alt && ctrl && !shift && key >= '1' && key <= '9') {
         const int index = key == '9' ? int(m_tabs.size()) - 1 : int(key - '1');
         if (index >= 0 && index < int(m_tabs.size())) ActivateTab(index);
         return S_OK;
     }
-    if (!alt && ctrl && key == 'T') { OnNewTabRequested(); return S_OK; }
+    if (!alt && ctrl && key == 'T') {
+        if (shift) RestoreClosedTab(); else OnNewTabRequested();
+        return S_OK;
+    }
     if (!alt && ctrl && (key == 'W' || key == VK_F4)) {
         if (m_activeTab >= 0) CloseTab(m_activeTab);
         return S_OK;

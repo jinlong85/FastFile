@@ -20,6 +20,7 @@ struct FastFileSettings {
     int sortColumn = 0;
     bool sortAscending = true;
     int grouping = -1; // -1 Windows folder preference, 0 none, 1 date, 2 type
+    int backdropType = 0; // 0 Mica Alt (Tabbed), 1 Mica, 2 Acrylic, 3 None (Classic solid)
     bool contextMenu = false;
     bool defaultFolders = false;
     bool defaultComputer = false;

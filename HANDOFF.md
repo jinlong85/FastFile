@@ -1,8 +1,51 @@
 # FastFile — 交接说明（给后续 AI / 开发者）
 
-更新日期：2026-10-09（Asia/Shanghai）
+更新日期：2026-10-10（Asia/Shanghai）
 
-## 本地候选：1.0.23 自动检查更新与静默升级重启（2026-10-09，已构建测试打包，未发布）
+## 本地候选：1.0.25 下拉面包屑、Win11 Mica/Acrylic 沉浸材质与 6 色标签置顶（2026-10-10，已构建测试打包，未发布）
+
+- **交互式下拉路径面包屑（Interactive Breadcrumb Dropdowns）**：
+  - 路径栏面包屑各级目录右侧增加下拉三角按钮（`▼`），点击直接弹出 Win32 菜单；
+  - 根节点支持展开“此电脑”所有本地磁盘驱动器、U 盘及卷标信息；各中间目录层级支持枚举当前层级下的子文件夹，点击任意子文件夹立即无缝跳转；
+  - 针对大目录（子项 > 50）提供容灾折叠提示（“其余 N 个”）。
+- **Windows 11 Mica / Acrylic（云母 / 亚克力）半透明沉浸材质**：
+  - 在“设置 → 外观与布局”中新增【背景材质】配置项，支持 4 种材质模式切换：`Mica Alt`（默认，Tabbed 沉浸）、`Mica`（经典云母）、`Acrylic`（亚克力半透明）、`经典实色`；
+  - 运行时即时生效（通过 `DwmSetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE)` 动态调用），并在 `settings.ini` 中持久化（`backdropType=0~3`）。
+- **文件颜色标签与星标置顶（FileTagManager: 6 色标记 & Starred）**：
+  - **6 种醒目颜色标签**：红、橙、黄、绿、蓝、紫；
+  - **置顶 / 星标标记（Starred）**：支持对常用重要文件/文件夹进行打星标（`★`）；
+  - **快捷键**：`Alt+1` ~ `Alt+6`（打标签）、`Alt+0`（清除标签）、`Alt+B`（切换置顶/星标）；
+  - **全视图渲染支持**：详细信息/列表视图显示名称前缀或图标角标，大图标/中图标/平铺模式自绘图标覆盖高质感彩色圆点与金色星标；
+  - **菜单入口**：工具栏【更多选项】新增“文件标签与标记”级联子菜单；
+  - **持久化**：数据存入 `%APPDATA%\FastFile\file_tags.json`（原子临时文件写入保护）。
+- **列表模式文件夹图标与列宽自适应修复（List View DefView Custom Draw & Autosize Fix）**：
+  - 修复从平铺等视图切换至列表模式时，免刷新无法显示文件夹图标（整行仅文字）的缺陷：`ResolveItemIcon` 在私有小图标列表为空或未缓存时无缝回退至系统小图标列表 `sys`，并补全 `SHGFI_SMALLICON` 确保提取系统小图标索引；修正 `DrawListIcon` 中 `iconY` 垂直居中计算（防止此前 `h=0` 算错偏下超出行高而被下一项背景填充抹除），增加边界保底校准。
+  - 修复切换至列表模式时列宽过窄（140px，左右两列文字与图标拥挤紧贴，需按 F5 刷新才正常）的缺陷：切换至 `FVM_LIST` 解冻重绘后，显式发送 `LVM_SETCOLUMNWIDTH` (`LVSCW_AUTOSIZE`) 强制 Win32 原生列表视图重新按文本长度测算并扩展列宽，恢复至 220px+ 舒展间距。
+- **自动化测试覆盖与打包验证**：
+  - 在 `MainWndRegressionTests` 中新增 `CheckBreadcrumbs`、`CheckBackdropSettings`、`CheckFileTags` 专项测试，并在 `CheckViewSwitch` 中增加平铺切入列表模式后文件夹图标有效性与列宽自适应断言（无需 F5 刷新即满足验证）；
+  - 单元测试与专项套件（`FastFileViewSwitchTests`、`FastFileUiPolishTests`、`FastFileAsyncThumbTests`、`FastFileCoreTests`、`FastFileFavoritesTests`、`FastFileShellBrowserTests`、`FastFileAutoUpdaterTests`、`FastFileBuildSourceParity`、`FastFileVersionSource`）全量 Passed；
+  - Release x64 编译 0 错误；生成本地安装包 `dist/FastFile-Setup-1.0.25.exe`（2,429,952 字节，SHA-256 `9A7FB941540EC8890038A19B35CB7C436136669669714A6A1970F3611DCAC05E`）；内嵌 3 文件校验与运行时无外部依赖校验均通过。
+
+## 本地候选：1.0.24 标签页交互增强与固定保护（2026-10-09，已构建测试打包，未发布）
+
+- **固定标签页（Pin Tab）**：
+  - 视觉与交互：固定标签宽度锁定为 40px 紧凑纯图标显示，图标居中绘制，不绘制文字，不绘制关闭按钮；鼠标悬停显示完整路径提示；在标签栏最左侧成组排列。
+  - 边界隔离与拖拽保护：在 `CTabStripUI::Reorder` 中增加固定区边界判断，固定标签只能在固定区间内互换位置，普通标签只能在普通区间内互换位置，禁止相互越界穿透。
+  - 批量关闭保护：在 `CloseOtherTabs` 与 `CloseLeftTabs` 等批量清理逻辑中，跳过所有已固定的标签页，避免用户误操作关掉重要常用目录。
+  - 会话存取（`SaveSession` / `LoadSession`）：在 `session.ini` 增加 `Pinned%d=0/1` 字段，跨进程重启完整保留固定状态。
+- **已关闭标签页历史与撤销恢复（`Ctrl+Shift+T`）**：
+  - 关闭标签页（单标签关闭、批量关闭）时，将被关闭标签的信息（路径、搜索过滤词、前后导航历史栈、固定标记）入栈保存至 `m_closedTabsHistory`（上限 20 项，超出自动淘汰最旧项）。
+  - 支持快捷键 `Ctrl+Shift+T`（与 `Ctrl+T` 明确区分）或标签栏右键菜单一键撤销恢复最近关闭的标签页，并在状态栏显示提示。
+- **标签栏右键菜单全面升级**：
+  - 单标签右键菜单：支持“关闭标签页 (`Ctrl+W`)”（固定标签禁用）、“固定/取消固定标签页”、“复制标签页 (Duplicate Tab)”、“关闭左侧标签页”（仅在左侧存在未固定标签时可用）、“关闭右侧标签页”、“关闭其他标签页”（仅在存在其他未固定标签时可用）、“重新打开关闭的标签页 (`Ctrl+Shift+T`)”（历史栈非空时可用）、“复制路径”、“在新窗口打开”。
+  - 标签栏空白区域右键菜单（`kMsgTabEmptyContextMenu`）：支持“新建标签页 (`Ctrl+T`)”与“重新打开关闭的标签页 (`Ctrl+Shift+T`)”。
+- **鼠标快捷手势支持**：
+  - 中键点击（`WM_MBUTTONUP`）：点击未固定标签直接关闭；点击标签栏空白处快速新建标签页。
+  - 双击（`UIEVENT_DBLCLICK`）：双击未固定标签直接关闭；双击标签栏空白处快速新建标签页。
+- **状态同步与数组漂移保护**：修复在 `DuplicateTab`、`TogglePinTab`、`RestoreClosedTab`、`CloseOtherTabs`、`CloseLeftTabs` 等修改 `m_tabs` 数组前后的 `m_activeTab` 重置机制，插入/删除元素前先保存当前活动标签状态，并设置 `m_activeTab = -1`，彻底杜绝 `ActivateTab` 错将当前活动路径覆盖到新插入或移动后的标签上。
+- **自动化测试覆盖**：在 `MainWndRegressionTests` 中扩展覆盖固定标签紧凑尺寸与关闭按钮隐藏、命中测试与边界拖拽、关闭保护、历史栈弹出与恢复、复制标签与状态隔离、会话配置存取等全部场景；13/13 项核心测试套件 100% 全部通过；Release x64 编译 0 错误；生成 `dist/FastFile-Setup-1.0.24.exe`。
+
+## 历史发布：1.0.23 自动检查更新与静默升级重启（2026-10-09，已发布）
 
 - **自动检查与静默升级**：在“设置 → 关于 FastFile”页面增加【检查更新】（`AboutCheckUpdate = 207`）主按钮。点击后异步启动后台 STA 工作线程请求 GitHub Releases API 检索最新发行版（`https://api.github.com/repos/jinlong85/FastFile/releases/latest`）。若检测到更新版本，弹窗展示新版本号与更新说明日志摘要，并提供“立即更新”与“取消”选项。
 - **WinHTTP 网络客户端与下载保护**：使用 Windows 原生 WinHTTP 库与 TLS 1.2/1.3 加密通信，自动检测并应用系统代理设置（`WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY`），支持 302 重定向跟随（`WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS`）从 GitHub CDN 下载安装包资产（`FastFile-Setup-*.exe`）；下载过程采用 `.part` 临时文件保护与原子重命名，主界面实时反馈百分比进度（`AboutResult`）。

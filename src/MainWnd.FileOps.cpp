@@ -866,3 +866,66 @@ bool CMainWnd::ApplyUndoEntry(const UndoEntry& entry, bool isRedo)
     }
     return false;
 }
+
+void CMainWnd::ApplyTagColorToSelection(FileTagColor color)
+{
+    std::vector<ClipboardItem> items;
+    CollectSelectedItems(items);
+    if (items.empty()) {
+        if (!m_currentPath.empty() && !IsThisPcPath(m_currentPath)) {
+            items.push_back({ m_currentPath, true });
+        }
+    }
+    if (items.empty()) {
+        UpdateStatus(_T("未选中任何项目或当前文件夹"));
+        return;
+    }
+
+    for (const auto& item : items) {
+        FileTagManager::Instance().SetColor(item.path, color);
+    }
+
+    if (m_shellBrowser && m_shellBrowser->IsCreated()) {
+        m_shellBrowser->Redraw();
+    }
+    if (m_pFileList) m_pFileList->Invalidate();
+    if (m_pIconTiles) m_pIconTiles->Invalidate();
+
+    if (color == FileTagColor::None) {
+        std::wstring msg = L"已清除 " + std::to_wstring(items.size()) + L" 个项目的颜色标签";
+        UpdateStatus(msg.c_str());
+    } else {
+        std::wstring msg = L"已为 " + std::to_wstring(items.size()) + L" 个项目设置" +
+            FileTagManager::GetColorName(color) + L"标签";
+        UpdateStatus(msg.c_str());
+    }
+}
+
+void CMainWnd::ToggleStarSelection()
+{
+    std::vector<ClipboardItem> items;
+    CollectSelectedItems(items);
+    if (items.empty()) {
+        if (!m_currentPath.empty() && !IsThisPcPath(m_currentPath)) {
+            items.push_back({ m_currentPath, true });
+        }
+    }
+    if (items.empty()) {
+        UpdateStatus(_T("未选中任何项目或当前文件夹"));
+        return;
+    }
+
+    for (const auto& item : items) {
+        FileTagManager::Instance().ToggleStarred(item.path);
+    }
+
+    if (m_shellBrowser && m_shellBrowser->IsCreated()) {
+        m_shellBrowser->Redraw();
+    }
+    if (m_pFileList) m_pFileList->Invalidate();
+    if (m_pIconTiles) m_pIconTiles->Invalidate();
+
+    std::wstring msg = L"已更新 " + std::to_wstring(items.size()) + L" 个项目的星标/置顶状态";
+    UpdateStatus(msg.c_str());
+}
+

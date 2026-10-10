@@ -66,6 +66,7 @@ public:
     bool SetShowHidden(bool show);
     bool SetViewMode(FOLDERVIEWMODE mode, int iconSize = -1);
     void EnsureSelectionVisible();
+    void Redraw();
     // Paints pending invalidations of the native list now (selection frame / highlight)
     // instead of after FastFile's queued work.
     void FlushPaint();
@@ -100,6 +101,7 @@ private:
     HIMAGELIST GetSystemSmallImageList();
     int ResolveItemIcon(int index, HIMAGELIST* outIml = nullptr);
     LRESULT DrawListIcon(NMLVCUSTOMDRAW* draw);
+    bool GetItemPath(int itemIndex, std::wstring& outPath) const;
     // Thumbnail cache (UI thread): key = item identity + slot size + size / mtime stamp.
     struct ThumbEntry { std::wstring key; HBITMAP bitmap = nullptr; size_t bytes = 0; };
     bool LookupThumb(const std::wstring& key, HBITMAP& bitmap);

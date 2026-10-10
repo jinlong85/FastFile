@@ -1,4 +1,4 @@
-﻿// FastFile - Explorer-style tab strip implementation (see TabStripUI.h for the contract).
+// FastFile - Explorer-style tab strip implementation (see TabStripUI.h for the contract).
 
 #include "MainWndInternal.h"
 #include "TabStripUI.h"
@@ -111,12 +111,13 @@ void CTabStripUI::SetDarkMode(bool dark)
 }
 
 int CTabStripUI::Add(const std::wstring& path, const std::wstring& title,
-    const std::wstring& iconBmp, int iconPx, bool activate)
+    const std::wstring& iconBmp, int iconPx, bool activate, bool isPinned)
 {
     Tab tab;
     tab.path = path;
     tab.title = title;
     tab.iconPx = iconPx;
+    tab.isPinned = isPinned;
     m_tabs.push_back(std::move(tab));
     const int index = (int)m_tabs.size() - 1;
     if (!iconBmp.empty()) SetTabIcon(index, iconBmp, iconPx);
@@ -128,12 +129,13 @@ int CTabStripUI::Add(const std::wstring& path, const std::wstring& title,
 }
 
 void CTabStripUI::Insert(int index, const std::wstring& path, const std::wstring& title,
-    const std::wstring& iconBmp, int iconPx)
+    const std::wstring& iconBmp, int iconPx, bool isPinned)
 {
     Tab tab;
     tab.path = path;
     tab.title = title;
     tab.iconPx = iconPx;
+    tab.isPinned = isPinned;
     if (index < 0) index = 0;
     if (index > (int)m_tabs.size()) index = (int)m_tabs.size();
     m_tabs.insert(m_tabs.begin() + index, std::move(tab));
@@ -141,6 +143,30 @@ void CTabStripUI::Insert(int index, const std::wstring& path, const std::wstring
     if (m_active >= index) ++m_active;
     RecalcRects();
     Invalidate();
+}
+
+bool CTabStripUI::SetTabPinned(int index, bool pinned)
+{
+    if (index < 0 || index >= (int)m_tabs.size()) return false;
+    m_tabs[index].isPinned = pinned;
+    RecalcRects();
+    Invalidate();
+    return true;
+}
+
+bool CTabStripUI::IsTabPinned(int index) const
+{
+    if (index < 0 || index >= (int)m_tabs.size()) return false;
+    return m_tabs[index].isPinned;
+}
+
+int CTabStripUI::GetPinnedCount() const
+{
+    int count = 0;
+    for (const auto& t : m_tabs) {
+        if (t.isPinned) ++count;
+    }
+    return count;
 }
 
 bool CTabStripUI::RemoveAt(int index)
@@ -216,6 +242,13 @@ bool CTabStripUI::Reorder(int from, int to)
 {
     if (from < 0 || to < 0 || from == to) return false;
     if (from >= (int)m_tabs.size() || to >= (int)m_tabs.size()) return false;
+    const int pinCount = GetPinnedCount();
+    if (m_tabs[from].isPinned) {
+        if (to >= pinCount) to = pinCount - 1;
+    } else {
+        if (to < pinCount) to = pinCount;
+    }
+    if (from == to) return false;
     Tab moved = m_tabs[from];
     m_tabs.erase(m_tabs.begin() + from);
     m_tabs.insert(m_tabs.begin() + to, std::move(moved));
@@ -247,17 +280,36 @@ void CTabStripUI::RecalcRects(bool notifyOnly)
     const int bottom = m_rcItem.bottom;
     const int gap = Scaled(UiTokens::TabCardGap, m_dpi);
     const int plusW = Scaled(32, m_dpi);
-    const int avail = (std::max)(0, static_cast<int>(m_rcItem.right - m_rcItem.left) - plusW - gap - n * gap);
+    const int pinW = Scaled(40, m_dpi);
     (void)notifyOnly;
 
-    std::vector<int> preferred;
-    for (int i = 0; i < n; ++i)
-        preferred.push_back((std::clamp)(MeasureTabWidth(i), Scaled(m_minTabW, m_dpi), Scaled(m_maxTabW, m_dpi)));
-    const auto widths = TabLayout::Fit(preferred, Scaled(m_minTabW, m_dpi), avail);
-    m_contentW = 0;
+    int totalPinW = 0;
+    int pinCount = 0;
     for (int i = 0; i < n; ++i) {
-        m_tabs[i].width = widths[i];
-        m_contentW += widths[i] + gap;
+        if (m_tabs[i].isPinned) {
+            totalPinW += pinW + gap;
+            pinCount++;
+        }
+    }
+
+    const int unpinnedAvail = (std::max)(0, static_cast<int>(m_rcItem.right - m_rcItem.left) - plusW - gap - totalPinW - (n - pinCount) * gap);
+    std::vector<int> unpinnedPreferred;
+    for (int i = 0; i < n; ++i) {
+        if (!m_tabs[i].isPinned) {
+            unpinnedPreferred.push_back((std::clamp)(MeasureTabWidth(i), Scaled(m_minTabW, m_dpi), Scaled(m_maxTabW, m_dpi)));
+        }
+    }
+    const auto unpinnedWidths = TabLayout::Fit(unpinnedPreferred, Scaled(m_minTabW, m_dpi), unpinnedAvail);
+
+    m_contentW = 0;
+    size_t unpinnedIdx = 0;
+    for (int i = 0; i < n; ++i) {
+        if (m_tabs[i].isPinned) {
+            m_tabs[i].width = pinW;
+        } else {
+            m_tabs[i].width = (unpinnedIdx < unpinnedWidths.size()) ? unpinnedWidths[unpinnedIdx++] : Scaled(m_minTabW, m_dpi);
+        }
+        m_contentW += m_tabs[i].width + gap;
     }
     ClampScroll();
 
@@ -265,10 +317,14 @@ void CTabStripUI::RecalcRects(bool notifyOnly)
     for (int i = 0; i < n; ++i) {
         const int w = TabWidth(i);
         m_tabs[i].body = { x, top, x + w, bottom };
-        const int closeSize = Scaled(16, m_dpi);
-        const int cx = m_tabs[i].body.right - Scaled(6, m_dpi) - closeSize;
-        const int cy = (top + bottom - closeSize) / 2;
-        m_tabs[i].close = { cx, cy, cx + closeSize, cy + closeSize };
+        if (m_tabs[i].isPinned) {
+            m_tabs[i].close = { 0, 0, 0, 0 };
+        } else {
+            const int closeSize = Scaled(16, m_dpi);
+            const int cx = m_tabs[i].body.right - Scaled(6, m_dpi) - closeSize;
+            const int cy = (top + bottom - closeSize) / 2;
+            m_tabs[i].close = { cx, cy, cx + closeSize, cy + closeSize };
+        }
         x += w + gap;
     }
     // "+" hugs the last visible tab (4..8 design px gap) - it is NOT anchored to the caption
@@ -473,13 +529,30 @@ void CTabStripUI::DoEvent(TEventUI& event)
         return;
     }
 
+    if (event.Type == UIEVENT_DBLCLICK) {
+        const HitInfo h = HitTest(event.ptMouse);
+        if (h.part == Part::Empty) {
+            Notify(kMsgTabAdd, 0, 0);
+            return;
+        } else if (h.part == Part::Body && h.index >= 0 && h.index < (int)m_tabs.size()) {
+            if (!m_tabs[h.index].isPinned) {
+                Notify(kMsgTabClose, (WPARAM)h.index, 0);
+                return;
+            }
+        }
+    }
+
     if (event.Type == UIEVENT_CONTEXTMENU) {
         const HitInfo h = HitTest(event.ptMouse);
+        POINT screen = event.ptMouse;
+        ::ClientToScreen(m_pManager->GetPaintWindow(), &screen);
+        POINT* buf = new POINT(screen);
         if (h.part == Part::Body || h.part == Part::Close) {
-            POINT screen = event.ptMouse;
-            ::ClientToScreen(m_pManager->GetPaintWindow(), &screen);
-            POINT* buf = new POINT(screen);
             Notify(kMsgTabContextMenu, (WPARAM)h.index, (LPARAM)buf);
+        } else if (h.part == Part::Empty || h.part == Part::Plus) {
+            Notify(kMsgTabEmptyContextMenu, 0, (LPARAM)buf);
+        } else {
+            delete buf;
         }
         return;
     }
@@ -542,7 +615,7 @@ void CTabStripUI::DrawTabIcon(Gdiplus::Graphics& g, int index, const RECT& rc)
 {
     Tab& t = m_tabs[index];
     const int px = Scaled(16, m_dpi);
-    const int x = rc.left + Scaled(10, m_dpi);
+    const int x = t.isPinned ? ((rc.left + rc.right - px) / 2) : (rc.left + Scaled(10, m_dpi));
     const int y = (rc.top + rc.bottom - px) / 2;
     if (t.icon && t.icon->GetLastStatus() == Gdiplus::Ok) {
         g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
@@ -563,6 +636,7 @@ void CTabStripUI::DrawTabIcon(Gdiplus::Graphics& g, int index, const RECT& rc)
 
 void CTabStripUI::DrawTabText(Gdiplus::Graphics& g, int index, const RECT& rc, COLORREF color)
 {
+    if (index >= 0 && index < (int)m_tabs.size() && m_tabs[index].isPinned) return;
     if (!m_pManager) return;
     HFONT hf = m_pManager->GetFont(7);
     if (!hf) hf = m_pManager->GetFont(0);
@@ -669,7 +743,7 @@ bool CTabStripUI::DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopControl
         DrawTabIcon(g, i, rc);
         DrawTabText(g, i, rc, selected ? GetSysColor(COLOR_WINDOWTEXT)
             : (m_dark ? RGB(0xB3, 0xB3, 0xB3) : RGB(0x5C, 0x5C, 0x5C)));
-        if (selected || hovered || m_hotClose == i) {
+        if (!m_tabs[i].isPinned && (selected || hovered || m_hotClose == i)) {
             RECT cr = m_tabs[i].close;
             if (i != m_active && m_hotClose != i) { /* show a quiet X for hovered idle tabs */ }
             DrawCloseGlyph(g, cr, m_hotClose == i);

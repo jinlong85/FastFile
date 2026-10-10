@@ -87,6 +87,8 @@ add_executable(FastFile WIN32
   src/ShellFileOperation.cpp
   src/ShellFileOperation.h
   src/ShellMenuUtil.h
+  src/FileTagManager.cpp
+  src/FileTagManager.h
   src/MainWnd.h
   src/MainWndInternal.h
   src/ExplorerAgentProtocol.h
@@ -188,6 +190,7 @@ if(BUILD_TESTING)
   add_executable(FastFileShellBrowserTests
     tests/ShellBrowserHostTests.cpp
     src/ShellBrowserHost.cpp
+    src/FileTagManager.cpp
   )
   target_include_directories(FastFileShellBrowserTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_link_libraries(FastFileShellBrowserTests PRIVATE shell32 shlwapi ole32 uuid propsys comctl32 msimg32)

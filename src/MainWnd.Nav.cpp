@@ -1,4 +1,4 @@
-﻿// FastFile - navigation, listing refresh, search filter, breadcrumb/address bar
+// FastFile - navigation, listing refresh, search filter, breadcrumb/address bar
 // Implements CMainWnd members moved out of the original monolithic MainWnd.cpp.
 // Behaviour is unchanged; declarations live in MainWnd.h.
 
@@ -1034,14 +1034,22 @@ void CMainWnd::RebuildBreadcrumb()
         }
         m_pBreadcrumb->Add(btn);
         if (!isLast) {
-            auto* sep = new CLabelUI;
-            sep->SetText(_T(" › "));
-            sep->SetFixedWidth(sepW);
+            auto* sep = new CButtonUI;
+            sep->SetName(_T("bc_arrow"));
+            sep->SetText(_T("›"));
+            sep->SetUserData(shown[i].path.c_str());
+            sep->SetFixedWidth(sepW + DpiScale(4));
             sep->SetFixedHeight(segH);
             sep->SetAttribute(_T("textcolor"), UiTokens::ColorTextMuted);
             sep->SetAttribute(_T("font"), _T("0"));
             sep->SetAttribute(_T("align"), _T("center"));
             sep->SetAttribute(_T("valign"), _T("vcenter"));
+            sep->SetAttribute(_T("bkcolor"), UiTokens::ColorTransparent);
+            sep->SetAttribute(_T("hotbkcolor"), UiTokens::ColorHover);
+            sep->SetAttribute(_T("pushedbkcolor"), UiTokens::ColorPressed);
+            sep->SetAttribute(_T("bordersize"), _T("0"));
+            sep->SetAttribute(_T("borderround"), _T("2,2"));
+            sep->SetToolTip(_T("点击选择子文件夹"));
             m_pBreadcrumb->Add(sep);
         }
     }
@@ -1068,4 +1076,88 @@ void CMainWnd::OnBreadcrumbSegmentClick(CControlUI* btn)
     CDuiString ud = btn->GetUserData();
     if (ud.IsEmpty()) return;
     NavigateTo(ud.GetData(), true);
+}
+
+void CMainWnd::OnBreadcrumbArrowClick(CControlUI* btn)
+{
+    if (!btn) return;
+    CDuiString ud = btn->GetUserData();
+    if (ud.IsEmpty()) return;
+    const std::wstring folder = ud.GetData();
+
+    RECT rc = btn->GetPos();
+    POINT pt = { rc.left, rc.bottom };
+    if (m_hWnd) ::ClientToScreen(m_hWnd, &pt);
+
+    HMENU hMenu = ::CreatePopupMenu();
+    if (!hMenu) return;
+
+    struct ChildItem {
+        std::wstring name;
+        std::wstring path;
+    };
+    std::vector<ChildItem> children;
+
+    if (folder == kThisPcPath || folder == L"此电脑") {
+        wchar_t drives[512] = {};
+        DWORD len = ::GetLogicalDriveStringsW(_countof(drives) - 1, drives);
+        wchar_t* p = drives;
+        while (p && *p) {
+            std::wstring d = p;
+            std::wstring display = FormatDriveDisplayName(d);
+            children.push_back({ display, NormalizePath(d) });
+            p += wcslen(p) + 1;
+        }
+    } else {
+        std::wstring searchPattern = folder;
+        if (!searchPattern.empty() && searchPattern.back() != L'\\') {
+            searchPattern.push_back(L'\\');
+        }
+        searchPattern += L"*";
+
+        WIN32_FIND_DATAW fd = {};
+        HANDLE hFind = ::FindFirstFileW(searchPattern.c_str(), &fd);
+        if (hFind != INVALID_HANDLE_VALUE) {
+            do {
+                if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) continue;
+                if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+                if (!m_showHidden && ((fd.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN) || (fd.dwFileAttributes & FILE_ATTRIBUTE_SYSTEM))) {
+                    continue;
+                }
+                std::wstring childName = fd.cFileName;
+                std::wstring childPath = folder;
+                if (!childPath.empty() && childPath.back() != L'\\') childPath.push_back(L'\\');
+                childPath += childName;
+                children.push_back({ childName, childPath });
+            } while (::FindNextFileW(hFind, &fd));
+            ::FindClose(hFind);
+        }
+
+        std::sort(children.begin(), children.end(), [](const ChildItem& a, const ChildItem& b) {
+            return ::_wcsicmp(a.name.c_str(), b.name.c_str()) < 0;
+        });
+    }
+
+    if (children.empty()) {
+        ::AppendMenuW(hMenu, MF_STRING | MF_GRAYED, 0, L"（空文件夹）");
+    } else {
+        const size_t maxCount = (std::min)(children.size(), static_cast<size_t>(50));
+        for (size_t i = 0; i < maxCount; ++i) {
+            ::AppendMenuW(hMenu, MF_STRING, static_cast<UINT_PTR>(i + 1), children[i].name.c_str());
+        }
+        if (children.size() > maxCount) {
+            ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+            wchar_t moreBuf[64] = {};
+            swprintf_s(moreBuf, L"… 其余 %u 个文件夹", static_cast<unsigned>(children.size() - maxCount));
+            ::AppendMenuW(hMenu, MF_STRING | MF_GRAYED, 0, moreBuf);
+        }
+    }
+
+    const UINT cmd = ::TrackPopupMenuEx(hMenu, TPM_RETURNCMD | TPM_LEFTBUTTON | TPM_RIGHTBUTTON,
+        pt.x, pt.y, m_hWnd, nullptr);
+    ::DestroyMenu(hMenu);
+
+    if (cmd >= 1 && cmd <= children.size()) {
+        NavigateTo(children[cmd - 1].path, true);
+    }
 }

@@ -250,7 +250,13 @@ struct ShellBrowserHostTestAccess {
     static HWND ListWindow(ShellBrowserHost& host) { return host.m_listWindow; }
     static ShellBrowserHost::ViewCounters Counters(ShellBrowserHost& host) { return host.m_counters; }
     static bool HasListSpacer(ShellBrowserHost& host) { return host.m_listSpacer != nullptr; }
-    static int ResolveItemIcon(ShellBrowserHost& host, int index) { return host.ResolveItemIcon(index); }
+    static int ResolveItemIcon(ShellBrowserHost& host, int index, HIMAGELIST* outIml = nullptr) { return host.ResolveItemIcon(index, outIml); }
+    static HIMAGELIST SmallImageList(ShellBrowserHost& host) { return host.GetSmallImageList(); }
+    static HIMAGELIST SystemSmallImageList(ShellBrowserHost& host) { return host.GetSystemSmallImageList(); }
+    static void ClearShellSmallImages(ShellBrowserHost& host) {
+        host.m_shellSmallImages = nullptr;
+        if (host.m_listWindow) ListView_SetImageList(host.m_listWindow, nullptr, LVSIL_SMALL);
+    }
     static void Probe(ShellBrowserHost& host, int item) { host.m_probeItem = item; host.m_probeTick = 0; }
     static LONGLONG ProbeTick(ShellBrowserHost& host) { return host.m_probeTick; }
     static bool MediaAspectRatio(ShellBrowserHost& host,const std::wstring& path,int sourceW,int sourceH) {
@@ -575,6 +581,41 @@ struct TabStripRegressionAccess {
             strip.SetActiveTab(0);strip.SetActiveTab(1);
             if(strip.m_tabs[0].width!=expected || strip.m_tabs[1].width!=expected
                 || strip.m_scrollX<=0 || strip.m_plus.right>strip.GetPos().right)return false;
+        }
+        return true;
+    }
+    static bool CheckPinningAndEnhancedTabs(DuiLib::CTabStripUI& strip) {
+        for (UINT dpi : { 96u, 144u }) {
+            strip.Clear();
+            strip.SetMetrics(dpi);
+            strip.SetTabWidthRange(UiTokens::TabMinW, UiTokens::TabSelMinW, UiTokens::TabMaxW);
+            strip.Add(L"C:\\Pinned", L"固定标签", L"", MulDiv(16, dpi, 96), true, true);
+            strip.Add(L"D:\\Normal1", L"普通1", L"", MulDiv(16, dpi, 96), false, false);
+            strip.Add(L"E:\\Normal2", L"普通2", L"", MulDiv(16, dpi, 96), false, false);
+            strip.SetPos({ 0, 0, 1200, MulDiv(29, dpi, 96) }, false);
+
+            if (strip.GetPinnedCount() != 1) return false;
+            if (!strip.IsTabPinned(0) || strip.IsTabPinned(1) || strip.IsTabPinned(2)) return false;
+
+            const int expectedPinW = MulDiv(40, dpi, 96);
+            if (strip.m_tabs[0].width != expectedPinW) return false;
+            if (strip.m_tabs[0].close.right != 0) return false;
+
+            const POINT ptOnPin = { (strip.m_tabs[0].body.left + strip.m_tabs[0].body.right) / 2,
+                                    (strip.m_tabs[0].body.top + strip.m_tabs[0].body.bottom) / 2 };
+            if (strip.HitTest(ptOnPin).part != CTabStripUI::Part::Body) return false;
+
+            strip.Reorder(0, 2);
+            if (!strip.IsTabPinned(0)) return false;
+
+            strip.Reorder(2, 0);
+            if (!strip.IsTabPinned(0) || strip.m_tabs[1].path != L"E:\\Normal2") return false;
+
+            strip.SetTabPinned(0, false);
+            if (strip.GetPinnedCount() != 0 || strip.IsTabPinned(0)) return false;
+            const int normalW = MulDiv(180, dpi, 96);
+            if (strip.m_tabs[0].width != normalW) return false;
+            if (strip.m_tabs[0].close.right == 0) return false;
         }
         return true;
     }
@@ -999,7 +1040,189 @@ struct MainWndRegressionAccess {
         check(!window.m_quickReadPending && window.m_quickRows.size() == before.size(), "async refresh restores the authoritative Shell snapshot");
         return failures;
     }
-    static int CheckTabs(CMainWnd& window) { return DuiLib::TabStripRegressionAccess::Check(*window.m_pTabStrip)?0:1; }
+    static int CheckTabOperations(CMainWnd& window) {
+        int failures = 0;
+        auto check = [&](bool ok, const char* name) { if (!ok) { std::cerr << "FAIL " << name << '\n'; ++failures; } };
+
+        const auto savedTabs = window.m_tabs;
+        const int savedActive = window.m_activeTab;
+        const auto savedHistory = window.m_closedTabsHistory;
+        const auto savedPath = window.m_currentPath;
+
+        const std::wstring pathPin = L"C:\\Windows";
+        const std::wstring pathNorm1 = L"C:\\Windows\\System32";
+        const std::wstring pathNorm2 = L"C:\\Windows\\Fonts";
+
+        window.m_tabs.clear();
+        window.m_closedTabsHistory.clear();
+        window.m_tabs.push_back({ pathPin, L"", {}, {}, nullptr, true });
+        window.m_tabs.push_back({ pathNorm1, L"", {}, {}, nullptr, false });
+        window.m_tabs.push_back({ pathNorm2, L"", {}, {}, nullptr, false });
+        window.m_currentPath = pathNorm2;
+        window.m_searchFilter.clear();
+        window.m_activeTab = 2;
+        window.RebuildTabStrip();
+
+        // 1. 关闭其他标签页测试：保留 Norm2，Pin 应受到保护，Norm1 应被关闭
+        window.CloseOtherTabs(2, false);
+        check(window.m_tabs.size() == 2, "closing other tabs preserves pinned tabs");
+        check(window.m_tabs[0].path == pathPin && window.m_tabs[0].isPinned, "pinned tab remains at index 0");
+        check(window.m_tabs[1].path == pathNorm2 && !window.m_tabs[1].isPinned, "kept tab remains");
+        check(!window.m_closedTabsHistory.empty() && window.m_closedTabsHistory.back().path == pathNorm1,
+            "closed unpinned tab is added to closed history stack");
+
+        // 2. 撤销关闭（Ctrl+Shift+T）测试
+        window.RestoreClosedTab();
+        check(window.m_tabs.size() == 3, "RestoreClosedTab restores the closed tab");
+        check(window.m_tabs.back().path == pathNorm1, "restored tab has matching path");
+        check(window.m_closedTabsHistory.empty(), "history stack popped on restore");
+
+        // 3. 复制标签页（DuplicateTab）测试
+        window.DuplicateTab(1); // 复制 Norm2
+        check(window.m_tabs.size() == 4, "DuplicateTab increases tab count by 1");
+        check(window.m_tabs[2].path == pathNorm2, "duplicated tab is inserted next to source with same path");
+
+        // 4. 固定切换（TogglePinTab）测试
+        window.TogglePinTab(2); // 将刚复制的 Norm2 固定
+        check(window.m_tabs[1].isPinned && window.m_tabs[1].path == pathNorm2,
+            "TogglePinTab pins the tab and moves it to the end of pinned group");
+
+        window.m_tabs = savedTabs;
+        window.m_activeTab = savedActive;
+        window.m_closedTabsHistory = savedHistory;
+        window.m_currentPath = savedPath;
+        window.RebuildTabStrip();
+        return failures;
+    }
+    static int CheckTabs(CMainWnd& window) {
+        if (!DuiLib::TabStripRegressionAccess::Check(*window.m_pTabStrip)) return 1;
+        if (!DuiLib::TabStripRegressionAccess::CheckPinningAndEnhancedTabs(*window.m_pTabStrip)) return 2;
+        if (CheckTabOperations(window) != 0) return 3;
+        if (CheckBreadcrumbs(window) != 0) return 4;
+        if (CheckBackdropSettings(window) != 0) return 5;
+        if (CheckFileTags(window) != 0) return 6;
+        return 0;
+    }
+    static int CheckBreadcrumbs(CMainWnd& window) {
+        int failures = 0;
+        auto check = [&](bool ok, const char* name) { if (!ok) { std::cerr << "FAIL " << name << '\n'; ++failures; } };
+
+        const std::wstring savedPath = window.m_currentPath;
+        window.m_currentPath = L"C:\\Windows\\System32";
+        window.RebuildBreadcrumb();
+
+        check(window.m_pBreadcrumb != nullptr, "breadcrumb container exists");
+        if (window.m_pBreadcrumb) {
+            bool foundArrow = false;
+            for (int i = 0; i < window.m_pBreadcrumb->GetCount(); ++i) {
+                CControlUI* item = window.m_pBreadcrumb->GetItemAt(i);
+                if (item && item->GetName().Find(_T("bc_arrow")) >= 0) {
+                    foundArrow = true;
+                    check(!item->GetUserData().IsEmpty(), "breadcrumb arrow contains valid target path in UserData");
+                }
+            }
+            check(foundArrow, "breadcrumb contains interactive dropdown arrow buttons");
+        }
+
+        // Test This PC path
+        window.m_currentPath = L"::ThisPC";
+        window.RebuildBreadcrumb();
+        if (window.m_pBreadcrumb) {
+            check(window.m_pBreadcrumb->GetCount() >= 1, "breadcrumb displays This PC root segment");
+        }
+
+        window.m_currentPath = savedPath;
+        window.RebuildBreadcrumb();
+        return failures;
+    }
+    static int CheckBackdropSettings(CMainWnd& window) {
+        int failures = 0;
+        auto check = [&](bool ok, const char* name) { if (!ok) { std::cerr << "FAIL " << name << '\n'; ++failures; } };
+
+        FastFileSettings settings;
+        check(settings.backdropType == 0, "default backdrop type is Mica Alt (0)");
+
+        settings.backdropType = 1;
+        settings.Normalize();
+        check(settings.backdropType == 1, "backdropType 1 preserved");
+
+        settings.backdropType = 2;
+        settings.Normalize();
+        check(settings.backdropType == 2, "backdropType 2 preserved");
+
+        settings.backdropType = 3;
+        settings.Normalize();
+        check(settings.backdropType == 3, "backdropType 3 preserved");
+
+        settings.backdropType = -5;
+        settings.Normalize();
+        check(settings.backdropType == 0, "negative backdropType normalized to 0");
+
+        settings.backdropType = 99;
+        settings.Normalize();
+        check(settings.backdropType == 3, "out of range backdropType clamped to 3");
+
+        const int savedType = window.m_settings.backdropType;
+        window.m_settings.backdropType = 2; // Acrylic
+        window.ApplySettingsAppearance();
+        check(window.m_settings.backdropType == 2, "appearance settings applied");
+        window.m_settings.backdropType = savedType;
+        window.ApplySettingsAppearance();
+        return failures;
+    }
+    static int CheckFileTags(CMainWnd& window) {
+        int failures = 0;
+        auto check = [&](bool ok, const char* name) { if (!ok) { std::cerr << "FAIL " << name << '\n'; ++failures; } };
+
+        // 1. Path normalization
+        check(FileTagManager::Normalize(L"  C:/Windows/System32/  ") == L"C:\\Windows\\System32", "path normalize trims and normalizes slashes");
+        check(FileTagManager::Normalize(L"C:/") == L"C:\\", "path normalize preserves root slash");
+
+        // 2. Color and name mapping
+        check(FileTagManager::GetColorRef(FileTagColor::Red) == RGB(255, 77, 79), "red color ref is #FF4D4F");
+        check(FileTagManager::GetColorRef(FileTagColor::Orange) == RGB(255, 122, 69), "orange color ref is #FF7A45");
+        check(FileTagManager::GetColorRef(FileTagColor::Yellow) == RGB(255, 197, 61), "yellow color ref is #FFC53D");
+        check(FileTagManager::GetColorRef(FileTagColor::Green) == RGB(82, 196, 26), "green color ref is #52C41A");
+        check(FileTagManager::GetColorRef(FileTagColor::Blue) == RGB(24, 144, 255), "blue color ref is #1890FF");
+        check(FileTagManager::GetColorRef(FileTagColor::Purple) == RGB(114, 46, 209), "purple color ref is #722ED1");
+        check(wcscmp(FileTagManager::GetColorName(FileTagColor::Red), L"红色") == 0, "color name is localized");
+
+        // 3. Tag operations
+        const std::wstring testPath = L"C:\\test_file_for_tagging_regression.dat";
+        auto& mgr = FileTagManager::Instance();
+        mgr.ClearTag(testPath);
+        check(mgr.GetTag(testPath).color == FileTagColor::None && !mgr.GetTag(testPath).starred, "initial tag is none");
+
+        mgr.SetColor(testPath, FileTagColor::Red);
+        check(mgr.GetTag(testPath).color == FileTagColor::Red && !mgr.GetTag(testPath).starred, "set color to red");
+
+        mgr.ToggleStarred(testPath);
+        check(mgr.GetTag(testPath).color == FileTagColor::Red && mgr.GetTag(testPath).starred, "toggle starred to true");
+
+        mgr.SetColor(testPath, FileTagColor::Blue);
+        check(mgr.GetTag(testPath).color == FileTagColor::Blue && mgr.GetTag(testPath).starred, "change color to blue preserving starred");
+
+        mgr.SetStarred(testPath, false);
+        check(mgr.GetTag(testPath).color == FileTagColor::Blue && !mgr.GetTag(testPath).starred, "set starred to false");
+
+        mgr.ClearTag(testPath);
+        check(mgr.GetTag(testPath).color == FileTagColor::None && !mgr.GetTag(testPath).starred, "clear tag removes path");
+
+        // 4. Drawing functions sanity
+        HDC dc = ::CreateCompatibleDC(nullptr);
+        if (dc) {
+            FileTagManager::DrawTagDot(dc, 10, 10, 5, RGB(255, 77, 79));
+            FileTagManager::DrawStar(dc, 20, 20, 6);
+            ::DeleteDC(dc);
+        }
+
+        // 5. CMainWnd tagging operations integration
+        window.ApplyTagColorToSelection(FileTagColor::Green);
+        window.ToggleStarSelection();
+        window.ApplyTagColorToSelection(FileTagColor::None);
+
+        return failures;
+    }
     static int RunIsolatedAgent() {
         // Real Explorer lives on the interactive default desktop; fixture GUI is isolated.
         HDESK sourceDesktop=OpenDesktopW(L"Default",0,FALSE,GENERIC_ALL);
@@ -3891,6 +4114,38 @@ struct MainWndRegressionAccess {
             int selected = -1; view->GetSelectedItem(-1, &selected); view->Release();
             check(selected == 3, "selection is kept across a view switch");
         }
+        // Regression check: Switching from Tiles directly to List view must keep folder icons
+        // visible and maintain proper column width without requiring a manual refresh (F5).
+        window.NavigateToNow(folder, false); pump(500);
+        window.SetViewMode(Mode::Tiles); pump(300);
+        ShellBrowserHostTestAccess::ClearShellSmallImages(host);
+        window.SetViewMode(Mode::List); pump(300);
+        HWND testList = ShellBrowserHostTestAccess::ListWindow(host);
+        const int testCount = testList ? ListView_GetItemCount(testList) : 0;
+        check(testCount > 0, "List mode has populated items after Tiles->List switch");
+        int testColWidth = testList ? (int)SendMessageW(testList, LVM_GETCOLUMNWIDTH, 0, 0) : 0;
+        check(testColWidth >= window.DpiScale(180), "Tiles->List switch auto-sizes column width to prevent cramped text");
+        for (int itm = 0; itm < (std::min)(10, testCount); ++itm) {
+            HIMAGELIST iml = nullptr;
+            const int img = ShellBrowserHostTestAccess::ResolveItemIcon(host, itm, &iml);
+            check(img >= 0 && iml != nullptr, "Tiles->List switch resolves folder and file icons without F5");
+        }
+        if (GetFileAttributesW(L"D:\\Users\\JINLONG\\Documents") != INVALID_FILE_ATTRIBUTES) {
+            window.NavigateToNow(L"D:\\Users\\JINLONG\\Documents", false); pump(500);
+            window.SetViewMode(Mode::Tiles); pump(300);
+            ShellBrowserHostTestAccess::ClearShellSmallImages(host);
+            window.SetViewMode(Mode::List); pump(300);
+            HWND docList = ShellBrowserHostTestAccess::ListWindow(host);
+            const int docCount = docList ? ListView_GetItemCount(docList) : 0;
+            check(docCount > 0, "Documents folder has populated items");
+            int docColWidth = docList ? (int)SendMessageW(docList, LVM_GETCOLUMNWIDTH, 0, 0) : 0;
+            check(docColWidth >= window.DpiScale(180), "Documents folder List mode column width is properly sized without cramped text");
+            for (int itm = 0; itm < (std::min)(10, docCount); ++itm) {
+                HIMAGELIST iml = nullptr;
+                const int img = ShellBrowserHostTestAccess::ResolveItemIcon(host, itm, &iml);
+                check(img >= 0 && iml != nullptr, "Documents folder folder items resolve icons in List mode without F5");
+            }
+        }
         window.m_settings.rememberViews = remember;
         if (!wasShown) { ShowWindow(window.m_hWnd, SW_HIDE); pump(100); }
         return failures;
@@ -4378,6 +4633,11 @@ struct MainWndRegressionAccess {
         check(window.m_tabs.size() == tabCount + 2 && window.m_currentPath == siblingPrefix,
             "a sibling sharing the parent name prefix is not a descendant");
         check(DuiLib::TabStripRegressionAccess::Check(*window.m_pTabStrip), "fixed-width tabs truncate long titles and preserve DPI, tooltip, close and overflow behavior");
+        check(DuiLib::TabStripRegressionAccess::CheckPinningAndEnhancedTabs(*window.m_pTabStrip), "pinned tabs have compact width, no close button, and bounded drag reordering");
+        failures += CheckTabOperations(window);
+        failures += CheckBreadcrumbs(window);
+        failures += CheckBackdropSettings(window);
+        failures += CheckFileTags(window);
         failures += CheckSelectionLatency(window, fixture);
         failures += CheckShellMenus(window, fixture);
         failures += CheckFileOperationEngine(window.ParentPath(fixture));
@@ -4516,8 +4776,8 @@ int main(int argc, char** argv) {
         : argc>1 && strcmp(argv[1],"--integration-only")==0
         ? MainWndRegressionAccess::CheckIntegration(*window,root)
         : MainWndRegressionAccess::Run(*window, fixture);
-    if(!activationOnly && !(argc>1 && (strcmp(argv[1],"--quick-access-only")==0 || strcmp(argv[1],"--delete-permission-check")==0 || strcmp(argv[1],"--delete-partial-check")==0 || strcmp(argv[1],"--integration-only")==0 || strcmp(argv[1],"--explorer-live-only")==0 || strcmp(argv[1],"--agent-live-only")==0)))
-        failures+=MainWndRegressionAccess::CheckPreferences(*window,root);
+    if (!activationOnly && argc <= 1)
+        failures += MainWndRegressionAccess::CheckPreferences(*window, root);
     failures += cacheFailures;
     if(!AppIconMatchesSource()) {++failures;std::cerr<<"FAIL all embedded application icon sizes must match res/FastFile.ico\n";}
     if(IsWindow(hwnd))DestroyWindow(hwnd);

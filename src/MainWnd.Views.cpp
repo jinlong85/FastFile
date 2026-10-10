@@ -4,6 +4,7 @@
 
 #include "MainWndInternal.h"
 #include "ShellPresentation.h"
+#include "FileTagManager.h"
 
 namespace {
 
@@ -83,6 +84,22 @@ public:
         case Layout::TilesFile:  PaintTilesEntries(hDC, rc, font, smallFont, metaColor, true); break;
         case Layout::TilesName:  PaintTilesEntries(hDC, rc, font, smallFont, metaColor, false); break;
         default: break;
+        }
+
+        if (!GetUserData().IsEmpty()) {
+            FileTagInfo tag = FileTagManager::Instance().GetTag(GetUserData().GetData());
+            if (tag.color != FileTagColor::None) {
+                const int dotR = S(5);
+                const int dotX = (m_iconPx > 0 && m_iconX > 0) ? (m_iconX + m_iconPx - dotR) : (rc.left + S(36));
+                const int dotY = (m_iconPx > 0 && m_iconY > 0) ? (m_iconY + m_iconPx - dotR) : (rc.top + (rc.bottom - rc.top) / 2 + dotR);
+                FileTagManager::DrawTagDot(hDC, dotX, dotY, dotR, FileTagManager::GetColorRef(tag.color));
+            }
+            if (tag.starred) {
+                const int starR = S(6);
+                const int starX = (m_iconPx > 0 && m_iconX > 0) ? (m_iconX + starR) : (rc.left + S(12));
+                const int starY = (m_iconPx > 0 && m_iconY > 0) ? (m_iconY + starR) : (rc.top + (rc.bottom - rc.top) / 2 - starR);
+                FileTagManager::DrawStar(hDC, starX, starY, starR);
+            }
         }
 
         if (oldFont) ::SelectObject(hDC, oldFont);
@@ -1533,7 +1550,16 @@ void CMainWnd::BindDetailsRow(CListContainerElementUI* row, int entryIdx)
             iconCtrl->Invalidate();
         }
         if (nameLabel) {
-            nameLabel->SetText(e.name.c_str());
+            FileTagInfo tag = FileTagManager::Instance().GetTag(e.fullPath);
+            std::wstring labelText;
+            if (tag.starred) {
+                labelText += L"★ ";
+            }
+            if (tag.color != FileTagColor::None) {
+                labelText += L"● ";
+            }
+            labelText += e.name;
+            nameLabel->SetText(labelText.c_str());
             nameLabel->Invalidate();
         }
     }

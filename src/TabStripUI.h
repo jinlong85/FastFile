@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 // FastFile - Explorer-style tab strip.
 //
 // One self-drawn control owns the tab geometry, hover/press state and the hit testing that
@@ -27,10 +27,13 @@ public:
     int  GetCount() const { return static_cast<int>(m_tabs.size()); }
     int  GetActive() const { return m_active; }
     int  Add(const std::wstring& path, const std::wstring& title,
-             const std::wstring& iconBmp, int iconPx, bool activate);
+             const std::wstring& iconBmp, int iconPx, bool activate, bool isPinned = false);
     void Insert(int index, const std::wstring& path, const std::wstring& title,
-                const std::wstring& iconBmp, int iconPx);
+                const std::wstring& iconBmp, int iconPx, bool isPinned = false);
     bool RemoveAt(int index);
+    bool SetTabPinned(int index, bool pinned);
+    bool IsTabPinned(int index) const;
+    int  GetPinnedCount() const;
     void Clear();
     bool Select(int index);
     bool Reorder(int from, int to);
@@ -71,6 +74,7 @@ public:
     static constexpr UINT kMsgTabDragOut = WM_USER + 303;  // wParam = index, lParam = POINT*
     static constexpr UINT kMsgTabContextMenu = WM_USER + 304; // wParam = index, lParam = POINT*
     static constexpr UINT kMsgTabAdd = WM_USER + 305;
+    static constexpr UINT kMsgTabEmptyContextMenu = WM_USER + 306; // lParam = POINT*
 
 private:
     friend struct TabStripRegressionAccess;
@@ -83,6 +87,7 @@ private:
         RECT body = {};
         RECT close = {};
         int  width = 0;        // allocated by preferred/minimum layout, independent of active state
+        bool isPinned = false;
     };
 
     void  RecalcRects(bool notifyOnly = false);
