@@ -115,8 +115,12 @@ private:
     struct ThumbRequest {
         std::wstring key, path; PIDLIST_ABSOLUTE pidl = nullptr;
         int size = 0, item = -1; UINT generation = 0; ULONGLONG paintSeq = 0;
+        ULONGLONG queuedAt = 0;
     };
-    struct ThumbResult { std::wstring key, path; HBITMAP bitmap = nullptr; int item = -1; UINT generation = 0; };
+    struct ThumbResult {
+        std::wstring key, path; HBITMAP bitmap = nullptr; int item = -1; UINT generation = 0;
+        ULONGLONG queueMs = 0, extractionMs = 0, finishedAt = 0;
+    };
     void RequestThumb(IShellItem* item, const std::wstring& key, const std::wstring& path, int index);
     void CancelThumbRequests();
     void StartThumbWorker();
@@ -159,6 +163,7 @@ private:
         int itemInvalidations = 0; // single cell invalidated when its thumbnail arrived
         int thumbEvictions = 0;  // LRU evictions
         int badgeResolves = 0;   // per-extension association badge lookups
+        ULONGLONG maxThumbQueueMs = 0, maxThumbExtractionMs = 0, maxThumbDeliveryMs = 0;
     };
     ViewCounters m_counters;
     HWND m_redrawBatch = nullptr;    // list with redraw suspended during ApplyViewMode

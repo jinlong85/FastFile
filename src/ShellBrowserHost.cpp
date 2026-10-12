@@ -1077,30 +1077,9 @@ int ShellBrowserHost::ResolveItemIcon(int index, HIMAGELIST* outIml)
 {
     if (outIml) *outIml = nullptr;
     HIMAGELIST sys = GetSystemSmallImageList();
-    HIMAGELIST shell = (m_shellSmallImages && m_shellSmallImages != sys && ImageList_GetImageCount(m_shellSmallImages) > 0) ? m_shellSmallImages : nullptr;
-    HIMAGELIST iml = shell ? shell : sys;
-
-    LVITEMW item{}; item.mask = LVIF_IMAGE; item.iItem = index;
-    if (ListView_GetItem(m_listWindow, &item) && item.iImage >= 0) {
-        if (iml && item.iImage < ImageList_GetImageCount(iml)) {
-            if (outIml) *outIml = iml;
-            return item.iImage;
-        }
-    }
-    if (m_viewWindow) {
-        NMLVDISPINFO di{};
-        di.hdr.hwndFrom = m_listWindow;
-        di.hdr.idFrom = GetDlgCtrlID(m_listWindow);
-        di.hdr.code = LVN_GETDISPINFO;
-        di.item.mask = LVIF_IMAGE;
-        di.item.iItem = index;
-        di.item.iSubItem = 0;
-        SendMessageW(m_viewWindow, WM_NOTIFY, di.hdr.idFrom, reinterpret_cast<LPARAM>(&di));
-        if (iml && di.item.iImage >= 0 && di.item.iImage < ImageList_GetImageCount(iml)) {
-            if (outIml) *outIml = iml;
-            return di.item.iImage;
-        }
-    }
+    // A private DefView image list can have valid indices before any icon pixels
+    // arrive. Our row-height spacer suppresses its native icon painting, so use
+    // the actual Shell item's system icon instead of trusting those empty slots.
     if (m_browser) {
         IFolderView2* fv = nullptr;
         if (SUCCEEDED(m_browser->GetCurrentView(IID_PPV_ARGS(&fv))) && fv) {
@@ -1535,6 +1514,7 @@ void ShellBrowserHost::RequestThumb(IShellItem* item, const std::wstring& key, c
         request.key = key; request.path = path; request.pidl = pidl;
         request.size = m_iconSlot; request.item = index;
         request.generation = m_thumbGeneration.load(); request.paintSeq = m_paintSeq;
+        request.queuedAt = GetTickCount64();
         m_thumbQueue.push_back(std::move(request));
     }
     m_thumbCv.notify_one();
@@ -1568,13 +1548,16 @@ void ShellBrowserHost::ThumbWorkerMain(ShellBrowserHost* self)
             request = std::move(*best);
             self->m_thumbQueue.erase(best);
         }
+        const ULONGLONG startedAt = GetTickCount64();
         HBITMAP bitmap = self->ExtractThumb(request.pidl, request.size);
+        const ULONGLONG finishedAt = GetTickCount64();
         CoTaskMemFree(request.pidl);
         bool post = false;
         {
             std::lock_guard<std::mutex> lock(self->m_thumbMutex);
             if (self->m_thumbStop) { if (bitmap) DeleteObject(bitmap); break; }
-            self->m_thumbResults.push_back({request.key, request.path, bitmap, request.item, request.generation});
+            self->m_thumbResults.push_back({request.key, request.path, bitmap, request.item, request.generation,
+                startedAt - request.queuedAt, finishedAt - startedAt, finishedAt});
             if (!self->m_thumbPosted) self->m_thumbPosted = post = true;
         }
         if (post && !PostMessageW(self->m_thumbWindow, kThumbReadyMessage, 0, 0)) {
@@ -1600,6 +1583,10 @@ void ShellBrowserHost::OnThumbsReady()
     bool wholeList = false;
     for (auto& result : results) {
         ++m_counters.thumbExtractions;
+        m_counters.maxThumbQueueMs = (std::max)(m_counters.maxThumbQueueMs, result.queueMs);
+        m_counters.maxThumbExtractionMs = (std::max)(m_counters.maxThumbExtractionMs, result.extractionMs);
+        if (result.finishedAt)
+            m_counters.maxThumbDeliveryMs = (std::max)(m_counters.maxThumbDeliveryMs, GetTickCount64() - result.finishedAt);
         if (result.generation != generation) {
             ++m_counters.staleDropped;
             if (result.bitmap) DeleteObject(result.bitmap);
@@ -1942,8 +1929,7 @@ LRESULT CALLBACK ShellBrowserHost::ListSubclass(HWND window, UINT msg, WPARAM wp
     if(msg==LVM_SETIMAGELIST && wp==LVSIL_SMALL && host->m_listSpacer
         && reinterpret_cast<HIMAGELIST>(lp)!=host->m_listSpacer) {
         const HIMAGELIST previous=host->m_shellSmallImages;
-        if(reinterpret_cast<HIMAGELIST>(lp))
-            host->m_shellSmallImages=reinterpret_cast<HIMAGELIST>(lp);
+        host->m_shellSmallImages=reinterpret_cast<HIMAGELIST>(lp);
         DefSubclassProc(window,msg,wp,reinterpret_cast<LPARAM>(host->m_listSpacer));
         return reinterpret_cast<LRESULT>(previous);
     }

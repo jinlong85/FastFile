@@ -282,12 +282,30 @@ struct ShellBrowserHostTestAccess {
         RECT icon{},row{};ListView_GetItemRect(host.m_listWindow,0,&icon,LVIR_ICON);
         ListView_GetItemRect(host.m_listWindow,0,&row,LVIR_BOUNDS);
         int colored=0;
-        for(int y=row.top;y<row.bottom;++y)for(int x=icon.left;x<icon.left+w;++x)
-            colored+=GetPixel(dc,x,y)!=RGB(255,255,255);
+        for(int y=row.top;y<row.bottom;++y)for(int x=icon.left;x<icon.left+w;++x) {
+            const auto pixel=GetPixel(dc,x,y);
+            colored+=pixel!=RGB(255,255,255) && pixel!=RGB(0,0,0) && pixel!=CLR_INVALID;
+        }
         SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);ReleaseDC(nullptr,screen);
         LVITEMW probe{};probe.mask=LVIF_IMAGE;probe.iItem=0;ListView_GetItem(host.m_listWindow,&probe);
         if(colored<=10)std::cerr<<"index="<<probe.iImage<<" sourceCount="<<ImageList_GetImageCount(host.m_shellSmallImages)<<" currentCount="<<ImageList_GetImageCount(ListView_GetImageList(host.m_listWindow,LVSIL_SMALL))<<" icon pixels="<<colored<<" row="<<row.left<<","<<row.top<<","<<row.right<<","<<row.bottom<<" items="<<ListView_GetItemCount(host.m_listWindow)<<"\n";
         return colored>10;
+    }
+    static bool EmptyPrivateSlotVisible(ShellBrowserHost& host) {
+        int w=0,h=0;
+        if(!ImageList_GetIconSize(host.m_shellSmallImages,&w,&h))return false;
+        HIMAGELIST empty=ImageList_Create(w,h,ILC_COLOR32|ILC_MASK,4096,1);
+        if(!empty)return false;
+        ImageList_SetImageCount(empty,4096); // valid indices, no loaded pixels
+        const auto original=host.m_shellSmallImages;
+        const UINT state=ListView_GetItemState(host.m_listWindow,0,LVIS_SELECTED|LVIS_FOCUSED);
+        ListView_SetItemState(host.m_listWindow,0,0,LVIS_SELECTED|LVIS_FOCUSED);
+        host.m_shellSmallImages=empty;
+        const bool visible=ListIconVisible(host); // check pixels, not merely index >= 0
+        host.m_shellSmallImages=original;
+        ListView_SetItemState(host.m_listWindow,0,state,LVIS_SELECTED|LVIS_FOCUSED);
+        ImageList_Destroy(empty);
+        return visible;
     }
     static bool TallImageRefresh(ShellBrowserHost& host) {
         const HIMAGELIST original=host.m_shellSmallImages;
@@ -792,6 +810,8 @@ int main()
         return Fail("list/details repaint stays buffered after native style reset",&host,parent,folder,file);
     if(!ShellBrowserHostTestAccess::ListIconVisible(host))
         return Fail("roomier list rows retain real Shell icons at their original physical size",&host,parent,folder,file);
+    if(!ShellBrowserHostTestAccess::EmptyPrivateSlotVisible(host))
+        return Fail("List first paint must show an icon even when private slots have no pixels",&host,parent,folder,file);
     if(!ShellBrowserHostTestAccess::TallImageRefresh(host))
         return Fail("a tall replacement Shell image list updates the icon source by identity",&host,parent,folder,file);
     if(!ShellBrowserHostTestAccess::InternalImageRefresh(host))
@@ -804,6 +824,8 @@ int main()
         return Fail("list/details repaint stays buffered after native style reset",&host,parent,folder,file);
     if(!ShellBrowserHostTestAccess::ListIconVisible(host))
         return Fail("non-compact details retain original Shell icons",&host,parent,folder,file);
+    if(!ShellBrowserHostTestAccess::EmptyPrivateSlotVisible(host))
+        return Fail("Details first paint must show an icon even when private slots have no pixels",&host,parent,folder,file);
     const auto spacer=ListView_GetImageList(ShellBrowserHostTestAccess::List(host),LVSIL_SMALL);
     host.SetViewMode(FVM_DETAILS);
     if(ListView_GetImageList(ShellBrowserHostTestAccess::List(host),LVSIL_SMALL)!=spacer)

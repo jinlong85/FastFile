@@ -257,6 +257,36 @@ struct ShellBrowserHostTestAccess {
         host.m_shellSmallImages = nullptr;
         if (host.m_listWindow) ListView_SetImageList(host.m_listWindow, nullptr, LVSIL_SMALL);
     }
+    static LRESULT CALLBACK PendingPrivateIcon(HWND window, UINT msg, WPARAM wp, LPARAM lp,
+        UINT_PTR, DWORD_PTR) {
+        if (msg == LVM_GETITEMW && lp) {
+            auto* item = reinterpret_cast<LVITEMW*>(lp);
+            if (item->mask & LVIF_IMAGE) { item->iImage = 0; return TRUE; }
+        }
+        return DefSubclassProc(window, msg, wp, lp);
+    }
+    static bool PendingIconUsesItemIdentity(ShellBrowserHost& host) {
+        IFolderView2* view = View(host);
+        if (!view) return false;
+        IShellItem* item = nullptr; PIDLIST_ABSOLUTE pidl = nullptr;
+        SHFILEINFO expected{};
+        const bool ready = SUCCEEDED(view->GetItem(0, IID_PPV_ARGS(&item))) && item
+            && SUCCEEDED(SHGetIDListFromObject(item, &pidl)) && pidl
+            && SHGetFileInfoW(reinterpret_cast<LPCWSTR>(pidl), 0, &expected, sizeof(expected),
+                SHGFI_PIDL | SHGFI_SYSICONINDEX | SHGFI_SMALLICON);
+        CoTaskMemFree(pidl); if (item) item->Release(); view->Release();
+        if (!ready || expected.iIcon == 0 || !host.m_listWindow) return false;
+        const auto savedImages = host.m_shellSmallImages;
+        const auto savedView = host.m_viewWindow;
+        host.m_shellSmallImages = nullptr;
+        host.m_viewWindow = nullptr;
+        const bool hooked = SetWindowSubclass(host.m_listWindow, PendingPrivateIcon, 0xF501, 0) != FALSE;
+        HIMAGELIST images = nullptr;
+        const int resolved = hooked ? host.ResolveItemIcon(0, &images) : -1;
+        if (hooked) RemoveWindowSubclass(host.m_listWindow, PendingPrivateIcon, 0xF501);
+        host.m_shellSmallImages = savedImages; host.m_viewWindow = savedView;
+        return resolved == expected.iIcon && images == host.GetSystemSmallImageList();
+    }
     static void Probe(ShellBrowserHost& host, int item) { host.m_probeItem = item; host.m_probeTick = 0; }
     static LONGLONG ProbeTick(ShellBrowserHost& host) { return host.m_probeTick; }
     static bool MediaAspectRatio(ShellBrowserHost& host,const std::wstring& path,int sourceW,int sourceH) {
@@ -4130,6 +4160,8 @@ struct MainWndRegressionAccess {
             const int img = ShellBrowserHostTestAccess::ResolveItemIcon(host, itm, &iml);
             check(img >= 0 && iml != nullptr, "Tiles->List switch resolves folder and file icons without F5");
         }
+        check(ShellBrowserHostTestAccess::PendingIconUsesItemIdentity(host),
+            "pending private image list resolves the actual Shell item, never system slot zero");
         if (GetFileAttributesW(L"D:\\Users\\JINLONG\\Documents") != INVALID_FILE_ATTRIBUTES) {
             window.NavigateToNow(L"D:\\Users\\JINLONG\\Documents", false); pump(500);
             window.SetViewMode(Mode::Tiles); pump(300);
@@ -4206,7 +4238,9 @@ struct MainWndRegressionAccess {
                   << ", requests " << c2.thumbRequests - c0.thumbRequests << ", coalesced " << c2.coalesced - c0.coalesced
                   << ", extractions " << c2.thumbExtractions - c0.thumbExtractions << ", cell invalidations "
                   << c2.itemInvalidations - c0.itemInvalidations << ", list paints " << c2.listPaints - c0.listPaints
-                  << " (full " << c2.fullPaints - c0.fullPaints << "), badge lookups " << c2.badgeResolves - c0.badgeResolves << '\n';
+                  << " (full " << c2.fullPaints - c0.fullPaints << "), badge lookups " << c2.badgeResolves - c0.badgeResolves
+                  << ", max queue/extract/delivery ms " << c2.maxThumbQueueMs << "/"
+                  << c2.maxThumbExtractionMs << "/" << c2.maxThumbDeliveryMs << '\n';
         check(c2.syncExtractions == c0.syncExtractions, "large-icon paint path never extracts thumbnails synchronously");
         check(c2.placeholders - c0.placeholders >= 10, "uncached cells paint a placeholder icon first");
         check(c2.thumbRequests - c0.thumbRequests >= 10, "uncached cells queue an async thumbnail request");
