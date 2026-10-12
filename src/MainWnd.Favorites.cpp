@@ -1032,8 +1032,7 @@ void CMainWnd::OnPinnedFavoriteClick(CControlUI* btn)
 
 void CMainWnd::OpenQuickAccessTab(const std::wstring& path)
 {
-    // Navigating from a shortcut must still sync the tree: the requirement is that the
-    // highlighted/expanded node always matches the folder on screen, whatever the entry point.
+    // Navigation updates visible-row highlighting while preserving manual tree expansion.
     AddTab(path, true);
 }
 

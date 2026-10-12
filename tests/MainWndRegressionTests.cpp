@@ -3015,6 +3015,7 @@ struct MainWndRegressionAccess {
             "photo tab icon is clipped to a 2 logical pixel rounded shape at 150 percent DPI");
         auto text=[&](const wchar_t* name) {return std::wstring(window.m_PaintManager.FindControl(name)->GetText().GetData());};
         check(text(L"preview_size")==L"0 个文件夹 · 3 个文件","unselected image folder reports its actual children");
+        window.RevealTreePath(folder);pump(); // explicit manual reveal for this viewport check
         auto* node=window.FindTreeNodeByPath(nullptr,folder);
         check(node && node->IsSelected() && node->IsVisible(),"image folder navigation expands GIRLS and selects nested Chinese leaf");
         if(node) {
@@ -3297,6 +3298,77 @@ struct MainWndRegressionAccess {
     }
     // Sequenced explicitly: operands of + have no evaluation order, and the command-bar check
     // must run before CheckUiPolish selects files.
+    static int CheckManualTreeNavigation(CMainWnd& window, const std::wstring& root) {
+        int failures = 0;
+        auto check = [&](bool ok, const char* name) { if (!ok) { ++failures; std::cerr << "FAIL " << name << '\n'; } };
+        auto pump = [] {
+            const auto until = GetTickCount64() + 300;
+            do { MSG message{}; while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                if (message.message != WM_QUIT) { TranslateMessage(&message); DispatchMessageW(&message); }
+            } Sleep(5); } while (GetTickCount64() < until);
+        };
+        const auto branch = root + L"\\ManualTree";
+        const auto child = branch + L"\\Child";
+        const auto leaf = child + L"\\Grandchild";
+        for (const auto& path : {branch, child, leaf}) CreateDirectoryW(path.c_str(), nullptr);
+        auto* startupRoot = window.FindTreeNodeByPath(nullptr, CMainWnd::kThisPcPath);
+        check(startupRoot && startupRoot->GetFolderButton()->IsSelected(),
+            "startup folder navigation leaves the tree collapsed");
+        window.InitDirectoryTree();
+        auto* treeRoot = window.FindTreeNodeByPath(nullptr, CMainWnd::kThisPcPath);
+        check(treeRoot && treeRoot->GetFolderButton()->IsSelected(), "navigation tree starts collapsed");
+        if (!treeRoot) return failures;
+        const int rows = window.m_pDirTree->GetCount();
+        auto unchanged = [&] {
+            check(treeRoot && treeRoot->GetFolderButton()->IsSelected()
+                && window.m_pDirTree->GetCount() == rows && window.m_treeRevealPath.empty(),
+                "folder navigation neither expands nor enumerates the tree");
+        };
+        window.NavigateToNow(leaf, true); pump(); unchanged();
+        window.OpenQuickAccessTab(child); pump(); unchanged();
+        window.OpenExternalPaths({leaf}, false); pump(); unchanged();
+        const bool reuseTabs = window.m_settings.reuseTabs;
+        window.m_settings.reuseTabs = false;
+        window.AddTab(leaf, true); const int leafTab = window.m_activeTab;
+        window.AddTab(child, true); const int childTab = window.m_activeTab;
+        window.ActivateTab(leafTab); pump(); unchanged();
+        window.ActivateTab(childTab); pump(); unchanged();
+        window.NavigateToNow(leaf, true); pump(); unchanged();
+        window.GoBack(); pump(); unchanged();
+        check(CMainWnd::PathEquals(window.m_currentPath, child), "history actually navigates back to the child folder");
+        window.GoForward(); pump(); unchanged();
+        check(CMainWnd::PathEquals(window.m_currentPath, leaf), "history actually navigates forward to the leaf folder");
+        window.m_settings.reuseTabs = reuseTabs;
+        // Build a manually opened branch using the same explicit gesture as Ctrl+Shift+E.
+        // The implementation of this gesture is exercised separately by shortcut tests.
+        treeRoot->GetFolderButton()->Selected(false); // same notification as clicking its arrow
+        check(!treeRoot->GetFolderButton()->IsSelected(), "manual root expansion remains available");
+        const int expandedRows = window.m_pDirTree->GetCount();
+        window.NavigateToNow(leaf, false); pump();
+        check(!treeRoot->GetFolderButton()->IsSelected() && window.m_pDirTree->GetCount() == expandedRows,
+            "navigation preserves a manually expanded branch without loading ancestors");
+        window.RevealTreePath(leaf); pump();
+        window.SyncTreeToPath(branch);
+        window.m_pDirTree->SetScrollPos({0, 0});
+        window.SyncTreeToPath(leaf);
+        check(window.m_pDirTree->GetScrollPos().cy == 0,
+            "navigation highlighting preserves the manually positioned tree viewport");
+        auto* leafNode = window.FindTreeNodeByPath(nullptr, leaf);
+        check(leafNode && leafNode->IsSelected(), "navigation can highlight an already manually revealed row");
+        auto* childNode = window.FindTreeNodeByPath(nullptr, child);
+        if (childNode && leafNode) {
+            childNode->GetFolderButton()->Selected(true);
+            window.NavigateToNow(leaf, false); pump();
+            check(childNode->GetFolderButton()->IsSelected() && !leafNode->IsVisible() && !leafNode->IsSelected(),
+                "navigation does not reopen a manually collapsed ancestor or select its hidden descendant");
+        } else check(false, "manual reveal loads the fixture's parent and leaf");
+        window.InitDirectoryTree();
+        window.NavigateToNow(CMainWnd::kThisPcPath, false); pump();
+        treeRoot = window.FindTreeNodeByPath(nullptr, CMainWnd::kThisPcPath);
+        check(treeRoot->GetFolderButton()->IsSelected(), "opening This PC does not expand its tree group");
+        return failures;
+    }
+
     static int RunUiPolish(CMainWnd& window, const std::wstring& root) {
         int failures=CheckUiMetrics(window);
         failures+=CheckCommandBarAlignment(window);
@@ -3848,7 +3920,7 @@ struct MainWndRegressionAccess {
                 "Computer item menu offers Windows' own properties");
             report(capture, "tree This PC menu");
         }
-        window.SyncTreeToPath(folder); pump(200);
+        window.RevealTreePath(folder); pump(200);
         if (CTreeNodeUI* folderNode = window.FindTreeNodeByPath(nullptr, folder)) {
             RawShellMenu raw; Capture capture;
             const UINT flags = CMainWnd::ShellItemMenuFlags(false, true);
@@ -4494,8 +4566,9 @@ struct MainWndRegressionAccess {
             check(search->GetFixedWidth() == UiTokens::SearchBoxWidthFor(rowW, window.DpiScale(UiTokens::SearchBoxMinW),
                 window.DpiScale(UiTokens::SearchBoxMaxW)), "search width follows clamp(240, 30 percent of row, 435)");
         }
+        window.RevealTreePath(fixture); pump();
         auto* node = window.FindTreeNodeByPath(nullptr, fixture);
-        check(node && node->IsVisible() && node->IsSelected(), "navigate must expand and select nested tree target");
+        check(node && node->IsVisible() && node->IsSelected(), "explicit tree reveal expands and selects nested target");
         window.m_PaintManager.GetRoot()->SetPos({0, 0, 1180, 740}, false);
         if (node) {
             RECT viewBounds = window.m_pDirTree->GetList()->GetPos(), nodeBounds = node->GetPos();
@@ -4810,6 +4883,8 @@ int main(int argc, char** argv) {
         ? MainWndRegressionAccess::CheckAsyncThumbs(*window, root)
         : argc>1 && strcmp(argv[1],"--ui-polish-only")==0
         ? MainWndRegressionAccess::RunUiPolish(*window, root)
+        : argc>1 && strcmp(argv[1],"--tree-navigation-only")==0
+        ? MainWndRegressionAccess::CheckManualTreeNavigation(*window, root)
         : argc>1 && strcmp(argv[1],"--shortcuts-only")==0
         ? MainWndRegressionAccess::CheckShortcuts(*window, root)
         : argc>1 && strcmp(argv[1],"--integration-only")==0

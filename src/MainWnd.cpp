@@ -1270,7 +1270,7 @@ LRESULT CMainWnd::TranslateAccelerator(MSG* message)
         SendMessage(WM_SYSCOMMAND, IsZoomed(m_hWnd) ? SC_RESTORE : SC_MAXIMIZE, 0); return S_OK;
     }
     if (ctrl && shift && !alt && key == 'E') {
-        SyncTreeToPath(m_currentPath); if (m_pDirTree) m_pDirTree->SetFocus(); return S_OK;
+        RevealTreePath(m_currentPath); if (m_pDirTree) m_pDirTree->SetFocus(); return S_OK;
     }
     if (!alt && ((ctrl && key == 'R') || key == VK_F5)) { RefreshListing(); return S_OK; }
     if (!ctrl && alt && (key == VK_LEFT || key == VK_RIGHT || key == VK_UP)) {

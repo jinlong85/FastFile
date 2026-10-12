@@ -1,8 +1,16 @@
 # FastFile — 交接说明（给后续 AI / 开发者）
 
-更新日期：2026-10-12（Asia/Shanghai）
+更新日期：2026-10-13（Asia/Shanghai）
 
-## 已发行 1.0.27（2026-10-12，最新状态）
+## 1.0.28 目录树手动展开候选（2026-10-13）
+
+用户要求左侧目录树只在手动操作时展开。SyncTreeToPath 改为仅选择已存在且可见的节点，不枚举、插入或展开父目录，恢复 DuiLib 隐式 EnsureVisible 改动的滚动位置。InitDirectoryTree 默认折叠“此电脑”组，箭头通知仍可手动展开；旧的路径展开逻辑移至 RevealTreePath，仅由 Ctrl+Shift+E 显式手动调用。
+
+新增 FastFileTreeNavigationTests，覆盖启动折叠、直接/快捷/外部打开、历史导航、手动展开、选中可见节点、滚动位置和手动折叠父目录。旧版专项 7 个断言失败（build-ui/manual-tree-before-test.log）；第一轮候选专项及 UiPolish 通过。已有依赖自动展开的 viewport/menu 测试改为显式手动定位；快捷键测试继续覆盖实际 Ctrl+Shift+E。
+
+本机第一轮综合测试出现此前已有的 4 个原生撤销/重做失败（build-ui/manual-tree-tests.log），不宣称本机全量通过。该组失败在 1.0.27 修复前也出现过；本次未更改文件操作实现。1.0.28 Release x64 构建、安装包三文件和静态运行库检查通过；TreeNavigation / UiPolish / ViewSwitch / ShellActivation / Integration / SourceParity / Version 七项相关检查全通过（74.69秒，build-ui/manual-tree-1.0.28-tests.log），新增启动及标签切换断言后的 TreeNavigation 再验证通过。GitHub 全量结果待记录。
+
+## 已发行 1.0.27（2026-10-12）
 
 - 发布地址：https://github.com/jinlong85/FastFile/releases/tag/v1.0.27（预发布）。标签指向已验证的 d8734644165cd12d894deefd6ba4c41f0615c1e7。
 - 最终修复在 ShellWindowRegistration 的注册与导航中获取 Shell 文件夹对象的位置 PIDL，并补齐注册后的 OnNavigate。失败运行中相同路径存在 561/521 字节两种 PIDL 表示；最终回归的直接目录、绝对文件及转发请求都确认选择完成。不得把此前仅补通知或更换 Server 环境的尝试视为完整修复。

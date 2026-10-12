@@ -25,7 +25,12 @@ void CMainWnd::InitDirectoryTree()
                 AttachPendingChild(driveNode);
         }
     }
-    ExpandTreeNode(root, false);
+    if (auto* folder = root->GetFolderButton()) {
+        folder->Selected(true);
+        folder->SetText(_T("\xE76C"));
+        folder->OnNotify += MakeDelegate(this, &CMainWnd::OnTreeFolderNotify);
+    }
+    m_pDirTree->SetItemExpand(false, root);
 }
 
 void CMainWnd::StyleTreeNode(CTreeNodeUI* node, const std::wstring& title, bool hasChildrenHint)
@@ -352,6 +357,29 @@ CTreeNodeUI* CMainWnd::FindTreeNodeByPath(CTreeNodeUI* parent, const std::wstrin
 }
 
 void CMainWnd::SyncTreeToPath(const std::wstring& path)
+{
+    if (!m_pDirTree || m_syncingTree) return;
+    m_syncingTree = true;
+    m_treeRevealPath.clear();
+    const SIZE scroll = m_pDirTree->GetScrollPos();
+    for (int i = 0; i < m_pDirTree->GetCount(); ++i) {
+        if (auto* row = static_cast<CTreeNodeUI*>(m_pDirTree->GetItemAt(i)->GetInterface(DUI_CTR_TREENODE)))
+            row->Select(false, false);
+    }
+    // Navigation may highlight an already visible row, but only explicit user
+    // gestures may expand branches, enumerate ancestors, or scroll the tree.
+    if (!IsThisPcPath(path) && !IsQuickAccessPinned(path)) {
+        auto* node = FindTreeNodeByPath(nullptr, path);
+        if (node && node->IsVisible()) node->Select(true, false);
+    }
+    // DuiLib selection implicitly calls EnsureVisible even without notifications.
+    // Keep navigation from moving the manually positioned tree viewport.
+    const SIZE after = m_pDirTree->GetScrollPos();
+    if (after.cx != scroll.cx || after.cy != scroll.cy) m_pDirTree->SetScrollPos(scroll);
+    m_syncingTree = false;
+}
+
+void CMainWnd::RevealTreePath(const std::wstring& path)
 {
     if (!m_pDirTree || m_syncingTree) return;
     m_syncingTree = true;

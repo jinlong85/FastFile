@@ -340,6 +340,7 @@ private:
     void ExpandTreeNode(CTreeNodeUI* node, bool navigate);
     void EnsureTreeChildren(CTreeNodeUI* node);
     void SyncTreeToPath(const std::wstring& path);
+    void RevealTreePath(const std::wstring& path); // explicit Ctrl+Shift+E only
     void RevealSyncedTreeNode();
     CTreeNodeUI* FindTreeNodeByPath(CTreeNodeUI* parent, const std::wstring& path) const;
     CTreeNodeUI* AddTreeFolderNode(CTreeNodeUI* parent, const std::wstring& path, const std::wstring& title);
