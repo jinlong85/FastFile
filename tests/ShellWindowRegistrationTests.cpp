@@ -29,6 +29,15 @@
 namespace {
 
 int g_failures = 0;
+LRESULT CALLBACK TestWindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp)
+{
+    if (message == WM_COPYDATA) {
+        auto* data = reinterpret_cast<const COPYDATASTRUCT*>(lp);
+        std::cerr << "Shell window COPYDATA type=" << (data ? data->dwData : 0)
+            << " bytes=" << (data ? data->cbData : 0) << '\n';
+    }
+    return DefWindowProcW(window, message, wp, lp);
+}
 void Check(bool value, const char* name)
 {
     if (!value) { ++g_failures; std::cerr << "FAIL " << name << "\n"; }
@@ -172,7 +181,7 @@ IShellView* ActiveShellView(const std::wstring& folder, IWebBrowser2** navigatio
 }
 
 int ShowInFolder(const wchar_t* folderPath, const wchar_t* filePath, const wchar_t* resultPath,
-    bool singleAbsolute = false, bool multithreaded = false)
+    bool singleAbsolute = false, bool multithreaded = false, const wchar_t* completionEvent = nullptr)
 {
     const HRESULT com = CoInitializeEx(nullptr, multithreaded ? COINIT_MULTITHREADED : COINIT_APARTMENTTHREADED);
     if (FAILED(com)) return 2;
@@ -183,11 +192,25 @@ int ShowInFolder(const wchar_t* folderPath, const wchar_t* filePath, const wchar
     const HRESULT hr = folder && child ? (singleAbsolute ? SHOpenFolderAndSelectItems(file, 0, nullptr, 0)
         : SHOpenFolderAndSelectItems(folder, 1, &child, 0)) : E_FAIL;
     const DWORD ms = GetTickCount() - start;
+    {
+        std::wofstream out(resultPath);
+        out << static_cast<unsigned long>(hr) << L" " << ms << L"\n";
+    }
+    // A real caller (browser/download client) remains alive after the API returns.
+    // Keep its COM apartment and input PIDLs alive until the receiving window
+    // observes the selection, rather than cancelling queued work on process exit.
+    HANDLE completed = completionEvent ? OpenEventW(SYNCHRONIZE, FALSE, completionEvent) : nullptr;
+    if (completed) {
+        const ULONGLONG deadline = GetTickCount64() + 5000;
+        while (WaitForSingleObject(completed, 0) == WAIT_TIMEOUT && GetTickCount64() < deadline) {
+            MsgWaitForMultipleObjects(1, &completed, FALSE, 25, QS_ALLINPUT);
+            Pump();
+        }
+        CloseHandle(completed);
+    }
     CoTaskMemFree(file);
     CoTaskMemFree(folder);
     CoUninitialize();
-    std::wofstream out(resultPath);
-    out << static_cast<unsigned long>(hr) << L" " << ms << L"\n";
     return 0;
 }
 
@@ -231,7 +254,7 @@ int wmain(int argc, wchar_t** argv)
     if (argc >= 5 && (wcscmp(argv[1], L"--show") == 0 || wcscmp(argv[1], L"--show-absolute") == 0
         || wcscmp(argv[1], L"--show-mta") == 0))
         return ShowInFolder(argv[2], argv[3], argv[4], wcscmp(argv[1], L"--show-absolute") == 0,
-            wcscmp(argv[1], L"--show-mta") == 0);
+            wcscmp(argv[1], L"--show-mta") == 0, argc >= 6 ? argv[5] : nullptr);
     const bool registerWindow = !(argc >= 2 && wcscmp(argv[1], L"--unregistered") == 0);
 
     OleInitialize(nullptr);
@@ -245,7 +268,7 @@ int wmain(int argc, wchar_t** argv)
     { std::ofstream(pick) << "x"; }
 
     WNDCLASSW wc{};
-    wc.lpfnWndProc = DefWindowProcW;
+    wc.lpfnWndProc = TestWindowProc;
     wc.hInstance = GetModuleHandleW(nullptr);
     wc.lpszClassName = L"FastFileShellWindowTest";
     RegisterClassW(&wc);
@@ -297,16 +320,20 @@ int wmain(int argc, wchar_t** argv)
         selected.clear();
         selectFlags = 0;
         const std::wstring resultFile = root + L"\\show-result.txt";
+        const auto eventName = L"Local\\FastFileShellSelection_" + std::to_wstring(GetCurrentProcessId())
+            + L"_" + std::to_wstring(requestSequence);
+        HANDLE completed = CreateEventW(nullptr, TRUE, FALSE, eventName.c_str());
+        Check(completed != nullptr, "selection completion event exists");
         DeleteFileW(resultFile.c_str());
         std::wstring command = L"\"" + ModulePath() + L"\" " + mode + L" \"" + folder + L"\" \""
-            + requested + L"\" \"" + resultFile + L"\"";
+            + requested + L"\" \"" + resultFile + L"\" \"" + eventName + L"\"";
         STARTUPINFOW startup{};
         startup.cb = sizeof(startup);
         PROCESS_INFORMATION process{};
         const bool started = CreateProcessW(nullptr, &command[0], nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
             nullptr, nullptr, &startup, &process) != FALSE;
         Check(started, "show-in-folder caller process starts");
-        if (!started) return;
+        if (!started) { if (completed) CloseHandle(completed); return; }
         CloseHandle(process.hThread);
         const DWORD deadline = GetTickCount() + 25000;
         bool forwarded=navigateFrom.empty();
@@ -316,6 +343,7 @@ int wmain(int argc, wchar_t** argv)
             // waits, rather than incorrectly assuming SHOpen itself navigates a fake
             // test browser that has no association launch command.
             if(!forwarded) { registerAt(folder);forwarded=true; }
+            if (completed && SamePath(selected, requested)) SetEvent(completed);
             Sleep(5);
         }
         if (WaitForSingleObject(process.hProcess, 0) == WAIT_TIMEOUT) {
@@ -327,6 +355,7 @@ int wmain(int argc, wchar_t** argv)
         GetExitCodeProcess(process.hProcess, &exitCode);
         Check(exitCode == 0, "show-in-folder caller exits successfully");
         CloseHandle(process.hProcess);
+        if (completed) CloseHandle(completed);
         HRESULT hr = E_PENDING;
         DWORD ms = 0;
         {
