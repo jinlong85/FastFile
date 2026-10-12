@@ -22,6 +22,7 @@ Releases target **Windows x64** and default to prerelease status. Check the rele
 1. Download `FastFile-Setup-<version>.exe` from the newest entry on the [release page](https://github.com/jinlong85/FastFile/releases). The source archives are not installers.
 2. Close the previous FastFile instance before updating, then run the installer. Installation is per user and does not require administrator privileges.
 3. Launch FastFile from the Start menu. Use the gear button to open settings.
+4. Version 1.0.23 and newer support updates through Settings → About FastFile → Check for updates (设置 → 关于 FastFile → 检查更新). The current prerelease is [1.0.27](https://github.com/jinlong85/FastFile/releases/tag/v1.0.27).
 
 Installation directory: `%LOCALAPPDATA%\Programs\FastFile`. Uninstall through Windows Settings → Apps. Personal settings in `%APPDATA%\FastFile` are retained.
 
@@ -29,9 +30,9 @@ Installer SHA-256 is supplied in the same release's `SHA256SUMS.txt` and release
 
 ## Folder integration
 
-Integration is disabled by default. Open Settings → System integration (`设置 → 系统集成`), select the desired folder and drive associations, and click `修复并应用接管` to apply or repair them. Click `检测接管状态` to inspect the effective handlers and executable paths.
+Integration is disabled by default. Open Settings → System integration (`设置 → 系统集成`), enable `默认使用 FastFile`, and save. This enables folder, drive, Computer, and background request handling together. Use `检测默认文件管理器…` to inspect the current state; disable the checkbox and save to restore previous handlers.
 
-For applications that launch Explorer directly, optionally enable `自动转交新打开的资源管理器文件夹`. Since 1.0.14, **FastFileAgent handles requests in the background**. Closing the main window exits the UI process; the agent launches it again when needed. A new Explorer window is closed only after FastFile confirms the destination folder and selected files; Explorer may briefly appear.
+Enabling `默认使用 FastFile` also forwards requests from applications that launch Explorer directly. Since 1.0.14, **FastFileAgent handles requests in the background**. Closing the main window exits the UI process; the agent launches it again when needed. A new Explorer window is closed only after FastFile confirms the destination folder and selected files; Explorer may briefly appear.
 
 Existing windows, other file managers, multiple tabs, virtual folders, busy windows, selections exceeding 256 items, and windows that cannot be verified are retained. This does not guarantee handling every application or system file picker. Use `恢复 Windows 打开方式`, then `保存`, to restore the previous associations.
 

@@ -2,7 +2,16 @@
 
 更新日期：2026-10-12（Asia/Shanghai）
 
-## Shell 选择修复（2026-10-12）
+## 已发行 1.0.27（2026-10-12，最新状态）
+
+- 发布地址：https://github.com/jinlong85/FastFile/releases/tag/v1.0.27（预发布）。标签指向已验证的 d8734644165cd12d894deefd6ba4c41f0615c1e7。
+- 最终修复在 ShellWindowRegistration 的注册与导航中获取 Shell 文件夹对象的位置 PIDL，并补齐注册后的 OnNavigate。失败运行中相同路径存在 561/521 字节两种 PIDL 表示；最终回归的直接目录、绝对文件及转发请求都确认选择完成。不得把此前仅补通知或更换 Server 环境的尝试视为完整修复。
+- GitHub Server 2025 / MSVC Release x64 运行 38248813774 成功，完整 14/14 启用 CTest 通过（202.12 秒），真实 Explorer 接管两项按原配置禁用；安装包内嵌三文件、版本、静态运行库及进程归属验证通过。
+- 公开安装包来自该次 GitHub Actions artifact，替换了未发布草稿的旧候选；SHA256 6C027AFE11382D140F13BA4726FEA0CD1534ABBBCD7DE66CA87FACF969F23CF3。
+- 使用 src/AutoUpdater.cpp 实际更新代码从本地 1.0.25 检测到 v1.0.27，并成功下载；下载哈希与 CI 产物一致（build-ui/CheckOnlineUpdate.exe）。未运行该安装器替换已安装版本。dist/FastFile-Setup-1.0.27.exe 已同步公开的 CI 安装包。
+- 用户真实文档目录视觉验收、缩略图性能改善及完整安装卸载/第三方应用菜单仍未完成，保留预发布状态。后续新增代码按发布规则递增 VERSION；下方是此前的诊断历史。
+
+## Shell 选择修复（2026-10-12，诊断历史）
 
 修复完整注册后漏掉的位置通知：无论 Register 是否复用 pending cookie，都通知 OnNavigate。通知失败保留已经成功注册的视图，避免隔离桌面的外部打开回归失效。真正的首次调用测试不在 API 前查询 Shell 或比较 PIDL，且要求选择在调用进程退出及诊断动作之前完成；增加先查询 Shell 的对照场景。
 

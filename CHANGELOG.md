@@ -2,11 +2,13 @@
 
 面向使用者的改动记录（开发细节 / 踩坑见 [HANDOFF.md](HANDOFF.md)）。
 版本号来自根目录 [VERSION](VERSION)，安装包产物在 `dist\FastFile-Setup-<版本>.exe`。
-当前 GitHub 发行版为 [**1.0.23（预发布）**](https://github.com/jinlong85/FastFile/releases/tag/v1.0.23)。1.0.27 为本次发布候选，须通过发布流程后才提供在线更新。
+当前 GitHub 发行版为 [**1.0.27（预发布）**](https://github.com/jinlong85/FastFile/releases/tag/v1.0.27)，安装包已发布并提供应用内在线更新。
 
 ## 2026-10-12
 
 ### 1.0.27
+
+- 注册和导航使用 Shell 文件夹对象提供的位置 PIDL，处理同一路径的不同标识表示。GitHub Server 2025 全部 14 项启用测试、安装包及运行库检查通过；两项真实 Explorer 接管测试保持禁用。
 
 - 补齐 Shell 窗口完成注册后的目录位置通知，修复外部程序首次请求定位文件时未收到选择回调的问题；增加不依赖诊断预热的跨进程回归。
 
