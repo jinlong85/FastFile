@@ -217,6 +217,16 @@ int ShowInFolder(const wchar_t* folderPath, const wchar_t* filePath, const wchar
     PIDLIST_ABSOLUTE parent = file ? ILCloneFull(file) : nullptr;
     if (parent) ILRemoveLastID(parent);
     const bool parentMatches = parent && folder && ILIsEqual(parent, folder);
+    {
+        std::wofstream details(std::wstring(resultPath) + L".pidl.txt");
+        for (auto item : {folder, parent, file}) {
+            PWSTR name = nullptr;
+            const HRESULT nameHr = item ? SHGetNameFromIDList(item, SIGDN_DESKTOPABSOLUTEPARSING, &name) : E_FAIL;
+            details << L"pidl bytes=" << (item ? ILGetSize(item) : 0) << L" nameHr=" << nameHr
+                << L" path=" << (name ? name : L"missing") << L"\n";
+            CoTaskMemFree(name);
+        }
+    }
     CoTaskMemFree(parent);
     {
         std::wofstream out(resultPath);
@@ -400,6 +410,13 @@ int wmain(int argc, wchar_t** argv)
         Check(ms < 5000, "show-in-folder completes quickly");
         Check(completionObserved == 1, "selection is observed before caller teardown and diagnostic queries");
         Check(SamePath(selected, requested), "the Shell asks the FastFile window to select the file");
+        {
+            std::wifstream details(resultFile + L".pidl.txt");
+            std::wstring line;
+            while (std::getline(details, line)) std::wcerr << L"  " << line << L"\n";
+            details.close();
+            DeleteFileW((resultFile + L".pidl.txt").c_str());
+        }
         DeleteFileW(requested.c_str());
     };
 
