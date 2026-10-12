@@ -194,6 +194,9 @@ int ShowInFolder(const wchar_t* folderPath, const wchar_t* filePath, const wchar
     PCUITEMID_CHILD child = file ? ILFindLastID(file) : nullptr;
     PIDLIST_ABSOLUTE parent = file ? ILCloneFull(file) : nullptr;
     if (parent) ILRemoveLastID(parent);
+    const bool parentMatches = parent && folder && ILIsEqual(parent, folder);
+    const HWND found = FoundWindow(folderPath);
+    const bool fileExists = GetFileAttributesW(filePath) != INVALID_FILE_ATTRIBUTES;
     std::cerr << "caller absolute=" << singleAbsolute << " parentMatches="
         << (parent && folder && ILIsEqual(parent, folder)) << " folderWindow=" << FoundWindow(folderPath)
         << " fileExists=" << (GetFileAttributesW(filePath) != INVALID_FILE_ATTRIBUTES) << '\n';
@@ -204,7 +207,8 @@ int ShowInFolder(const wchar_t* folderPath, const wchar_t* filePath, const wchar
     const DWORD ms = GetTickCount() - start;
     {
         std::wofstream out(resultPath);
-        out << static_cast<unsigned long>(hr) << L" " << ms << L"\n";
+        out << static_cast<unsigned long>(hr) << L" " << ms << L" " << parentMatches
+            << L" " << reinterpret_cast<ULONG_PTR>(found) << L" " << fileExists << L"\n";
     }
     // A real caller (browser/download client) remains alive after the API returns.
     // Keep its COM apartment and input PIDLs alive until the receiving window
@@ -368,10 +372,13 @@ int wmain(int argc, wchar_t** argv)
         if (completed) CloseHandle(completed);
         HRESULT hr = E_PENDING;
         DWORD ms = 0;
+        int inputParentMatches = -1, inputFileExists = -1;
+        ULONG_PTR inputWindow = 0;
         {
             std::wifstream in(resultFile);
             unsigned long value = 0;
             if (in >> value >> ms) hr = static_cast<HRESULT>(value);
+            in >> inputParentMatches >> inputWindow >> inputFileExists;
         }
         DeleteFileW(resultFile.c_str());
         // SHOpenFolderAndSelectItems may acknowledge before its cross-process
@@ -380,7 +387,9 @@ int wmain(int argc, wchar_t** argv)
         const DWORD selectionDeadline = GetTickCount() + 5000;
         while (selected.empty() && GetTickCount() < selectionDeadline) { Pump(); Sleep(25); }
         std::cerr << "  " << label << ": hr=0x" << std::hex << hr << std::dec << " ms=" << ms
-                  << " selectFlags=0x" << std::hex << selectFlags << std::dec << "\n";
+                  << " selectFlags=0x" << std::hex << selectFlags << std::dec
+                  << " parentMatches=" << inputParentMatches << " window=" << inputWindow
+                  << " fileExists=" << inputFileExists << "\n";
         Check(hr == S_OK, "show-in-folder succeeds instead of timing out (E_ABORT)");
         Check(ms < 5000, "show-in-folder completes quickly");
         Check(SamePath(selected, requested), "the Shell asks the FastFile window to select the file");
