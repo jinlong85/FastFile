@@ -185,7 +185,8 @@ IShellView* ActiveShellView(const std::wstring& folder, IWebBrowser2** navigatio
 }
 
 int ShowInFolder(const wchar_t* folderPath, const wchar_t* filePath, const wchar_t* resultPath,
-    bool singleAbsolute = false, bool multithreaded = false, const wchar_t* completionEvent = nullptr)
+    bool singleAbsolute = false, bool multithreaded = false, const wchar_t* completionEvent = nullptr,
+    bool warmLookup = false)
 {
     const HRESULT com = CoInitializeEx(nullptr, multithreaded ? COINIT_MULTITHREADED : COINIT_APARTMENTTHREADED);
     if (FAILED(com)) return 2;
@@ -195,10 +196,10 @@ int ShowInFolder(const wchar_t* folderPath, const wchar_t* filePath, const wchar
     PIDLIST_ABSOLUTE parent = file ? ILCloneFull(file) : nullptr;
     if (parent) ILRemoveLastID(parent);
     const bool parentMatches = parent && folder && ILIsEqual(parent, folder);
-    const HWND found = FoundWindow(folderPath);
+    const HWND found = warmLookup ? FoundWindow(folderPath) : nullptr;
     const bool fileExists = GetFileAttributesW(filePath) != INVALID_FILE_ATTRIBUTES;
     std::cerr << "caller absolute=" << singleAbsolute << " parentMatches="
-        << (parent && folder && ILIsEqual(parent, folder)) << " folderWindow=" << FoundWindow(folderPath)
+        << parentMatches << " folderWindow=" << found
         << " fileExists=" << (GetFileAttributesW(filePath) != INVALID_FILE_ATTRIBUTES) << '\n';
     CoTaskMemFree(parent);
     const DWORD start = GetTickCount();
@@ -266,9 +267,11 @@ int wmain(int argc, wchar_t** argv)
         return g_failures ? 1 : 0;
     }
     if (argc >= 5 && (wcscmp(argv[1], L"--show") == 0 || wcscmp(argv[1], L"--show-absolute") == 0
-        || wcscmp(argv[1], L"--show-mta") == 0))
-        return ShowInFolder(argv[2], argv[3], argv[4], wcscmp(argv[1], L"--show-absolute") == 0,
-            wcscmp(argv[1], L"--show-mta") == 0, argc >= 6 ? argv[5] : nullptr);
+        || wcscmp(argv[1], L"--show-mta") == 0 || wcscmp(argv[1], L"--show-warm-absolute") == 0))
+        return ShowInFolder(argv[2], argv[3], argv[4], wcscmp(argv[1], L"--show-absolute") == 0
+            || wcscmp(argv[1], L"--show-warm-absolute") == 0,
+            wcscmp(argv[1], L"--show-mta") == 0, argc >= 6 ? argv[5] : nullptr,
+            wcscmp(argv[1], L"--show-warm-absolute") == 0);
     const bool registerWindow = !(argc >= 2 && wcscmp(argv[1], L"--unregistered") == 0);
 
     OleInitialize(nullptr);
@@ -401,6 +404,7 @@ int wmain(int argc, wchar_t** argv)
     registerAt(second);
     showInFolder("window at folder", second);
     showInFolder("single absolute item", second, L"--show-absolute");
+    showInFolder("absolute item after Shell lookup", second, L"--show-warm-absolute");
     showInFolder("MTA caller", second, L"--show-mta");
     registerAt(first);
     IWebBrowser2* navigation=nullptr;
