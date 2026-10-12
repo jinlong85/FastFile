@@ -4,7 +4,7 @@ GitHub Actions 的 [Release 流程](https://github.com/jinlong85/FastFile/action
 
 1. 更新根目录 VERSION，使用 `x.y.z`；在 CHANGELOG.md 添加对应 `### x.y.z` 记录。
 2. 按 HANDOFF.md 完成适用的本地界面、文件操作、Shell 和安装验证，再提交并推送 main。
-3. Windows Server 2025 runner 使用 MSVC 配置 Release x64（当前托管镜像为 Visual Studio 2026），构建并执行全部 CTest；任一步失败都不会发行。
+3. Windows Server 2022 runner 使用 Visual Studio 2022 配置 Release x64，构建并执行全部 CTest；任一步失败都不会发行。
 4. 使用静态 C++ 运行库构建，检查界面与代理不依赖外部 MSVC DLL；生成安装包，核对嵌入版本、文件哈希及安装器进程归属，再生成 SHA256SUMS.txt 和中文发行说明。
 5. 创建指向该次构建提交的 `v<版本>` 标签和预发布 Release，上传安装包与校验文件。测试成功不能代替第三方应用菜单、安装／卸载及现场视觉验收，默认保留预发布状态。
 
@@ -22,3 +22,5 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/PrepareRelease.ps1
 第二条命令要求 dist 下已存在与 VERSION 相同的安装包。准备脚本不执行安装器。
 
 托管 runner 使用 RUNNER_TEMP 下的长路径作为 TEMP／TMP，避免 8.3 临时路径与 Shell 返回的规范路径不一致；统一测试夹具的扩展名显示，并检查 Explorer 桌面和文件窗口 Shell 初始化完成。环境准备只修改一次性 runner，不修改用户电脑。运行库检查优先使用 CMake 实际选择的编译器旁的 dumpbin，避免新 Visual Studio 的安装查询信息不兼容。编译日志和 CTest 日志无论成功失败均上传为 Verification-Logs artifact。
+
+Windows Server 2025 的两次托管验证中，绝对文件 PIDL 请求返回 S_OK，但未触发预期选择回调；本机同一跨进程套件通过。当前选择 Windows Server 2022 / Visual Studio 2022 作为发行环境，保留完整测试及断言。Server 2025 的该行为仍未解决，不宣称跨系统验证通过。
