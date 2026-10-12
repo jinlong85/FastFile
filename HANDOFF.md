@@ -8,7 +8,7 @@
 
 新增 FastFileTreeNavigationTests，覆盖启动折叠、直接/快捷/外部打开、历史导航、手动展开、选中可见节点、滚动位置和手动折叠父目录。旧版专项 7 个断言失败（build-ui/manual-tree-before-test.log）；第一轮候选专项及 UiPolish 通过。已有依赖自动展开的 viewport/menu 测试改为显式手动定位；快捷键测试继续覆盖实际 Ctrl+Shift+E。
 
-本机第一轮综合测试出现此前已有的 4 个原生撤销/重做失败（build-ui/manual-tree-tests.log），不宣称本机全量通过。该组失败在 1.0.27 修复前也出现过；本次未更改文件操作实现。1.0.28 Release x64 构建、安装包三文件和静态运行库检查通过；TreeNavigation / UiPolish / ViewSwitch / ShellActivation / Integration / SourceParity / Version 七项相关检查全通过（74.69秒，build-ui/manual-tree-1.0.28-tests.log），新增启动及标签切换断言后的 TreeNavigation 再验证通过。GitHub 全量结果待记录。
+本机第一轮综合测试出现此前已有的 4 个原生撤销/重做失败（build-ui/manual-tree-tests.log），不宣称本机全量通过。该组失败在 1.0.27 修复前也出现过；本次未更改文件操作实现。1.0.28 Release x64 构建、安装包三文件和静态运行库检查通过；TreeNavigation / UiPolish / ViewSwitch / ShellActivation / Integration / SourceParity / Version 七项相关检查全通过（74.69秒，build-ui/manual-tree-1.0.28-tests.log），新增启动及标签切换断言后的 TreeNavigation 再验证通过。GitHub 运行 38282986993 在工作盘 D:\a\_temp 的旧 Shell 选择测试复现 PIDL 561/521 差异，未进入全量阶段；原临时盘问题仍未完全解决，不能把 1.0.27 的一次通过视为全部平台均已修复。将 CI 夹具统一到 Windows 用户 LOCALAPPDATA\Temp 长路径，记录 C/D 文件系统，保留全部选择断言；该盘差异不作为已修复报告。GitHub 新全量结果待记录。
 
 ## 已发行 1.0.27（2026-10-12）
 

@@ -21,8 +21,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/PrepareRelease.ps1
 
 第二条命令要求 dist 下已存在与 VERSION 相同的安装包。准备脚本不执行安装器。
 
-托管 runner 使用 RUNNER_TEMP 下的长路径作为 TEMP／TMP，避免 8.3 临时路径与 Shell 返回的规范路径不一致；统一测试夹具的扩展名显示，并检查 Explorer 桌面和文件窗口 Shell 初始化完成。环境准备只修改一次性 runner，不修改用户电脑。运行库检查优先使用 CMake 实际选择的编译器旁的 dumpbin，避免新 Visual Studio 的安装查询信息不兼容。编译日志和 CTest 日志无论成功失败均上传为 Verification-Logs artifact。
+托管 runner 使用 LOCALAPPDATA\\Temp 下的长路径作为 TEMP／TMP，避免 8.3 临时路径与 Shell 返回的规范路径不一致；统一测试夹具的扩展名显示，并检查 Explorer 桌面和文件窗口 Shell 初始化完成。环境准备只修改一次性 runner，不修改用户电脑。运行库检查优先使用 CMake 实际选择的编译器旁的 dumpbin，避免新 Visual Studio 的安装查询信息不兼容。编译日志和 CTest 日志无论成功失败均上传为 Verification-Logs artifact。
 
 2026-10-12 的 1.0.27 已通过 Server 2025 的完整 14 项启用测试及安装包检查（运行 38248813774）。注册/导航使用 Shell 文件夹对象的位置 PIDL，并补齐 OnNavigate；首次调用测试不在请求前查询 Shell 或比较 PIDL，要求选择在调用方退出和诊断前完成。真实 Explorer 接管两项仍按原配置禁用，不能据此声称现场接管或卸载验证完成。
 
 本次发行先替换未公开草稿中旧候选的安装包，再使用成功运行的 artifact 与校验文件公开为预发布。公开标签指向验证提交 d8734644165cd12d894deefd6ba4c41f0615c1e7；已公开的版本及资产不覆盖。
+
+1.0.28 起，桌面 Shell 测试统一使用 Windows 用户的标准临时目录，并记录 C/D 文件系统信息。工作盘 D:\\a\\_temp 上仍观察到同一路径的 PIDL 差异及绝对文件选择失败；这是尚未解决的兼容性问题，不能把标准临时目录下的通过结果扩大为工作盘已验证。所有测试和断言保持启用，真实 Explorer 接管两项沿用原有禁用配置。

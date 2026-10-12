@@ -28,11 +28,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Use long temporary paths for native Shell tests
         run: |
-          $testTemp = Join-Path $env:RUNNER_TEMP 'FastFileTests'
+          # Use the Windows user's normal temporary directory for desktop Shell
+          # fixtures, instead of the runner's separate work-volume namespace.
+          $testTemp = Join-Path $env:LOCALAPPDATA 'Temp\FastFileTests'
           New-Item -ItemType Directory -Force -Path $testTemp | Out-Null
           "TEMP=$testTemp" >> $env:GITHUB_ENV
           "TMP=$testTemp" >> $env:GITHUB_ENV
           Write-Host "Native Shell fixtures: $testTemp"
+          Get-Volume -DriveLetter C,D -ErrorAction SilentlyContinue | Select-Object DriveLetter,FileSystem,FileSystemLabel | Format-Table
           # ReadProperties tests expect the fixture's full display name. This
           # changes only the disposable runner profile, never the user's PC.
           $advanced = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
