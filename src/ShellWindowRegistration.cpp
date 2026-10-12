@@ -386,6 +386,28 @@ HRESULT LocationVariant(PCIDLIST_ABSOLUTE location, VARIANT* value)
     return InitVariantFromBuffer(location, ILGetSize(location), value);
 }
 
+PIDLIST_ABSOLUTE FolderLocation(PCIDLIST_ABSOLUTE location)
+{
+    // A parsed directory and the parent embedded in a file PIDL can have
+    // different representations. Use the folder object's own location, just as
+    // a native Shell view does, instead of registering a parsing-only alias.
+    PIDLIST_ABSOLUTE canonical = nullptr;
+    IShellFolder* folder = nullptr;
+    if (SUCCEEDED(SHBindToObject(nullptr, location, nullptr, IID_PPV_ARGS(&folder))) && folder) {
+        IPersistFolder2* persisted = nullptr;
+        if (SUCCEEDED(folder->QueryInterface(IID_PPV_ARGS(&persisted)))) {
+            persisted->GetCurFolder(&canonical);
+            persisted->Release();
+        }
+        folder->Release();
+    }
+    wchar_t detail[96]{};
+    swprintf_s(detail, L"FolderLocation parsed=%u canonical=%u", ILGetSize(location),
+        canonical ? ILGetSize(canonical) : 0);
+    Trace(detail);
+    return canonical ? canonical : ILCloneFull(location);
+}
+
 } // namespace
 
 ShellWindowRegistration::~ShellWindowRegistration()
@@ -405,7 +427,7 @@ HRESULT ShellWindowRegistration::Register(HWND window, PCIDLIST_ABSOLUTE locatio
     // state: the caller may already hold its view between QueryActiveShellView and
     // SelectItem. Only an actual window close may invalidate those outstanding views.
     auto state = m_state ? m_state : std::make_shared<State>();
-    PIDLIST_ABSOLUTE nextLocation=ILCloneFull(location);
+    PIDLIST_ABSOLUTE nextLocation=FolderLocation(location);
     if(!nextLocation){windows->Release();return E_OUTOFMEMORY;}
     if(m_registered && m_windows) {
         m_windows->Revoke(m_cookie);m_windows->Release();
@@ -419,7 +441,7 @@ HRESULT ShellWindowRegistration::Register(HWND window, PCIDLIST_ABSOLUTE locatio
     if (!state->location) { windows->Release(); return E_OUTOFMEMORY; }
 
     VARIANT where{}, root{};
-    hr = LocationVariant(location, &where);
+    hr = LocationVariant(state->location, &where);
     VariantInit(&root);
     long pendingCookie = 0;
     // The Shell searches SWC_BROWSER windows. RegisterPending supplies the location
@@ -452,7 +474,7 @@ HRESULT ShellWindowRegistration::Register(HWND window, PCIDLIST_ABSOLUTE locatio
     // Publish the current location for every completed window, including when
     // Register reused RegisterPending's cookie, so cold clients can discover it.
     VARIANT current{};
-    hr = LocationVariant(location, &current);
+    hr = LocationVariant(state->location, &current);
     if (SUCCEEDED(hr)) hr = windows->OnNavigate(cookie, &current);
     VariantClear(&current);
     if (FAILED(hr)) {
@@ -472,12 +494,12 @@ HRESULT ShellWindowRegistration::Register(HWND window, PCIDLIST_ABSOLUTE locatio
 HRESULT ShellWindowRegistration::Navigate(PCIDLIST_ABSOLUTE location)
 {
     if (!m_registered || !m_windows || !location) return E_UNEXPECTED;
-    PIDLIST_ABSOLUTE copy = ILCloneFull(location);
+    PIDLIST_ABSOLUTE copy = FolderLocation(location);
     if (!copy) return E_OUTOFMEMORY;
     if (m_state->location) CoTaskMemFree(m_state->location);
     m_state->location = copy;
     VARIANT where{};
-    HRESULT hr = LocationVariant(location, &where);
+    HRESULT hr = LocationVariant(m_state->location, &where);
     if (SUCCEEDED(hr)) hr = m_windows->OnNavigate(m_cookie, &where);
     VariantClear(&where);
     return hr;
