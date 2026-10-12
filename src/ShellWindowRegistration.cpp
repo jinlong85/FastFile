@@ -447,9 +447,20 @@ HRESULT ShellWindowRegistration::Register(HWND window, PCIDLIST_ABSOLUTE locatio
         // created a separate entry, give it the location and drop the orphan.
         windows->Revoke(pendingCookie);
         pendingCookie = 0;
-        VARIANT again{};
-        if (SUCCEEDED(LocationVariant(location, &again))) windows->OnNavigate(cookie, &again);
-        VariantClear(&again);
+    }
+    // Completing a pending cookie does not replace the navigation notification.
+    // Publish the current location for every completed window, including when
+    // Register reused RegisterPending's cookie, so cold clients can discover it.
+    VARIANT current{};
+    hr = LocationVariant(location, &current);
+    if (SUCCEEDED(hr)) hr = windows->OnNavigate(cookie, &current);
+    VariantClear(&current);
+    if (FAILED(hr)) {
+        // The advisory notification is unsupported on some isolated desktops;
+        // keep the successful registration instead of losing its working view.
+        wchar_t detail[96]{};
+        swprintf_s(detail, L"Register::OnNavigate cookie=%ld hr=0x%08X", cookie, static_cast<unsigned>(hr));
+        Trace(detail);
     }
     m_windows = windows;
     m_cookie = cookie;

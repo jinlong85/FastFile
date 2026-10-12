@@ -193,35 +193,36 @@ int ShowInFolder(const wchar_t* folderPath, const wchar_t* filePath, const wchar
     PIDLIST_ABSOLUTE folder = Parse(folderPath);
     PIDLIST_ABSOLUTE file = Parse(filePath);
     PCUITEMID_CHILD child = file ? ILFindLastID(file) : nullptr;
-    PIDLIST_ABSOLUTE parent = file ? ILCloneFull(file) : nullptr;
-    if (parent) ILRemoveLastID(parent);
-    const bool parentMatches = parent && folder && ILIsEqual(parent, folder);
     const HWND found = warmLookup ? FoundWindow(folderPath) : nullptr;
-    const bool fileExists = GetFileAttributesW(filePath) != INVALID_FILE_ATTRIBUTES;
-    std::cerr << "caller absolute=" << singleAbsolute << " parentMatches="
-        << parentMatches << " folderWindow=" << found
-        << " fileExists=" << (GetFileAttributesW(filePath) != INVALID_FILE_ATTRIBUTES) << '\n';
-    CoTaskMemFree(parent);
     const DWORD start = GetTickCount();
     const HRESULT hr = folder && child ? (singleAbsolute ? SHOpenFolderAndSelectItems(file, 0, nullptr, 0)
         : SHOpenFolderAndSelectItems(folder, 1, &child, 0)) : E_FAIL;
     const DWORD ms = GetTickCount() - start;
-    {
-        std::wofstream out(resultPath);
-        out << static_cast<unsigned long>(hr) << L" " << ms << L" " << parentMatches
-            << L" " << reinterpret_cast<ULONG_PTR>(found) << L" " << fileExists << L"\n";
-    }
     // A real caller (browser/download client) remains alive after the API returns.
     // Keep its COM apartment and input PIDLs alive until the receiving window
     // observes the selection, rather than cancelling queued work on process exit.
     HANDLE completed = completionEvent ? OpenEventW(SYNCHRONIZE, FALSE, completionEvent) : nullptr;
+    bool observed = !completionEvent;
     if (completed) {
         const ULONGLONG deadline = GetTickCount64() + 5000;
         while (WaitForSingleObject(completed, 0) == WAIT_TIMEOUT && GetTickCount64() < deadline) {
             MsgWaitForMultipleObjects(1, &completed, FALSE, 25, QS_ALLINPUT);
             Pump();
         }
+        observed = WaitForSingleObject(completed, 0) == WAIT_OBJECT_0;
         CloseHandle(completed);
+    }
+    // Do not query Shell windows or compare PIDLs before a cold request: those
+    // diagnostics initialize Shell state and can change the behavior under test.
+    PIDLIST_ABSOLUTE parent = file ? ILCloneFull(file) : nullptr;
+    if (parent) ILRemoveLastID(parent);
+    const bool parentMatches = parent && folder && ILIsEqual(parent, folder);
+    CoTaskMemFree(parent);
+    {
+        std::wofstream out(resultPath);
+        out << static_cast<unsigned long>(hr) << L" " << ms << L" " << parentMatches
+            << L" " << reinterpret_cast<ULONG_PTR>(found) << L" "
+            << (GetFileAttributesW(filePath) != INVALID_FILE_ATTRIBUTES) << L" " << observed << L"\n";
     }
     CoTaskMemFree(file);
     CoTaskMemFree(folder);
@@ -377,11 +378,13 @@ int wmain(int argc, wchar_t** argv)
         DWORD ms = 0;
         int inputParentMatches = -1, inputFileExists = -1;
         ULONG_PTR inputWindow = 0;
+        int completionObserved = 0;
         {
             std::wifstream in(resultFile);
             unsigned long value = 0;
             if (in >> value >> ms) hr = static_cast<HRESULT>(value);
             in >> inputParentMatches >> inputWindow >> inputFileExists;
+            in >> completionObserved;
         }
         DeleteFileW(resultFile.c_str());
         // SHOpenFolderAndSelectItems may acknowledge before its cross-process
@@ -392,9 +395,10 @@ int wmain(int argc, wchar_t** argv)
         std::cerr << "  " << label << ": hr=0x" << std::hex << hr << std::dec << " ms=" << ms
                   << " selectFlags=0x" << std::hex << selectFlags << std::dec
                   << " parentMatches=" << inputParentMatches << " window=" << inputWindow
-                  << " fileExists=" << inputFileExists << "\n";
+                  << " fileExists=" << inputFileExists << " completed=" << completionObserved << "\n";
         Check(hr == S_OK, "show-in-folder succeeds instead of timing out (E_ABORT)");
         Check(ms < 5000, "show-in-folder completes quickly");
+        Check(completionObserved == 1, "selection is observed before caller teardown and diagnostic queries");
         Check(SamePath(selected, requested), "the Shell asks the FastFile window to select the file");
         DeleteFileW(requested.c_str());
     };
