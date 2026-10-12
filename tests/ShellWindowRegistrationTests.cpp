@@ -273,6 +273,7 @@ int wmain(int argc, wchar_t** argv)
         Check(SUCCEEDED(hr), "window registers in the Shell window list");
         Check(registration.Cookie() == registration.PendingCookie(), "Register completes the pending entry");
     };
+    unsigned requestSequence = 0;
     auto showInFolder = [&](const char* label, const std::wstring& folder, const wchar_t* mode = L"--show",
         const std::wstring& navigateFrom = std::wstring()) {
         const auto& discoverAt=navigateFrom.empty()?folder:navigateFrom;
@@ -289,12 +290,16 @@ int wmain(int argc, wchar_t** argv)
         else { if(active)active->Release();return; }
         if (!active) return; // a broken service must not launch a fallback Explorer
         active->Release();
+        // Use a different selection for each request. Clearing the test callback's
+        // observation does not notify the Shell that its previous selection changed.
+        const std::wstring requested = folder + L"\\request-" + std::to_wstring(++requestSequence) + L".txt";
+        { std::ofstream(requested) << "x"; }
         selected.clear();
         selectFlags = 0;
         const std::wstring resultFile = root + L"\\show-result.txt";
         DeleteFileW(resultFile.c_str());
         std::wstring command = L"\"" + ModulePath() + L"\" " + mode + L" \"" + folder + L"\" \""
-            + pick + L"\" \"" + resultFile + L"\"";
+            + requested + L"\" \"" + resultFile + L"\"";
         STARTUPINFOW startup{};
         startup.cb = sizeof(startup);
         PROCESS_INFORMATION process{};
@@ -339,7 +344,8 @@ int wmain(int argc, wchar_t** argv)
                   << " selectFlags=0x" << std::hex << selectFlags << std::dec << "\n";
         Check(hr == S_OK, "show-in-folder succeeds instead of timing out (E_ABORT)");
         Check(ms < 5000, "show-in-folder completes quickly");
-        Check(SamePath(selected, pick), "the Shell asks the FastFile window to select the file");
+        Check(SamePath(selected, requested), "the Shell asks the FastFile window to select the file");
+        DeleteFileW(requested.c_str());
     };
 
     // 1. Window shows the folder: another process's show-in-folder request is handed to

@@ -1787,3 +1787,7 @@ dumpbin /DISASM /NOBYTES build\Release\FastFile.exe > disasm.txt
 
 ---
 本文档由 FastFile 开发助手生成，便于换 AI 继续开发时粘贴或直接打开。
+
+### 跨进程选择夹具诊断
+
+两个 Server 镜像都出现同一文件重复请求未回调的现象。夹具改为每次请求不同文件，排除人为清空观察变量却未通知 Shell 改变选择状态的影响。仍保留绝对 PIDL、STA/MTA、冷目录转发、具体选中文件和响应时间断言，未把成功 HRESULT 视为选择成功。
