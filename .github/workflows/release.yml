@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   release:
-    runs-on: windows-2022
+    runs-on: windows-2025
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
@@ -71,7 +71,7 @@ jobs:
         shell: powershell
         run: ./tests/CheckReleasePreparation.ps1
       - name: Configure Release x64
-        run: cmake -S . -B build-release -G "Visual Studio 17 2022" -A x64 -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+        run: cmake -S . -B build-release -A x64 -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
       - name: Build Shell registration preflight
         run: cmake --build build-release --config Release --target FastFileShellWindowTests --parallel 4
       - name: Check cross-process Shell registration
