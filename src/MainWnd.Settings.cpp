@@ -57,10 +57,13 @@ bool FastFileSettings::Save(const std::wstring& path) const {
 }
 
 namespace {
-enum { Startup=110,StartupPath,External,Reuse,ClosePrompt,Density,Font,TabHeight,FavHeight,TabWidth,Scrollbar,Backdrop,
+enum { Startup=110,StartupPath,External,Reuse,ClosePrompt,Density,Font,TabHeight,FavHeight,TabWidth,Scrollbar,
        View,Remember,Sort,Ascending,Grouping,Context,DefaultFolders,DefaultComputer,ExplorerTakeover,
        Browse=190,RestoreWindows,DetectIntegration,RepairIntegration,IntegrationDetails,ConfigureManager,
-       AboutSummary,AboutPath,AboutRefresh,AboutInstall,AboutLogs,AboutCopy,AboutProject,AboutChanges,AboutFeedback,AboutLicense,AboutResult,AboutCheckUpdate };
+       AboutSummary,AboutPath,AboutRefresh,AboutInstall,AboutLogs,AboutCopy,AboutProject,AboutChanges,AboutFeedback,AboutLicense,AboutResult,AboutCheckUpdate,
+       Backdrop=208 };
+static_assert(View==121 && DefaultFolders==127 && AboutCheckUpdate==207,
+    "New settings controls must preserve existing control IDs.");
 struct SettingsDialog {
     struct Control { HWND window;RECT bounds;int page; };
     FastFileSettings draft;std::function<bool(FastFileSettings)> save;

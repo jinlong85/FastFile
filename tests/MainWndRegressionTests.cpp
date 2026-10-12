@@ -1916,7 +1916,12 @@ struct MainWndRegressionAccess {
         // Tree / search-list rename (FastFile's edit box) is a Windows rename with a Windows
         // undo record, so the toolbar 撤销 / 重做 (native verbs) reverse it as well.
         const auto engineName = target + L"\\engine.txt";
-        check(window.RenameItem({copied, false}, L"engine.txt") && exists(engineName) && !exists(copied),
+        const bool renamed = window.RenameItem({copied, false}, L"engine.txt");
+        if (!renamed || !exists(engineName) || exists(copied)) {
+            std::wcerr << L"  rename diagnostic: copied=" << exists(copied) << L" inplace=" << exists(inplace)
+                << L" engine=" << exists(engineName) << L" status=" << window.m_pStatus->GetText().GetData() << L'\n';
+        }
+        check(renamed && exists(engineName) && !exists(copied),
             "tree / search rename runs IFileOperation::RenameItem");
         const bool renameUndo = systemUndo && window.NativeVerbAvailable(L"undo", CMainWnd::NativeScope::Background);
         check(renameUndo == systemUndo, "the IFileOperation rename and the view's rename share one undo history");
