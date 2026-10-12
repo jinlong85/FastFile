@@ -31,6 +31,10 @@ namespace {
 int g_failures = 0;
 LRESULT CALLBACK TestWindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp)
 {
+    if (message >= WM_USER) {
+        std::cerr << "Shell window message=0x" << std::hex << message << " wp=0x" << wp
+            << " lp=0x" << lp << std::dec << '\n';
+    }
     if (message == WM_COPYDATA) {
         auto* data = reinterpret_cast<const COPYDATASTRUCT*>(lp);
         std::cerr << "Shell window COPYDATA type=" << (data ? data->dwData : 0)
@@ -188,6 +192,12 @@ int ShowInFolder(const wchar_t* folderPath, const wchar_t* filePath, const wchar
     PIDLIST_ABSOLUTE folder = Parse(folderPath);
     PIDLIST_ABSOLUTE file = Parse(filePath);
     PCUITEMID_CHILD child = file ? ILFindLastID(file) : nullptr;
+    PIDLIST_ABSOLUTE parent = file ? ILCloneFull(file) : nullptr;
+    if (parent) ILRemoveLastID(parent);
+    std::cerr << "caller absolute=" << singleAbsolute << " parentMatches="
+        << (parent && folder && ILIsEqual(parent, folder)) << " folderWindow=" << FoundWindow(folderPath)
+        << " fileExists=" << (GetFileAttributesW(filePath) != INVALID_FILE_ATTRIBUTES) << '\n';
+    CoTaskMemFree(parent);
     const DWORD start = GetTickCount();
     const HRESULT hr = folder && child ? (singleAbsolute ? SHOpenFolderAndSelectItems(file, 0, nullptr, 0)
         : SHOpenFolderAndSelectItems(folder, 1, &child, 0)) : E_FAIL;
