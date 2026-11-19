@@ -2018,6 +2018,7 @@ struct MainWndRegressionAccess {
             check(window.m_lastNativeVerb.verb == L"undo" && window.m_lastNativeVerb.byOffset
                 && window.m_lastNativeVerb.scope == CMainWnd::NativeScope::Background && SUCCEEDED(window.m_lastNativeVerb.hr),
                 "撤销 invokes the native background undo verb");
+            waitFor([&] { return window.NativeVerbAvailable(L"redo", CMainWnd::NativeScope::Background); }, 3000);
             window.OnRedo();
             check(waitFor([&] { return exists(engineName) && !exists(copied); }), "重做 reapplies it through the Windows history");
         } else {
