@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cwctype>
+#include <objidl.h>
 #include <gdiplus.h>
 
 #pragma comment(lib, "gdiplus.lib")
