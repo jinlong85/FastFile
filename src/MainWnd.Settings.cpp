@@ -264,10 +264,13 @@ struct SettingsDialog {
                         EnableWindow(btn,FALSE);
                         SetWindowTextW(result,L"正在下载更新安装包...");
                         std::wstring dlUrl=installer->downloadUrl;
+                        std::wstring installerName=installer->name;
+                        const auto* checksumAsset=check->release.FindChecksumAsset();
+                        std::wstring checksumUrl=checksumAsset?checksumAsset->downloadUrl:L"";
                         std::wstring dlVer=check->release.version.ToString();
                         std::wstring dst=FastFileUpdate::GetUpdateDownloadPath(dlVer);
                         HWND dlg=window;
-                        std::thread([dlg,dlUrl,dst]() {
+                        std::thread([dlg,dlUrl,installerName,checksumUrl,dst]() {
                             std::wstring err;
                             bool ok=FastFileUpdate::DownloadUpdateFile(dlUrl,dst,[dlg](uint64_t down,uint64_t total) {
                                 if(total>0) {
@@ -278,6 +281,28 @@ struct SettingsDialog {
                                     if(resWnd)SetWindowTextW(resWnd,buf);
                                 }
                             },nullptr,&err);
+                            if(ok && !checksumUrl.empty()) {
+                                HWND resWnd=GetDlgItem(dlg,AboutResult);
+                                if(resWnd)SetWindowTextW(resWnd,L"正在校验安装包完整性（SHA-256）...");
+                                std::string sumsText;
+                                std::wstring sumErr;
+                                if(!FastFileUpdate::DownloadTextResource(checksumUrl,sumsText,&sumErr)) {
+                                    ok=false;
+                                    err=L"下载校验文件失败："+sumErr;
+                                } else {
+                                    const std::wstring expected=FastFileUpdate::ParseSha256ForAsset(sumsText,installerName);
+                                    if(expected.empty()) {
+                                        ok=false;
+                                        err=L"校验文件中未找到当前安装包的 SHA-256 记录。";
+                                    } else if(!FastFileUpdate::VerifyFileSha256(dst,expected)) {
+                                        ok=false;
+                                        err=L"安装包 SHA-256 校验失败，文件可能已损坏或被篡改。";
+                                    }
+                                }
+                                if(!ok) {
+                                    DeleteFileW(dst.c_str());
+                                }
+                            }
                             PostMessageW(dlg,WM_APP+102,ok?1:0,ok?reinterpret_cast<LPARAM>(new std::wstring(dst)):reinterpret_cast<LPARAM>(new std::wstring(err)));
                         }).detach();
                     }

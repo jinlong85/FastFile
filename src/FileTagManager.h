@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <mutex>
 #include <cstdint>
 #include <windows.h>
 
@@ -29,8 +30,10 @@ public:
 
     FileTagInfo GetTag(const std::wstring& path) const;
     void SetColor(const std::wstring& path, FileTagColor color);
+    void SetColorBatch(const std::vector<std::wstring>& paths, FileTagColor color);
     void SetStarred(const std::wstring& path, bool starred);
     void ToggleStarred(const std::wstring& path);
+    void ToggleStarredBatch(const std::vector<std::wstring>& paths);
     void ClearTag(const std::wstring& path);
 
     static COLORREF GetColorRef(FileTagColor color);
@@ -39,6 +42,8 @@ public:
     const std::unordered_map<std::wstring, FileTagInfo>& GetAll() const { return m_tags; }
 
     static std::wstring Normalize(const std::wstring& path);
+    static std::unordered_map<std::wstring, FileTagInfo> ParseTagsJson(const std::string& text);
+    static std::string SerializeTagsJson(const std::unordered_map<std::wstring, FileTagInfo>& tags);
 
     static void DrawTagDot(HDC dc, int cx, int cy, int radius, COLORREF fill, COLORREF border = RGB(255, 255, 255));
     static void DrawStar(HDC dc, int cx, int cy, int outerR, COLORREF fill = RGB(255, 184, 0), COLORREF border = RGB(212, 155, 0));
@@ -46,7 +51,9 @@ public:
 private:
     FileTagManager();
     static std::wstring GetTagFilePath();
+    bool SaveLocked() const;
 
+    mutable std::mutex m_mutex;
     std::unordered_map<std::wstring, FileTagInfo> m_tags;
     bool m_loaded = false;
 };

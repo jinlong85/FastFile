@@ -48,9 +48,11 @@ struct ReleaseInfo {
     std::wstring tagName;
     std::wstring title;
     std::wstring notes;
+    bool draft = false;
     std::vector<ReleaseAsset> assets;
 
     const ReleaseAsset* FindInstallerAsset() const;
+    const ReleaseAsset* FindChecksumAsset() const;
 };
 
 enum class UpdateCheckStatus {
@@ -80,6 +82,21 @@ std::wstring GetUpdateDownloadPath(const std::wstring& version);
 // 向 GitHub API 查询最新发布版本
 UpdateCheckResult CheckForUpdate(const std::wstring& currentVersion = FASTFILE_VERSION_W,
                                  const std::wstring& repo = L"jinlong85/FastFile");
+
+// 校验更新下载 URL 是否为受信任的 HTTPS 域名
+bool IsAllowedUpdateUrl(const std::wstring& url);
+
+// 计算本地文件的 SHA-256（64 位小写十六进制）；失败返回空字符串
+std::wstring ComputeFileSha256(const std::wstring& filePath);
+
+// 从 SHA256SUMS.txt 文本中提取指定文件名的预期 SHA-256（64 位小写十六进制）
+std::wstring ParseSha256ForAsset(const std::string& sumsUtf8, const std::wstring& assetName);
+
+// 校验本地文件与预期 SHA-256 是否一致（忽略大小写）
+bool VerifyFileSha256(const std::wstring& filePath, const std::wstring& expectedHex, std::wstring* actualHexOut = nullptr);
+
+// 下载受信任 HTTPS 文本资源（例如 SHA256SUMS.txt，大小上限 1 MiB）
+bool DownloadTextResource(const std::wstring& url, std::string& outText, std::wstring* errorMessage = nullptr);
 
 // 下载更新文件，提供进度回调与取消回调
 bool DownloadUpdateFile(const std::wstring& url,

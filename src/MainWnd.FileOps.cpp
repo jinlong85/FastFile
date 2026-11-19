@@ -881,9 +881,12 @@ void CMainWnd::ApplyTagColorToSelection(FileTagColor color)
         return;
     }
 
+    std::vector<std::wstring> paths;
+    paths.reserve(items.size());
     for (const auto& item : items) {
-        FileTagManager::Instance().SetColor(item.path, color);
+        paths.push_back(item.path);
     }
+    FileTagManager::Instance().SetColorBatch(paths, color);
 
     if (m_shellBrowser && m_shellBrowser->IsCreated()) {
         m_shellBrowser->Redraw();
@@ -915,9 +918,12 @@ void CMainWnd::ToggleStarSelection()
         return;
     }
 
+    std::vector<std::wstring> paths;
+    paths.reserve(items.size());
     for (const auto& item : items) {
-        FileTagManager::Instance().ToggleStarred(item.path);
+        paths.push_back(item.path);
     }
+    FileTagManager::Instance().ToggleStarredBatch(paths);
 
     if (m_shellBrowser && m_shellBrowser->IsCreated()) {
         m_shellBrowser->Redraw();

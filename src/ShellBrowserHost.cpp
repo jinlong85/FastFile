@@ -1244,9 +1244,11 @@ LRESULT ShellBrowserHost::DrawListIcon(NMLVCUSTOMDRAW* draw)
         && ListView_GetItemRect(m_listWindow, itemIndex, &icon, LVIR_ICON)
         && ListView_GetItemRect(m_listWindow, itemIndex, &row, LVIR_BOUNDS)) {
         const bool selected = (item.state & LVIS_SELECTED) != 0;
-        HBRUSH fill = CreateSolidBrush(selected ? RGB(0xE5, 0xF1, 0xFB)
-            : (draw->nmcd.uItemState & CDIS_HOT) ? RGB(0xF5, 0xF5, 0xF5) : RGB(255, 255, 255));
-        FillRect(draw->nmcd.hdc, &row, fill); DeleteObject(fill);
+        const COLORREF rowBg = selected ? RGB(0xE5, 0xF1, 0xFB)
+            : (draw->nmcd.uItemState & CDIS_HOT) ? RGB(0xF5, 0xF5, 0xF5) : RGB(255, 255, 255);
+        const COLORREF oldBgColor = SetDCBrushColor(draw->nmcd.hdc, rowBg);
+        FillRect(draw->nmcd.hdc, &row, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+        SetDCBrushColor(draw->nmcd.hdc, oldBgColor);
         int iconLeft = icon.left;
         if (icon.right <= icon.left || iconLeft < row.left) {
             iconLeft = row.left + MulDiv(4, m_dpi, 96);
@@ -1269,7 +1271,9 @@ LRESULT ShellBrowserHost::DrawListIcon(NMLVCUSTOMDRAW* draw)
                 }
             }
         }
-        wchar_t title[32768]{}; ListView_GetItemText(m_listWindow, itemIndex, 0, title, _countof(title));
+        wchar_t title[1024];
+        title[0] = L'\0';
+        ListView_GetItemText(m_listWindow, itemIndex, 0, title, _countof(title));
         const int saved = SaveDC(draw->nmcd.hdc);
         SelectObject(draw->nmcd.hdc, reinterpret_cast<HFONT>(SendMessageW(m_listWindow, WM_GETFONT, 0, 0)));
         SetBkMode(draw->nmcd.hdc, TRANSPARENT); SetTextColor(draw->nmcd.hdc, RGB(0x1A, 0x1A, 0x1A));

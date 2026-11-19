@@ -1,12 +1,16 @@
 #include "AutoUpdater.h"
 #include "FastFileAbout.h"
 #include <winhttp.h>
+#include <bcrypt.h>
 #include <shlwapi.h>
 #include <shellapi.h>
+#include <algorithm>
 #include <cctype>
+#include <cwctype>
 #include <sstream>
 
 #pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "bcrypt.lib")
 
 namespace FastFileUpdate {
 
@@ -44,8 +48,18 @@ std::wstring SemanticVersion::ToString() const {
 
 const ReleaseAsset* ReleaseInfo::FindInstallerAsset() const {
     for (const auto& asset : assets) {
-        if (asset.name.rfind(L".exe") == asset.name.size() - 4 &&
+        if (asset.name.size() >= 4 &&
+            _wcsicmp(asset.name.c_str() + asset.name.size() - 4, L".exe") == 0 &&
             asset.name.find(L"FastFile-Setup") != std::wstring::npos) {
+            return &asset;
+        }
+    }
+    return nullptr;
+}
+
+const ReleaseAsset* ReleaseInfo::FindChecksumAsset() const {
+    for (const auto& asset : assets) {
+        if (_wcsicmp(asset.name.c_str(), L"SHA256SUMS.txt") == 0) {
             return &asset;
         }
     }
@@ -148,6 +162,22 @@ struct SimpleJsonParser {
         return hasDigits;
     }
 
+    bool ParseBool(bool& outVal) {
+        SkipWhitespace();
+        if (src.compare(pos, 4, "true") == 0) {
+            pos += 4;
+            outVal = true;
+            return true;
+        }
+        if (src.compare(pos, 5, "false") == 0) {
+            pos += 5;
+            outVal = false;
+            return true;
+        }
+        SkipValue();
+        return false;
+    }
+
     void SkipValue() {
         SkipWhitespace();
         if (pos >= src.size()) return;
@@ -189,16 +219,11 @@ struct SimpleJsonParser {
     }
 };
 
-} // namespace
-
-bool ParseGitHubReleaseJson(const std::string& jsonUtf8, ReleaseInfo& outInfo) {
+static bool ParseSingleReleaseObject(SimpleJsonParser& p, ReleaseInfo& outInfo) {
     outInfo = ReleaseInfo{};
-    SimpleJsonParser p(jsonUtf8);
-    const bool isArray = p.Match('[');
-    if (isArray && p.Peek(']')) return false;
     if (!p.Match('{')) return false;
 
-    while (!p.Peek('}') && p.pos < jsonUtf8.size()) {
+    while (!p.Peek('}') && p.pos < p.src.size()) {
         std::string key;
         if (!p.ParseString(key)) break;
         if (!p.Match(':')) break;
@@ -216,12 +241,14 @@ bool ParseGitHubReleaseJson(const std::string& jsonUtf8, ReleaseInfo& outInfo) {
             std::string val;
             p.ParseString(val);
             outInfo.notes = Utf8ToWide(val);
+        } else if (key == "draft") {
+            p.ParseBool(outInfo.draft);
         } else if (key == "assets") {
             if (p.Match('[')) {
-                while (!p.Peek(']') && p.pos < jsonUtf8.size()) {
+                while (!p.Peek(']') && p.pos < p.src.size()) {
                     if (p.Match('{')) {
                         ReleaseAsset asset;
-                        while (!p.Peek('}') && p.pos < jsonUtf8.size()) {
+                        while (!p.Peek('}') && p.pos < p.src.size()) {
                             std::string akey;
                             if (!p.ParseString(akey)) break;
                             if (!p.Match(':')) break;
@@ -244,6 +271,8 @@ bool ParseGitHubReleaseJson(const std::string& jsonUtf8, ReleaseInfo& outInfo) {
                         if (!asset.name.empty() && !asset.downloadUrl.empty()) {
                             outInfo.assets.push_back(asset);
                         }
+                    } else {
+                        p.SkipValue();
                     }
                     p.Match(',');
                 }
@@ -258,6 +287,42 @@ bool ParseGitHubReleaseJson(const std::string& jsonUtf8, ReleaseInfo& outInfo) {
     }
     p.Match('}');
     return !outInfo.tagName.empty() && outInfo.version.IsValid();
+}
+
+} // namespace
+
+bool ParseGitHubReleaseJson(const std::string& jsonUtf8, ReleaseInfo& outInfo) {
+    outInfo = ReleaseInfo{};
+    SimpleJsonParser p(jsonUtf8);
+    if (p.Match('[')) {
+        ReleaseInfo fallback;
+        bool hasFallback = false;
+        while (!p.Peek(']') && p.pos < jsonUtf8.size()) {
+            ReleaseInfo candidate;
+            if (ParseSingleReleaseObject(p, candidate)) {
+                if (!candidate.draft) {
+                    if (candidate.FindInstallerAsset() != nullptr) {
+                        outInfo = std::move(candidate);
+                        return true;
+                    }
+                    if (!hasFallback) {
+                        fallback = std::move(candidate);
+                        hasFallback = true;
+                    }
+                }
+            } else {
+                p.SkipValue();
+            }
+            p.Match(',');
+        }
+        p.Match(']');
+        if (hasFallback) {
+            outInfo = std::move(fallback);
+            return true;
+        }
+        return false;
+    }
+    return ParseSingleReleaseObject(p, outInfo);
 }
 
 std::wstring BuildInstallerArguments(const std::wstring& installDir, bool restart) {
@@ -310,7 +375,7 @@ UpdateCheckResult CheckForUpdate(const std::wstring& currentVersion, const std::
         return result;
     }
 
-    std::wstring path = L"/repos/" + repo + L"/releases?per_page=1";
+    std::wstring path = L"/repos/" + repo + L"/releases?per_page=5";
     HINTERNET hRequest = WinHttpOpenRequest(
         hConnect, L"GET", path.c_str(),
         nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
@@ -324,7 +389,7 @@ UpdateCheckResult CheckForUpdate(const std::wstring& currentVersion, const std::
         return result;
     }
 
-    DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS;
+    DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;
     WinHttpSetOption(hRequest, WINHTTP_OPTION_REDIRECT_POLICY, &redirectPolicy, sizeof(redirectPolicy));
 
     const wchar_t headers[] = L"Accept: application/vnd.github.v3+json\r\nUser-Agent: FastFile-AutoUpdater\r\n";
@@ -398,11 +463,271 @@ UpdateCheckResult CheckForUpdate(const std::wstring& currentVersion, const std::
     return result;
 }
 
+namespace {
+
+bool HostMatchesDomain(const std::wstring& hostLower, const wchar_t* domain) {
+    const std::wstring dom(domain);
+    if (hostLower == dom) return true;
+    if (hostLower.size() > dom.size() + 1) {
+        const size_t offset = hostLower.size() - dom.size();
+        if (hostLower[offset - 1] == L'.' && hostLower.compare(offset, dom.size(), dom) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::wstring ToLowerAscii(std::wstring s) {
+    for (wchar_t& c : s) {
+        if (c >= L'A' && c <= L'Z') c = static_cast<wchar_t>(c - L'A' + L'a');
+    }
+    return s;
+}
+
+} // namespace
+
+bool IsAllowedUpdateUrl(const std::wstring& url) {
+    if (url.empty()) return false;
+    URL_COMPONENTS urlComp{};
+    urlComp.dwStructSize = sizeof(urlComp);
+    wchar_t host[256]{};
+    wchar_t path[2048]{};
+    urlComp.lpszHostName = host;
+    urlComp.dwHostNameLength = _countof(host);
+    urlComp.lpszUrlPath = path;
+    urlComp.dwUrlPathLength = _countof(path);
+
+    if (!WinHttpCrackUrl(url.c_str(), static_cast<DWORD>(url.size()), 0, &urlComp)) {
+        return false;
+    }
+    if (urlComp.nScheme != INTERNET_SCHEME_HTTPS) {
+        return false;
+    }
+    const std::wstring hostLower = ToLowerAscii(std::wstring(host, urlComp.dwHostNameLength));
+    if (hostLower.empty()) return false;
+
+    return HostMatchesDomain(hostLower, L"github.com")
+        || HostMatchesDomain(hostLower, L"githubusercontent.com");
+}
+
+std::wstring ComputeFileSha256(const std::wstring& filePath) {
+    if (filePath.empty()) return {};
+    HANDLE hFile = CreateFileW(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                               OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) return {};
+
+    BCRYPT_ALG_HANDLE hAlg = nullptr;
+    BCRYPT_HASH_HANDLE hHash = nullptr;
+    std::wstring result;
+
+    if (BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) == 0) {
+        DWORD hashObjectSize = 0;
+        DWORD hashLen = 0;
+        DWORD cbData = 0;
+        if (BCryptGetProperty(hAlg, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PUCHAR>(&hashObjectSize),
+                              sizeof(hashObjectSize), &cbData, 0) == 0 &&
+            BCryptGetProperty(hAlg, BCRYPT_HASH_LENGTH, reinterpret_cast<PUCHAR>(&hashLen),
+                              sizeof(hashLen), &cbData, 0) == 0 &&
+            hashLen == 32) {
+            std::vector<BYTE> hashObject(hashObjectSize);
+            std::vector<BYTE> hash(hashLen);
+            if (BCryptCreateHash(hAlg, &hHash, hashObject.data(), hashObjectSize, nullptr, 0, 0) == 0) {
+                std::vector<BYTE> buf(64 * 1024);
+                DWORD bytesRead = 0;
+                bool readOk = true;
+                while (ReadFile(hFile, buf.data(), static_cast<DWORD>(buf.size()), &bytesRead, nullptr)) {
+                    if (bytesRead == 0) break;
+                    if (BCryptHashData(hHash, buf.data(), bytesRead, 0) != 0) {
+                        readOk = false;
+                        break;
+                    }
+                }
+                if (readOk && BCryptFinishHash(hHash, hash.data(), hashLen, 0) == 0) {
+                    static constexpr wchar_t kHex[] = L"0123456789abcdef";
+                    result.reserve(64);
+                    for (BYTE b : hash) {
+                        result.push_back(kHex[(b >> 4) & 0x0F]);
+                        result.push_back(kHex[b & 0x0F]);
+                    }
+                }
+                BCryptDestroyHash(hHash);
+            }
+        }
+        BCryptCloseAlgorithmProvider(hAlg, 0);
+    }
+
+    CloseHandle(hFile);
+    return result;
+}
+
+std::wstring ParseSha256ForAsset(const std::string& sumsUtf8, const std::wstring& assetName) {
+    if (sumsUtf8.empty() || assetName.empty()) return {};
+    const std::wstring targetLower = ToLowerAscii(assetName);
+    std::istringstream iss(sumsUtf8);
+    std::string line;
+    while (std::getline(iss, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        size_t start = 0;
+        // Skip optional UTF-8 BOM on first line
+        if (line.size() >= 3 && static_cast<unsigned char>(line[0]) == 0xEF &&
+            static_cast<unsigned char>(line[1]) == 0xBB && static_cast<unsigned char>(line[2]) == 0xBF) {
+            start = 3;
+        }
+        while (start < line.size() && (line[start] == ' ' || line[start] == '\t')) ++start;
+        if (line.size() - start < 65) continue;
+
+        std::string hexPart = line.substr(start, 64);
+        bool validHex = true;
+        for (char c : hexPart) {
+            if (!isxdigit(static_cast<unsigned char>(c))) {
+                validHex = false;
+                break;
+            }
+        }
+        if (!validHex) continue;
+
+        size_t nameStart = start + 64;
+        if (nameStart >= line.size() || (line[nameStart] != ' ' && line[nameStart] != '\t')) continue;
+        while (nameStart < line.size() && (line[nameStart] == ' ' || line[nameStart] == '\t')) ++nameStart;
+        if (nameStart < line.size() && line[nameStart] == '*') ++nameStart;
+        size_t nameEnd = line.size();
+        while (nameEnd > nameStart && (line[nameEnd - 1] == ' ' || line[nameEnd - 1] == '\t')) --nameEnd;
+        if (nameEnd <= nameStart) continue;
+
+        std::wstring fileName = Utf8ToWide(line.substr(nameStart, nameEnd - nameStart));
+        // Strip optional directory prefix (e.g. "./" or "dist/")
+        const size_t slashPos = fileName.find_last_of(L"/\\");
+        if (slashPos != std::wstring::npos) {
+            fileName = fileName.substr(slashPos + 1);
+        }
+        if (ToLowerAscii(fileName) == targetLower) {
+            return ToLowerAscii(Utf8ToWide(hexPart));
+        }
+    }
+    return {};
+}
+
+bool VerifyFileSha256(const std::wstring& filePath, const std::wstring& expectedHex, std::wstring* actualHexOut) {
+    const std::wstring expectedLower = ToLowerAscii(expectedHex);
+    if (expectedLower.size() != 64) return false;
+    const std::wstring actual = ComputeFileSha256(filePath);
+    if (actualHexOut) *actualHexOut = actual;
+    return !actual.empty() && actual == expectedLower;
+}
+
+bool DownloadTextResource(const std::wstring& url, std::string& outText, std::wstring* errorMessage) {
+    outText.clear();
+    if (!IsAllowedUpdateUrl(url)) {
+        if (errorMessage) *errorMessage = L"不受信任的校验文件下载地址。";
+        return false;
+    }
+
+    URL_COMPONENTS urlComp{};
+    urlComp.dwStructSize = sizeof(urlComp);
+    wchar_t host[256]{};
+    wchar_t path[2048]{};
+    urlComp.lpszHostName = host;
+    urlComp.dwHostNameLength = _countof(host);
+    urlComp.lpszUrlPath = path;
+    urlComp.dwUrlPathLength = _countof(path);
+    if (!WinHttpCrackUrl(url.c_str(), static_cast<DWORD>(url.size()), 0, &urlComp)) {
+        if (errorMessage) *errorMessage = L"无效的校验文件 URL。";
+        return false;
+    }
+
+    HINTERNET hSession = WinHttpOpen(
+        L"FastFile-AutoUpdater/" FASTFILE_VERSION_W,
+        WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+        WINHTTP_NO_PROXY_NAME,
+        WINHTTP_NO_PROXY_BYPASS,
+        0
+    );
+    if (!hSession) {
+        if (errorMessage) *errorMessage = L"网络组件初始化失败。";
+        return false;
+    }
+
+    WinHttpSetTimeouts(hSession, 10000, 10000, 15000, 20000);
+    DWORD protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;
+    WinHttpSetOption(hSession, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols, sizeof(protocols));
+
+    HINTERNET hConnect = WinHttpConnect(hSession, host, urlComp.nPort, 0);
+    if (!hConnect) {
+        WinHttpCloseHandle(hSession);
+        if (errorMessage) *errorMessage = L"无法连接到校验文件服务器。";
+        return false;
+    }
+
+    HINTERNET hRequest = WinHttpOpenRequest(
+        hConnect, L"GET", path,
+        nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+        WINHTTP_FLAG_SECURE
+    );
+    if (!hRequest) {
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        if (errorMessage) *errorMessage = L"无法创建校验文件请求。";
+        return false;
+    }
+
+    DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;
+    WinHttpSetOption(hRequest, WINHTTP_OPTION_REDIRECT_POLICY, &redirectPolicy, sizeof(redirectPolicy));
+
+    bool ok = false;
+    if (WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, nullptr, 0, 0, 0) &&
+        WinHttpReceiveResponse(hRequest, nullptr)) {
+        DWORD statusCode = 0;
+        DWORD statusSize = sizeof(statusCode);
+        WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                            WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize, WINHTTP_NO_HEADER_INDEX);
+        if (statusCode == 200) {
+            constexpr size_t kMaxTextBytes = 1024 * 1024;
+            ok = true;
+            while (true) {
+                DWORD bytesAvailable = 0;
+                if (!WinHttpQueryDataAvailable(hRequest, &bytesAvailable)) {
+                    ok = false;
+                    break;
+                }
+                if (bytesAvailable == 0) break;
+                if (outText.size() + bytesAvailable > kMaxTextBytes) {
+                    ok = false;
+                    if (errorMessage) *errorMessage = L"校验文件体积异常。";
+                    break;
+                }
+                std::vector<char> buffer(bytesAvailable);
+                DWORD bytesRead = 0;
+                if (!WinHttpReadData(hRequest, buffer.data(), bytesAvailable, &bytesRead)) {
+                    ok = false;
+                    break;
+                }
+                if (bytesRead == 0) break;
+                outText.append(buffer.data(), bytesRead);
+            }
+        } else if (errorMessage) {
+            *errorMessage = L"下载校验文件返回 HTTP 状态码 " + std::to_wstring(statusCode);
+        }
+    } else if (errorMessage) {
+        *errorMessage = L"连接校验文件地址失败。";
+    }
+
+    WinHttpCloseHandle(hRequest);
+    WinHttpCloseHandle(hConnect);
+    WinHttpCloseHandle(hSession);
+    if (!ok) outText.clear();
+    return ok && !outText.empty();
+}
+
 bool DownloadUpdateFile(const std::wstring& url,
                         const std::wstring& destinationPath,
                         std::function<void(uint64_t downloadedBytes, uint64_t totalBytes)> onProgress,
                         std::function<bool()> shouldCancel,
                         std::wstring* errorMessage) {
+    if (!IsAllowedUpdateUrl(url)) {
+        if (errorMessage) *errorMessage = L"不受信任的更新下载地址（仅允许 GitHub HTTPS 链接）。";
+        return false;
+    }
+
     URL_COMPONENTS urlComp{};
     urlComp.dwStructSize = sizeof(urlComp);
     wchar_t host[256]{};
@@ -440,11 +765,10 @@ bool DownloadUpdateFile(const std::wstring& url,
         return false;
     }
 
-    DWORD reqFlags = (urlComp.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0;
     HINTERNET hRequest = WinHttpOpenRequest(
         hConnect, L"GET", path,
         nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
-        reqFlags
+        WINHTTP_FLAG_SECURE
     );
     if (!hRequest) {
         WinHttpCloseHandle(hConnect);
@@ -453,7 +777,7 @@ bool DownloadUpdateFile(const std::wstring& url,
         return false;
     }
 
-    DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS;
+    DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;
     WinHttpSetOption(hRequest, WINHTTP_OPTION_REDIRECT_POLICY, &redirectPolicy, sizeof(redirectPolicy));
 
     if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, nullptr, 0, 0, 0) ||
@@ -508,13 +832,23 @@ bool DownloadUpdateFile(const std::wstring& url,
         }
 
         DWORD bytesAvailable = 0;
-        if (!WinHttpQueryDataAvailable(hRequest, &bytesAvailable) || bytesAvailable == 0) {
+        if (!WinHttpQueryDataAvailable(hRequest, &bytesAvailable)) {
+            success = false;
+            if (errorMessage) *errorMessage = L"下载连接中断，读取响应数据失败。";
+            break;
+        }
+        if (bytesAvailable == 0) {
             break;
         }
 
         DWORD bytesToRead = (std::min)(bytesAvailable, static_cast<DWORD>(buffer.size()));
         DWORD bytesRead = 0;
-        if (!WinHttpReadData(hRequest, buffer.data(), bytesToRead, &bytesRead) || bytesRead == 0) {
+        if (!WinHttpReadData(hRequest, buffer.data(), bytesToRead, &bytesRead)) {
+            success = false;
+            if (errorMessage) *errorMessage = L"下载过程中网络连接中断。";
+            break;
+        }
+        if (bytesRead == 0) {
             break;
         }
 
@@ -529,6 +863,14 @@ bool DownloadUpdateFile(const std::wstring& url,
         if (onProgress) {
             onProgress(downloadedBytes, totalBytes);
         }
+    }
+
+    if (success && downloadedBytes == 0) {
+        success = false;
+        if (errorMessage) *errorMessage = L"下载的安装包为空。";
+    } else if (success && totalBytes > 0 && downloadedBytes != totalBytes) {
+        success = false;
+        if (errorMessage) *errorMessage = L"下载的安装包不完整（字节数与服务器声明不一致）。";
     }
 
     FlushFileBuffers(hFile);

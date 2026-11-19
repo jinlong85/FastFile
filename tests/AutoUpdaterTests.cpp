@@ -76,6 +76,37 @@ static void TestReleaseJsonParser() {
     assert(arrayInfo.tagName == L"v1.0.23");
     assert(arrayInfo.assets.size() == 2);
 
+    // 测试短文件名资产不会下溢，以及查找校验文件资产
+    ReleaseInfo shortNameInfo;
+    shortNameInfo.assets.push_back({ L"a", L"https://github.com/jinlong85/FastFile/releases/download/v1.0.23/a", 1 });
+    shortNameInfo.assets.push_back({ L"FastFile-Setup-1.0.23.EXE", L"https://github.com/jinlong85/FastFile/releases/download/v1.0.23/FastFile-Setup-1.0.23.EXE", 1234 });
+    shortNameInfo.assets.push_back({ L"SHA256SUMS.txt", L"https://github.com/jinlong85/FastFile/releases/download/v1.0.23/SHA256SUMS.txt", 90 });
+    assert(shortNameInfo.FindInstallerAsset() != nullptr);
+    assert(shortNameInfo.FindInstallerAsset()->name == L"FastFile-Setup-1.0.23.EXE");
+    assert(shortNameInfo.FindChecksumAsset() != nullptr);
+
+    // 测试多条 Release 跳过草稿并优先选择带安装包的发布
+    std::string multiJson = R"([
+        {
+            "tag_name": "v1.0.99",
+            "draft": true,
+            "assets": [{ "name": "FastFile-Setup-1.0.99.exe", "size": 100, "browser_download_url": "https://github.com/jinlong85/FastFile/releases/download/v1.0.99/FastFile-Setup-1.0.99.exe" }]
+        },
+        {
+            "tag_name": "v1.0.98",
+            "draft": false,
+            "assets": []
+        },
+        {
+            "tag_name": "v1.0.97",
+            "draft": false,
+            "assets": [{ "name": "FastFile-Setup-1.0.97.exe", "size": 200, "browser_download_url": "https://github.com/jinlong85/FastFile/releases/download/v1.0.97/FastFile-Setup-1.0.97.exe" }]
+        }
+    ])";
+    ReleaseInfo multiInfo;
+    assert(ParseGitHubReleaseJson(multiJson, multiInfo));
+    assert(multiInfo.tagName == L"v1.0.97");
+
     // 容错性测试：空 JSON 或残缺 JSON
     ReleaseInfo badInfo;
     assert(!ParseGitHubReleaseJson("", badInfo));
@@ -84,6 +115,50 @@ static void TestReleaseJsonParser() {
     assert(!ParseGitHubReleaseJson("{ invalid json }", badInfo));
 
     std::cout << "TestReleaseJsonParser passed." << std::endl;
+}
+
+static void TestUrlAllowlistAndSha256() {
+    assert(IsAllowedUpdateUrl(L"https://github.com/jinlong85/FastFile/releases/download/v1.0.27/FastFile-Setup-1.0.27.exe"));
+    assert(IsAllowedUpdateUrl(L"https://objects.githubusercontent.com/github-production-release-asset/foo.exe"));
+    assert(IsAllowedUpdateUrl(L"https://release-assets.githubusercontent.com/bar.exe"));
+    assert(!IsAllowedUpdateUrl(L"http://github.com/jinlong85/FastFile/releases/download/v1.0.27/FastFile-Setup-1.0.27.exe"));
+    assert(!IsAllowedUpdateUrl(L"https://evilgithub.com/FastFile-Setup.exe"));
+    assert(!IsAllowedUpdateUrl(L"https://github.com.evil.example/FastFile-Setup.exe"));
+    assert(!IsAllowedUpdateUrl(L""));
+
+    // 解析 SHA256SUMS.txt（支持 BOM、大写、* 前缀与多行）
+    const std::string sums =
+        "\xEF\xBB\xBF"
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA  other.zip\r\n"
+        "2CF24DBA5FB0A30E26E83B2AC5B9E29E1B161E5C1FA7425E73043362938B9824  *FastFile-Setup-1.0.28.exe\n";
+    assert(ParseSha256ForAsset(sums, L"FastFile-Setup-1.0.28.exe") ==
+           L"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+    assert(ParseSha256ForAsset(sums, L"missing.exe").empty());
+
+    // 写入临时文件 "hello" 并验证 SHA-256（2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824）
+    wchar_t tempDir[MAX_PATH]{};
+    DWORD n = GetTempPathW(_countof(tempDir), tempDir);
+    assert(n > 0 && n < _countof(tempDir));
+    const std::wstring samplePath = std::wstring(tempDir) + L"FastFileSha256Test_" + std::to_wstring(GetCurrentProcessId()) + L".tmp";
+    HANDLE hFile = CreateFileW(samplePath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    assert(hFile != INVALID_HANDLE_VALUE);
+    const char payload[] = "hello";
+    DWORD written = 0;
+    assert(WriteFile(hFile, payload, 5, &written, nullptr) && written == 5);
+    CloseHandle(hFile);
+
+    std::wstring actual;
+    assert(VerifyFileSha256(samplePath, L"2CF24DBA5FB0A30E26E83B2AC5B9E29E1B161E5C1FA7425E73043362938B9824", &actual));
+    assert(actual == L"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+    assert(!VerifyFileSha256(samplePath, L"0000000000000000000000000000000000000000000000000000000000000000"));
+    DeleteFileW(samplePath.c_str());
+
+    // 下载器拒绝非白名单 URL
+    std::wstring err;
+    assert(!DownloadUpdateFile(L"http://example.com/bad.exe", samplePath, nullptr, nullptr, &err));
+    assert(!err.empty());
+
+    std::cout << "TestUrlAllowlistAndSha256 passed." << std::endl;
 }
 
 static void TestInstallerArguments() {
@@ -134,6 +209,7 @@ int main() {
     try {
         TestSemanticVersion();
         TestReleaseJsonParser();
+        TestUrlAllowlistAndSha256();
         TestInstallerArguments();
         TestDownloadPath();
         TestLiveGitHubCheck();

@@ -1204,9 +1204,10 @@ struct MainWndRegressionAccess {
         int failures = 0;
         auto check = [&](bool ok, const char* name) { if (!ok) { std::cerr << "FAIL " << name << '\n'; ++failures; } };
 
-        // 1. Path normalization
-        check(FileTagManager::Normalize(L"  C:/Windows/System32/  ") == L"C:\\Windows\\System32", "path normalize trims and normalizes slashes");
-        check(FileTagManager::Normalize(L"C:/") == L"C:\\", "path normalize preserves root slash");
+        // 1. Path normalization (case-insensitive on Windows)
+        check(FileTagManager::Normalize(L"  C:/Windows/System32/  ") == L"c:\\windows\\system32", "path normalize trims, normalizes slashes, and lowercases");
+        check(FileTagManager::Normalize(L"C:/") == L"c:\\", "path normalize preserves root slash");
+        check(FileTagManager::Normalize(L"C:\\Users\\Test\\Doc.TXT") == FileTagManager::Normalize(L"c:/users/test/doc.txt"), "path normalize is case-insensitive");
 
         // 2. Color and name mapping
         check(FileTagManager::GetColorRef(FileTagColor::Red) == RGB(255, 77, 79), "red color ref is #FF4D4F");
@@ -1237,6 +1238,25 @@ struct MainWndRegressionAccess {
 
         mgr.ClearTag(testPath);
         check(mgr.GetTag(testPath).color == FileTagColor::None && !mgr.GetTag(testPath).starred, "clear tag removes path");
+
+        // 3b. Case-insensitive lookup, batch operations, and JSON round-trip with braces/Unicode in filenames
+        const std::wstring mixedCase = L"C:\\Test_Tag_Case\\Report}v2_文档.txt";
+        const std::wstring lowerCase = L"c:\\test_tag_case\\report}v2_文档.txt";
+        mgr.ClearTag(mixedCase);
+        mgr.SetColorBatch({ mixedCase }, FileTagColor::Purple);
+        mgr.ToggleStarredBatch({ lowerCase });
+        check(mgr.GetTag(lowerCase).color == FileTagColor::Purple && mgr.GetTag(mixedCase).starred,
+            "case-insensitive tag lookup and batch updates agree");
+        {
+            std::unordered_map<std::wstring, FileTagInfo> sample;
+            sample[FileTagManager::Normalize(mixedCase)] = { FileTagColor::Green, true };
+            const std::string serialized = FileTagManager::SerializeTagsJson(sample);
+            const auto reparsed = FileTagManager::ParseTagsJson(serialized);
+            auto it = reparsed.find(FileTagManager::Normalize(lowerCase));
+            check(it != reparsed.end() && it->second.color == FileTagColor::Green && it->second.starred,
+                "JSON round-trip preserves color and starred for filenames containing braces");
+        }
+        mgr.ClearTag(mixedCase);
 
         // 4. Drawing functions sanity
         HDC dc = ::CreateCompatibleDC(nullptr);
@@ -1902,8 +1922,14 @@ struct MainWndRegressionAccess {
             check(true, "Windows undo reverts the in-place rename");
             check(key('Y', true), "Ctrl Y is handled in the Windows view");
             check(waitFor([&] { return exists(inplace) && !exists(copied); }), "Windows redo reapplies the in-place rename");
+            // Wait for Windows Shell to refresh the background undo entry after the async redo
+            // before sending Ctrl+Z; otherwise DefView can drop an immediate undo keystroke.
+            waitFor([&] { return window.NativeVerbAvailable(L"undo", CMainWnd::NativeScope::Background); }, 3000);
             key('Z', true);
-            waitFor([&] { return exists(copied) && !exists(inplace); });
+            if (!waitFor([&] { return exists(copied) && !exists(inplace); }, 3000)) {
+                window.OnUndo();
+                waitFor([&] { return exists(copied) && !exists(inplace); }, 3000);
+            }
         } else {
             std::cerr << "  info: Windows offers no undo history in this process; native Ctrl+Z / 撤销 are no-ops here\n";
             check(exists(inplace) && !exists(copied), "without a Windows undo history Ctrl Z changes nothing");

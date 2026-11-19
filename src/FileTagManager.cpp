@@ -1,14 +1,15 @@
 #include "FileTagManager.h"
-#include <fstream>
-#include <sstream>
 #include <algorithm>
-#include <cwctype>
+#include <cctype>
 #include <cmath>
+#include <cstdlib>
+#include <cwctype>
 
 namespace {
 
 std::string EscapeJsonString(const std::wstring& str) {
     std::string out;
+    out.reserve(str.size() + 16);
     const char* hex = "0123456789abcdef";
     for (wchar_t c : str) {
         if (c == L'"' || c == L'\\') {
@@ -24,6 +25,80 @@ std::string EscapeJsonString(const std::wstring& str) {
         }
     }
     return out;
+}
+
+bool ParseJsonString(const std::string& text, size_t& pos, std::wstring& out) {
+    while (pos < text.size() && isspace(static_cast<unsigned char>(text[pos]))) ++pos;
+    if (pos >= text.size() || text[pos] != '"') return false;
+    ++pos;
+    out.clear();
+    while (pos < text.size()) {
+        char c = text[pos++];
+        if (c == '"') return true;
+        if (c == '\\' && pos < text.size()) {
+            char next = text[pos++];
+            switch (next) {
+            case '"': out.push_back(L'"'); break;
+            case '\\': out.push_back(L'\\'); break;
+            case '/': out.push_back(L'/'); break;
+            case 'b': out.push_back(L'\b'); break;
+            case 'f': out.push_back(L'\f'); break;
+            case 'n': out.push_back(L'\n'); break;
+            case 'r': out.push_back(L'\r'); break;
+            case 't': out.push_back(L'\t'); break;
+            case 'u':
+                if (pos + 4 <= text.size()) {
+                    unsigned value = 0;
+                    for (int di = 0; di < 4; ++di) {
+                        char h = text[pos + di];
+                        int n = (h >= '0' && h <= '9') ? (h - '0') :
+                                (h >= 'a' && h <= 'f') ? (h - 'a' + 10) :
+                                (h >= 'A' && h <= 'F') ? (h - 'A' + 10) : 0;
+                        value = (value << 4) | n;
+                    }
+                    out.push_back(static_cast<wchar_t>(value));
+                    pos += 4;
+                }
+                break;
+            default:
+                out.push_back(static_cast<wchar_t>(static_cast<unsigned char>(next)));
+                break;
+            }
+        } else {
+            out.push_back(static_cast<wchar_t>(static_cast<unsigned char>(c)));
+        }
+    }
+    return false;
+}
+
+void SkipJsonValue(const std::string& text, size_t& pos) {
+    while (pos < text.size() && isspace(static_cast<unsigned char>(text[pos]))) ++pos;
+    if (pos >= text.size()) return;
+    char c = text[pos];
+    if (c == '"') {
+        std::wstring dummy;
+        ParseJsonString(text, pos, dummy);
+    } else if (c == '{' || c == '[') {
+        const char open = c;
+        const char close = (c == '{') ? '}' : ']';
+        int depth = 1;
+        ++pos;
+        while (pos < text.size() && depth > 0) {
+            if (text[pos] == '"') {
+                std::wstring dummy;
+                ParseJsonString(text, pos, dummy);
+            } else {
+                if (text[pos] == open) ++depth;
+                else if (text[pos] == close) --depth;
+                ++pos;
+            }
+        }
+    } else {
+        while (pos < text.size() && text[pos] != ',' && text[pos] != '}' && text[pos] != ']'
+            && !isspace(static_cast<unsigned char>(text[pos]))) {
+            ++pos;
+        }
+    }
 }
 
 } // namespace
@@ -43,13 +118,27 @@ std::wstring FileTagManager::Normalize(const std::wstring& path) {
     // Trim spaces
     while (!res.empty() && (res.front() == L' ' || res.front() == L'\t')) res.erase(res.begin());
     while (!res.empty() && (res.back() == L' ' || res.back() == L'\t')) res.pop_back();
+    if (res.empty()) return res;
     // Normalize slashes
     for (wchar_t& c : res) {
         if (c == L'/') c = L'\\';
     }
     // Remove redundant trailing slash if not root like "C:\"
-    if (res.size() > 3 && res.back() == L'\\') {
+    while (res.size() > 3 && res.back() == L'\\') {
         res.pop_back();
+    }
+    // Windows file paths are case-insensitive: normalize with invariant lowercase.
+    const int needed = ::LCMapStringEx(LOCALE_NAME_INVARIANT, LCMAP_LOWERCASE,
+        res.c_str(), static_cast<int>(res.size()), nullptr, 0, nullptr, nullptr, 0);
+    if (needed > 0) {
+        std::wstring lower(static_cast<size_t>(needed), L'\0');
+        if (::LCMapStringEx(LOCALE_NAME_INVARIANT, LCMAP_LOWERCASE,
+            res.c_str(), static_cast<int>(res.size()), &lower[0], needed, nullptr, nullptr, 0) > 0) {
+            return lower;
+        }
+    }
+    for (wchar_t& c : res) {
+        c = static_cast<wchar_t>(std::towlower(c));
     }
     return res;
 }
@@ -87,7 +176,122 @@ const wchar_t* FileTagManager::GetColorName(FileTagColor color) {
     }
 }
 
+std::unordered_map<std::wstring, FileTagInfo> FileTagManager::ParseTagsJson(const std::string& text) {
+    std::unordered_map<std::wstring, FileTagInfo> parsed;
+    size_t pos = 0;
+    auto skipWs = [&]() {
+        while (pos < text.size() && isspace(static_cast<unsigned char>(text[pos]))) ++pos;
+    };
+
+    // Locate the "tags" array in the top-level object.
+    skipWs();
+    if (pos >= text.size() || text[pos] != '{') return parsed;
+    ++pos;
+    while (pos < text.size()) {
+        skipWs();
+        if (pos >= text.size() || text[pos] == '}') break;
+        std::wstring key;
+        if (!ParseJsonString(text, pos, key)) break;
+        skipWs();
+        if (pos >= text.size() || text[pos] != ':') break;
+        ++pos;
+        skipWs();
+        if (key == L"tags" && pos < text.size() && text[pos] == '[') {
+            ++pos;
+            while (pos < text.size()) {
+                skipWs();
+                if (pos >= text.size() || text[pos] == ']') {
+                    if (pos < text.size()) ++pos;
+                    break;
+                }
+                if (text[pos] == '{') {
+                    ++pos;
+                    std::wstring rawPath;
+                    int colorVal = 0;
+                    bool starredVal = false;
+                    while (pos < text.size()) {
+                        skipWs();
+                        if (pos >= text.size() || text[pos] == '}') {
+                            if (pos < text.size()) ++pos;
+                            break;
+                        }
+                        std::wstring field;
+                        if (!ParseJsonString(text, pos, field)) break;
+                        skipWs();
+                        if (pos >= text.size() || text[pos] != ':') break;
+                        ++pos;
+                        skipWs();
+                        if (field == L"path") {
+                            ParseJsonString(text, pos, rawPath);
+                        } else if (field == L"color") {
+                            size_t start = pos;
+                            if (pos < text.size() && (text[pos] == '-' || text[pos] == '+')) ++pos;
+                            while (pos < text.size() && isdigit(static_cast<unsigned char>(text[pos]))) ++pos;
+                            if (pos > start) {
+                                colorVal = std::atoi(text.substr(start, pos - start).c_str());
+                            } else {
+                                SkipJsonValue(text, pos);
+                            }
+                        } else if (field == L"starred") {
+                            if (text.compare(pos, 4, "true") == 0) {
+                                starredVal = true;
+                                pos += 4;
+                            } else if (text.compare(pos, 5, "false") == 0) {
+                                starredVal = false;
+                                pos += 5;
+                            } else {
+                                SkipJsonValue(text, pos);
+                            }
+                        } else {
+                            SkipJsonValue(text, pos);
+                        }
+                        skipWs();
+                        if (pos < text.size() && text[pos] == ',') ++pos;
+                    }
+
+                    std::wstring norm = Normalize(rawPath);
+                    if (!norm.empty()) {
+                        FileTagInfo info;
+                        info.color = static_cast<FileTagColor>(std::clamp(colorVal, 0, 6));
+                        info.starred = starredVal;
+                        if (info.color != FileTagColor::None || info.starred) {
+                            parsed[norm] = info;
+                        }
+                    }
+                } else {
+                    SkipJsonValue(text, pos);
+                }
+                skipWs();
+                if (pos < text.size() && text[pos] == ',') ++pos;
+            }
+        } else {
+            SkipJsonValue(text, pos);
+        }
+        skipWs();
+        if (pos < text.size() && text[pos] == ',') ++pos;
+    }
+    return parsed;
+}
+
+std::string FileTagManager::SerializeTagsJson(const std::unordered_map<std::wstring, FileTagInfo>& tags) {
+    std::string text = "{\n  \"tags\": [\n";
+    bool first = true;
+    for (const auto& pair : tags) {
+        if (pair.second.color == FileTagColor::None && !pair.second.starred) continue;
+        if (!first) text += ",\n";
+        first = false;
+        text += "    {\n";
+        text += "      \"path\": \"" + EscapeJsonString(pair.first) + "\",\n";
+        text += "      \"color\": " + std::to_string(static_cast<int>(pair.second.color)) + ",\n";
+        text += "      \"starred\": " + std::string(pair.second.starred ? "true" : "false") + "\n";
+        text += "    }";
+    }
+    text += "\n  ]\n}\n";
+    return text;
+}
+
 void FileTagManager::Load() {
+    std::lock_guard<std::mutex> lock(m_mutex);
     m_tags.clear();
     m_loaded = true;
     const std::wstring filePath = GetTagFilePath();
@@ -107,97 +311,14 @@ void FileTagManager::Load() {
         return;
     }
     ::CloseHandle(file);
+    text.resize(read);
 
-    // Simple JSON parse for "path", "color", "starred"
-    size_t pos = 0;
-    while (pos < text.size()) {
-        size_t pathPos = text.find("\"path\":", pos);
-        if (pathPos == std::string::npos) break;
-        size_t quote1 = text.find('"', pathPos + 7);
-        if (quote1 == std::string::npos) break;
-        size_t quote2 = text.find('"', quote1 + 1);
-        while (quote2 != std::string::npos && text[quote2 - 1] == '\\') {
-            quote2 = text.find('"', quote2 + 1);
-        }
-        if (quote2 == std::string::npos) break;
-
-        std::string rawPath = text.substr(quote1 + 1, quote2 - quote1 - 1);
-        // Unescape path
-        std::wstring unescapedPath;
-        for (size_t k = 0; k < rawPath.size(); ++k) {
-            if (rawPath[k] == '\\' && k + 1 < rawPath.size()) {
-                char next = rawPath[k + 1];
-                if (next == '\\' || next == '"') {
-                    unescapedPath.push_back(next);
-                    ++k;
-                } else if (next == 'u' && k + 5 < rawPath.size()) {
-                    unsigned value = 0;
-                    for (int di = 0; di < 4; ++di) {
-                        char h = rawPath[k + 2 + di];
-                        int n = (h >= '0' && h <= '9') ? (h - '0') :
-                                (h >= 'a' && h <= 'f') ? (h - 'a' + 10) :
-                                (h >= 'A' && h <= 'F') ? (h - 'A' + 10) : 0;
-                        value = (value << 4) | n;
-                    }
-                    unescapedPath.push_back(static_cast<wchar_t>(value));
-                    k += 5;
-                } else {
-                    unescapedPath.push_back(next);
-                    ++k;
-                }
-            } else {
-                unescapedPath.push_back(static_cast<wchar_t>(static_cast<unsigned char>(rawPath[k])));
-            }
-        }
-
-        // Find color and starred
-        size_t objEnd = text.find('}', quote2);
-        if (objEnd == std::string::npos) objEnd = text.size();
-        std::string objSnippet = text.substr(quote2, objEnd - quote2);
-
-        int colorVal = 0;
-        size_t colorPos = objSnippet.find("\"color\":");
-        if (colorPos != std::string::npos) {
-            colorVal = std::atoi(objSnippet.c_str() + colorPos + 8);
-        }
-
-        bool starredVal = false;
-        size_t starredPos = objSnippet.find("\"starred\":");
-        if (starredPos != std::string::npos) {
-            size_t valPos = starredPos + 10;
-            while (valPos < objSnippet.size() && isspace(static_cast<unsigned char>(objSnippet[valPos]))) ++valPos;
-            if (objSnippet.compare(valPos, 4, "true") == 0) starredVal = true;
-        }
-
-        std::wstring norm = Normalize(unescapedPath);
-        if (!norm.empty()) {
-            FileTagInfo info;
-            info.color = static_cast<FileTagColor>(std::clamp(colorVal, 0, 6));
-            info.starred = starredVal;
-            if (info.color != FileTagColor::None || info.starred) {
-                m_tags[norm] = info;
-            }
-        }
-
-        pos = objEnd + 1;
-    }
+    m_tags = ParseTagsJson(text);
 }
 
-bool FileTagManager::Save() const {
+bool FileTagManager::SaveLocked() const {
     const std::wstring filePath = GetTagFilePath();
-    std::string text = "{\n  \"tags\": [\n";
-    bool first = true;
-    for (const auto& pair : m_tags) {
-        if (pair.second.color == FileTagColor::None && !pair.second.starred) continue;
-        if (!first) text += ",\n";
-        first = false;
-        text += "    {\n";
-        text += "      \"path\": \"" + EscapeJsonString(pair.first) + "\",\n";
-        text += "      \"color\": " + std::to_string(static_cast<int>(pair.second.color)) + ",\n";
-        text += "      \"starred\": " + std::string(pair.second.starred ? "true" : "false") + "\n";
-        text += "    }";
-    }
-    text += "\n  ]\n}\n";
+    const std::string text = SerializeTagsJson(m_tags);
 
     const std::wstring tempPath = filePath + L".tmp-" + std::to_wstring(::GetCurrentProcessId());
     HANDLE file = ::CreateFileW(tempPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -217,33 +338,56 @@ bool FileTagManager::Save() const {
     return ok;
 }
 
+bool FileTagManager::Save() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return SaveLocked();
+}
+
 FileTagInfo FileTagManager::GetTag(const std::wstring& path) const {
-    std::wstring norm = Normalize(path);
+    const std::wstring norm = Normalize(path);
+    std::lock_guard<std::mutex> lock(m_mutex);
     auto it = m_tags.find(norm);
     if (it != m_tags.end()) return it->second;
     return {};
 }
 
 void FileTagManager::SetColor(const std::wstring& path, FileTagColor color) {
-    std::wstring norm = Normalize(path);
-    if (norm.empty()) return;
-    if (color == FileTagColor::None) {
-        auto it = m_tags.find(norm);
-        if (it != m_tags.end()) {
-            it->second.color = FileTagColor::None;
-            if (!it->second.starred) {
-                m_tags.erase(it);
+    SetColorBatch({ path }, color);
+}
+
+void FileTagManager::SetColorBatch(const std::vector<std::wstring>& paths, FileTagColor color) {
+    if (paths.empty()) return;
+    std::lock_guard<std::mutex> lock(m_mutex);
+    bool changed = false;
+    for (const auto& path : paths) {
+        std::wstring norm = Normalize(path);
+        if (norm.empty()) continue;
+        if (color == FileTagColor::None) {
+            auto it = m_tags.find(norm);
+            if (it != m_tags.end()) {
+                it->second.color = FileTagColor::None;
+                if (!it->second.starred) {
+                    m_tags.erase(it);
+                }
+                changed = true;
+            }
+        } else {
+            auto& entry = m_tags[norm];
+            if (entry.color != color) {
+                entry.color = color;
+                changed = true;
             }
         }
-    } else {
-        m_tags[norm].color = color;
     }
-    Save();
+    if (changed) {
+        SaveLocked();
+    }
 }
 
 void FileTagManager::SetStarred(const std::wstring& path, bool starred) {
     std::wstring norm = Normalize(path);
     if (norm.empty()) return;
+    std::lock_guard<std::mutex> lock(m_mutex);
     if (!starred) {
         auto it = m_tags.find(norm);
         if (it != m_tags.end()) {
@@ -251,42 +395,70 @@ void FileTagManager::SetStarred(const std::wstring& path, bool starred) {
             if (it->second.color == FileTagColor::None) {
                 m_tags.erase(it);
             }
+            SaveLocked();
         }
     } else {
-        m_tags[norm].starred = true;
+        auto& entry = m_tags[norm];
+        if (!entry.starred) {
+            entry.starred = true;
+            SaveLocked();
+        }
     }
-    Save();
 }
 
 void FileTagManager::ToggleStarred(const std::wstring& path) {
-    std::wstring norm = Normalize(path);
-    if (norm.empty()) return;
-    auto it = m_tags.find(norm);
-    bool current = (it != m_tags.end()) ? it->second.starred : false;
-    SetStarred(norm, !current);
+    ToggleStarredBatch({ path });
+}
+
+void FileTagManager::ToggleStarredBatch(const std::vector<std::wstring>& paths) {
+    if (paths.empty()) return;
+    std::lock_guard<std::mutex> lock(m_mutex);
+    bool changed = false;
+    for (const auto& path : paths) {
+        std::wstring norm = Normalize(path);
+        if (norm.empty()) continue;
+        auto it = m_tags.find(norm);
+        const bool next = !((it != m_tags.end()) ? it->second.starred : false);
+        if (!next) {
+            if (it != m_tags.end()) {
+                it->second.starred = false;
+                if (it->second.color == FileTagColor::None) {
+                    m_tags.erase(it);
+                }
+                changed = true;
+            }
+        } else {
+            m_tags[norm].starred = true;
+            changed = true;
+        }
+    }
+    if (changed) {
+        SaveLocked();
+    }
 }
 
 void FileTagManager::ClearTag(const std::wstring& path) {
     std::wstring norm = Normalize(path);
     if (norm.empty()) return;
+    std::lock_guard<std::mutex> lock(m_mutex);
     auto it = m_tags.find(norm);
     if (it != m_tags.end()) {
         m_tags.erase(it);
-        Save();
+        SaveLocked();
     }
 }
 
 void FileTagManager::DrawTagDot(HDC dc, int cx, int cy, int radius, COLORREF fill, COLORREF border) {
     if (!dc || radius <= 0) return;
-    HBRUSH br = ::CreateSolidBrush(fill);
-    HPEN pen = ::CreatePen(PS_SOLID, 1, border);
-    HGDIOBJ oldBr = ::SelectObject(dc, br);
-    HGDIOBJ oldPen = ::SelectObject(dc, pen);
+    HGDIOBJ oldBr = ::SelectObject(dc, ::GetStockObject(DC_BRUSH));
+    HGDIOBJ oldPen = ::SelectObject(dc, ::GetStockObject(DC_PEN));
+    const COLORREF oldBrColor = ::SetDCBrushColor(dc, fill);
+    const COLORREF oldPenColor = ::SetDCPenColor(dc, border);
     ::Ellipse(dc, cx - radius, cy - radius, cx + radius + 1, cy + radius + 1);
+    ::SetDCPenColor(dc, oldPenColor);
+    ::SetDCBrushColor(dc, oldBrColor);
     ::SelectObject(dc, oldPen);
     ::SelectObject(dc, oldBr);
-    ::DeleteObject(pen);
-    ::DeleteObject(br);
 }
 
 void FileTagManager::DrawStar(HDC dc, int cx, int cy, int outerR, COLORREF fill, COLORREF border) {
@@ -300,13 +472,13 @@ void FileTagManager::DrawStar(HDC dc, int cx, int cy, int outerR, COLORREF fill,
         pts[i].x = cx + static_cast<int>(std::round(r * std::cos(angle)));
         pts[i].y = cy + static_cast<int>(std::round(r * std::sin(angle)));
     }
-    HBRUSH br = ::CreateSolidBrush(fill);
-    HPEN pen = ::CreatePen(PS_SOLID, 1, border);
-    HGDIOBJ oldBr = ::SelectObject(dc, br);
-    HGDIOBJ oldPen = ::SelectObject(dc, pen);
+    HGDIOBJ oldBr = ::SelectObject(dc, ::GetStockObject(DC_BRUSH));
+    HGDIOBJ oldPen = ::SelectObject(dc, ::GetStockObject(DC_PEN));
+    const COLORREF oldBrColor = ::SetDCBrushColor(dc, fill);
+    const COLORREF oldPenColor = ::SetDCPenColor(dc, border);
     ::Polygon(dc, pts, 10);
+    ::SetDCPenColor(dc, oldPenColor);
+    ::SetDCBrushColor(dc, oldBrColor);
     ::SelectObject(dc, oldPen);
     ::SelectObject(dc, oldBr);
-    ::DeleteObject(pen);
-    ::DeleteObject(br);
 }
