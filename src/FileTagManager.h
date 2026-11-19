@@ -35,6 +35,11 @@ public:
     void ToggleStarred(const std::wstring& path);
     void ToggleStarredBatch(const std::vector<std::wstring>& paths);
     void ClearTag(const std::wstring& path);
+    // Migrate tags when a file or folder is renamed or moved (including nested children).
+    bool RenamePath(const std::wstring& oldPath, const std::wstring& newPath);
+    size_t RenamePathsBatch(const std::vector<std::pair<std::wstring, std::wstring>>& moves);
+    // Remove entries whose files/folders no longer exist on mounted local drives.
+    size_t PruneMissingPaths();
 
     static COLORREF GetColorRef(FileTagColor color);
     static const wchar_t* GetColorName(FileTagColor color);

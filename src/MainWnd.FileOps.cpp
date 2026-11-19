@@ -374,6 +374,7 @@ bool CMainWnd::RenameItem(const ClipboardItem& item, const std::wstring& newName
         UpdateStatus(aborted ? _T("已取消重命名") : tip.GetData());
         return false;
     }
+    FileTagManager::Instance().RenamePath(item.path, dest);
     PushUndoRename(item.path, dest);
     UpdateStatus(_T("重命名完成（Ctrl+Z 可撤销）"));
     return true;
@@ -578,6 +579,8 @@ void CMainWnd::ApplyFileOperationResult(const ShellFileOps::Result& result)
     using Kind = ShellFileOps::Kind;
     if (result.kind == Kind::Copy && !result.completed.empty()) {
         PushUndoCopy(result.completed);
+    } else if (result.kind == Kind::Move && !result.completed.empty()) {
+        FileTagManager::Instance().RenamePathsBatch(result.completed);
     }
     // The operation carried FOFX_ADDUNDORECORD, so it is already in the Windows undo history.
     UpdateStatus(DescribeFileOperation(result).c_str());
@@ -818,6 +821,7 @@ bool CMainWnd::ApplyUndoEntry(const UndoEntry& entry, bool isRedo)
             UpdateStatus(isRedo ? _T("重做重命名失败") : _T("撤销重命名失败"));
             return false;
         }
+        FileTagManager::Instance().RenamePath(current, target);
         RefreshListing();
         UpdateStatus(isRedo ? _T("已重做重命名") : _T("已撤销重命名"));
         return true;

@@ -1258,11 +1258,72 @@ struct MainWndRegressionAccess {
         }
         mgr.ClearTag(mixedCase);
 
-        // 4. Drawing functions sanity
+        // 3c. Rename/move tag migration (including nested folder children and sibling isolation)
+        const std::wstring dirA = L"C:\\FastFileTagMoveTest\\DirA";
+        const std::wstring dirAChild = L"C:\\FastFileTagMoveTest\\DirA\\Sub\\doc.txt";
+        const std::wstring dirASibling = L"C:\\FastFileTagMoveTest\\DirA2\\keep.txt";
+        const std::wstring dirB = L"C:\\FastFileTagMoveTest\\DirB";
+        const std::wstring dirBChild = L"C:\\FastFileTagMoveTest\\DirB\\Sub\\doc.txt";
+        mgr.ClearTag(dirA); mgr.ClearTag(dirAChild); mgr.ClearTag(dirASibling);
+        mgr.ClearTag(dirB); mgr.ClearTag(dirBChild);
+        mgr.SetColor(dirA, FileTagColor::Orange);
+        mgr.SetColor(dirAChild, FileTagColor::Blue);
+        mgr.SetStarred(dirAChild, true);
+        mgr.SetColor(dirASibling, FileTagColor::Yellow);
+        check(mgr.RenamePath(dirA, dirB), "RenamePath migrates folder and nested children");
+        check(mgr.GetTag(dirA).color == FileTagColor::None && mgr.GetTag(dirAChild).color == FileTagColor::None,
+            "RenamePath removes old folder and child keys");
+        check(mgr.GetTag(dirB).color == FileTagColor::Orange && mgr.GetTag(dirBChild).color == FileTagColor::Blue && mgr.GetTag(dirBChild).starred,
+            "RenamePath preserves folder and child tags at new paths");
+        check(mgr.GetTag(dirASibling).color == FileTagColor::Yellow,
+            "RenamePath does not touch sibling folder sharing a string prefix");
+        check(mgr.RenamePathsBatch({ { dirB, dirA } }) == 1, "RenamePathsBatch migrates moved items");
+        check(mgr.GetTag(dirAChild).color == FileTagColor::Blue && mgr.GetTag(dirBChild).color == FileTagColor::None,
+            "RenamePathsBatch restores child tag");
+        mgr.ClearTag(dirA); mgr.ClearTag(dirAChild); mgr.ClearTag(dirASibling);
+
+        // 3d. Prune missing local paths while keeping existing ones
+        wchar_t tempBuf[MAX_PATH]{};
+        if (::GetTempPathW(_countof(tempBuf), tempBuf) > 0) {
+            const std::wstring existingTmp = std::wstring(tempBuf) + L"FastFileTagPruneKeep_" + std::to_wstring(::GetCurrentProcessId()) + L".tmp";
+            const std::wstring missingTmp = std::wstring(tempBuf) + L"FastFileTagPruneGone_" + std::to_wstring(::GetCurrentProcessId()) + L".tmp";
+            HANDLE hf = ::CreateFileW(existingTmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (hf != INVALID_HANDLE_VALUE) ::CloseHandle(hf);
+            ::DeleteFileW(missingTmp.c_str());
+            mgr.SetColor(existingTmp, FileTagColor::Green);
+            mgr.SetColor(missingTmp, FileTagColor::Red);
+            const size_t pruned = mgr.PruneMissingPaths();
+            check(pruned >= 1 && mgr.GetTag(missingTmp).color == FileTagColor::None && mgr.GetTag(existingTmp).color == FileTagColor::Green,
+                "PruneMissingPaths removes missing files and keeps existing files");
+            mgr.ClearTag(existingTmp);
+            ::DeleteFileW(existingTmp.c_str());
+        }
+
+        // 4. Drawing functions sanity (GDI+ anti-aliased rendering into DIB)
         HDC dc = ::CreateCompatibleDC(nullptr);
         if (dc) {
-            FileTagManager::DrawTagDot(dc, 10, 10, 5, RGB(255, 77, 79));
-            FileTagManager::DrawStar(dc, 20, 20, 6);
+            BITMAPINFO bmi{};
+            bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            bmi.bmiHeader.biWidth = 32;
+            bmi.bmiHeader.biHeight = -32;
+            bmi.bmiHeader.biPlanes = 1;
+            bmi.bmiHeader.biBitCount = 32;
+            void* bits = nullptr;
+            HBITMAP bmp = ::CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+            if (bmp && bits) {
+                memset(bits, 0, 32 * 32 * 4);
+                HGDIOBJ oldBmp = ::SelectObject(dc, bmp);
+                FileTagManager::DrawTagDot(dc, 10, 10, 5, RGB(255, 77, 79));
+                FileTagManager::DrawStar(dc, 22, 22, 6);
+                const DWORD* px = static_cast<const DWORD*>(bits);
+                int painted = 0;
+                for (int i = 0; i < 32 * 32; ++i) {
+                    if ((px[i] & 0x00FFFFFF) != 0) ++painted;
+                }
+                check(painted > 20, "GDI+ anti-aliased DrawTagDot and DrawStar render visible pixels");
+                ::SelectObject(dc, oldBmp);
+                ::DeleteObject(bmp);
+            }
             ::DeleteDC(dc);
         }
 

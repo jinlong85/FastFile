@@ -178,6 +178,8 @@ void CMainWnd::OnMoreMenuClicked()
     ::AppendMenuW(tagMenu, MF_STRING, 107, L"★ 星标 / 置顶\tAlt+B");
     ::AppendMenuW(tagMenu, MF_SEPARATOR, 0, nullptr);
     ::AppendMenuW(tagMenu, MF_STRING, 100, L"清除标签\tAlt+0");
+    ::AppendMenuW(tagMenu, MF_SEPARATOR, 0, nullptr);
+    ::AppendMenuW(tagMenu, MF_STRING, 108, L"清理失效标签");
     ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(tagMenu), L"文件标签与标记");
 
     CControlUI* anchor = m_PaintManager.FindControl(_T("btn_more"));
@@ -209,6 +211,17 @@ void CMainWnd::OnMoreMenuClicked()
         ApplyTagColorToSelection(FileTagColor::None);
     } else if (cmd == 107) {
         ToggleStarSelection();
+    } else if (cmd == 108) {
+        const size_t pruned = FileTagManager::Instance().PruneMissingPaths();
+        if (pruned > 0) {
+            if (m_shellBrowser && m_shellBrowser->IsCreated()) m_shellBrowser->Redraw();
+            if (m_pFileList) m_pFileList->Invalidate();
+            if (m_pIconTiles) m_pIconTiles->Invalidate();
+            std::wstring msg = L"已清理 " + std::to_wstring(pruned) + L" 条失效标签";
+            UpdateStatus(msg.c_str());
+        } else {
+            UpdateStatus(_T("所有标签均有效，无需清理"));
+        }
     } else if (cmd == 6) {
         if (!cfgDir.empty())
             AddTab(cfgDir, true);
