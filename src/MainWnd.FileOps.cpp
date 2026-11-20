@@ -771,26 +771,17 @@ void CMainWnd::ShowPropertiesForSelection()
 
 void CMainWnd::PushUndoRename(const std::wstring& oldPath, const std::wstring& newPath)
 {
-    m_undoStack.push_back({ UndoKind::Rename, oldPath, newPath, {} });
-    m_redoStack.clear();
+    m_fallbackUndo.PushRename(oldPath, newPath);
 }
 
 void CMainWnd::PushUndoCopy(const std::vector<std::pair<std::wstring, std::wstring>>& completedCopies)
 {
-    std::vector<std::wstring> dests;
-    dests.reserve(completedCopies.size());
-    for (const auto& pair : completedCopies) {
-        if (!pair.second.empty()) dests.push_back(pair.second);
-    }
-    if (!dests.empty()) {
-        m_undoStack.push_back({ UndoKind::CopyFiles, L"", L"", std::move(dests) });
-        m_redoStack.clear();
-    }
+    m_fallbackUndo.PushCopy(completedCopies);
 }
 
-bool CMainWnd::ApplyUndoEntry(const UndoEntry& entry, bool isRedo)
+bool CMainWnd::ApplyUndoEntry(const UndoHistory::Entry& entry, bool isRedo)
 {
-    if (entry.kind == UndoKind::Rename) {
+    if (entry.kind == UndoHistory::Kind::Rename) {
         const std::wstring current = isRedo ? entry.oldPath : entry.newPath;
         const std::wstring target = isRedo ? entry.newPath : entry.oldPath;
         const std::wstring targetLeaf = GetLeafName(target);
@@ -822,7 +813,7 @@ bool CMainWnd::ApplyUndoEntry(const UndoEntry& entry, bool isRedo)
         UpdateStatus(isRedo ? _T("已重做重命名") : _T("已撤销重命名"));
         return true;
     }
-    if (entry.kind == UndoKind::CopyFiles) {
+    if (entry.kind == UndoHistory::Kind::CopyFiles) {
         if (isRedo) {
             UpdateStatus(_T("复制操作暂不支持重做"));
             return false;

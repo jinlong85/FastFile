@@ -720,22 +720,21 @@ void CMainWnd::RunFileCommand(FileCommand command)
 
 bool CMainWnd::CanUndo()
 {
-    return NativeVerbAvailable(L"undo", NativeScope::Background) || !m_undoStack.empty();
+    return NativeVerbAvailable(L"undo", NativeScope::Background) || m_fallbackUndo.CanUndo();
 }
 
 bool CMainWnd::CanRedo()
 {
-    return NativeVerbAvailable(L"redo", NativeScope::Background) || !m_redoStack.empty();
+    return NativeVerbAvailable(L"redo", NativeScope::Background) || m_fallbackUndo.CanRedo();
 }
 
 void CMainWnd::OnUndo()
 {
     if (InvokeNativeVerb(L"undo", NativeScope::Background)) return;
-    if (!m_undoStack.empty()) {
-        UndoEntry entry = std::move(m_undoStack.back());
-        m_undoStack.pop_back();
+    UndoHistory::Entry entry;
+    if (m_fallbackUndo.PopUndo(entry)) {
         if (ApplyUndoEntry(entry, false)) {
-            m_redoStack.push_back(std::move(entry));
+            m_fallbackUndo.PushRedoEntry(std::move(entry));
         }
         return;
     }
@@ -745,11 +744,10 @@ void CMainWnd::OnUndo()
 void CMainWnd::OnRedo()
 {
     if (InvokeNativeVerb(L"redo", NativeScope::Background)) return;
-    if (!m_redoStack.empty()) {
-        UndoEntry entry = std::move(m_redoStack.back());
-        m_redoStack.pop_back();
+    UndoHistory::Entry entry;
+    if (m_fallbackUndo.PopRedo(entry)) {
         if (ApplyUndoEntry(entry, true)) {
-            m_undoStack.push_back(std::move(entry));
+            m_fallbackUndo.PushUndoEntry(std::move(entry));
         }
         return;
     }

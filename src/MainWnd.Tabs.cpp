@@ -4,6 +4,7 @@
 
 #include "MainWndInternal.h"
 #include "FavoriteStarUI.h"
+#include "SessionStore.h"
 
 // ---- Tabs ----------------------------------------------------------------
 
@@ -659,308 +660,122 @@ void CMainWnd::UpdateActiveTabPath(const std::wstring& path)
 
 std::wstring CMainWnd::GetSessionFilePath()
 {
-    wchar_t appdata[MAX_PATH] = {};
-    DWORD n = ::GetEnvironmentVariableW(L"APPDATA", appdata, MAX_PATH);
-    std::wstring dir;
-    if (n > 0 && n < MAX_PATH)
-        dir = appdata;
-    else
-        dir = L".";
-    dir += L"\\FastFile";
-    ::CreateDirectoryW(dir.c_str(), nullptr);
-    return dir + L"\\session.ini";
+    return FastFileSession::SessionFilePath();
 }
 
 std::wstring CMainWnd::GetFolderViewsFilePath()
 {
-    wchar_t appdata[MAX_PATH] = {};
-    DWORD n = ::GetEnvironmentVariableW(L"APPDATA", appdata, MAX_PATH);
-    std::wstring dir;
-    if (n > 0 && n < MAX_PATH)
-        dir = appdata;
-    else
-        dir = L".";
-    dir += L"\\FastFile";
-    ::CreateDirectoryW(dir.c_str(), nullptr);
-    return dir + L"\\folder_views.ini";
+    return FastFileSession::FolderViewsFilePath();
 }
 
 std::wstring CMainWnd::NormalizeViewKey(const std::wstring& path)
 {
-    if (path.empty())
-        return {};
-    if (IsThisPcPath(path) || path == L"此电脑" || ::_wcsicmp(path.c_str(), L"This PC") == 0)
-        return kThisPcPath;
-    std::wstring key = NormalizePath(path);
-    if (key.empty())
-        return {};
-    for (auto& ch : key)
-        ch = static_cast<wchar_t>(towlower(ch));
-    return key;
+    return FastFileSession::NormalizeViewKey(path, kThisPcPath);
 }
 
 CMainWnd::ViewMode CMainWnd::LoadFolderViewForPath(const std::wstring& path) const
 {
     const ViewMode kDefault = static_cast<ViewMode>(m_settings.defaultView);
-    if(!m_settings.rememberViews)return kDefault;
-    std::wstring key = NormalizeViewKey(path);
-    if (key.empty())
-        return kDefault;
-
-    std::wstring file = GetFolderViewsFilePath();
-    FILE* fp = nullptr;
-    if (_wfopen_s(&fp, file.c_str(), L"rb") != 0 || !fp)
-        return kDefault;
-    fseek(fp, 0, SEEK_END);
-    long sz = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-    if (sz < 4) { fclose(fp); return kDefault; }
-    std::wstring content;
-    content.resize(sz / sizeof(wchar_t));
-    fread(&content[0], 1, sz, fp);
-    fclose(fp);
-    if (!content.empty() && content[0] == 0xFEFF)
-        content.erase(content.begin());
-
-    size_t pos = 0;
-    while (pos < content.size()) {
-        size_t eol = content.find(L'\n', pos);
-        if (eol == std::wstring::npos) eol = content.size();
-        std::wstring line = content.substr(pos, eol - pos);
-        if (!line.empty() && line.back() == L'\r') line.pop_back();
-        pos = eol + 1;
-        if (line.empty() || line[0] == L'[' || line[0] == L';') continue;
-        size_t eq = line.find(L'=');
-        if (eq == std::wstring::npos) continue;
-        std::wstring k = line.substr(0, eq);
-        std::wstring v = line.substr(eq + 1);
-        if (::_wcsicmp(k.c_str(), key.c_str()) != 0) continue;
-        int mode = _wtoi(v.c_str());
-        if (mode >= 0 && mode <= static_cast<int>(ViewMode::Content))
-            return static_cast<ViewMode>(mode);
-        break;
-    }
-    return kDefault;
+    if (!m_settings.rememberViews) return kDefault;
+    const int mode = FastFileSession::LoadFolderView(
+        GetFolderViewsFilePath(),
+        NormalizeViewKey(path),
+        static_cast<int>(kDefault),
+        static_cast<int>(ViewMode::Content));
+    return static_cast<ViewMode>(mode);
 }
 
 void CMainWnd::SaveFolderViewForPath(const std::wstring& path, ViewMode mode) const
 {
-    if(!m_settings.rememberViews)return;
-    std::wstring key = NormalizeViewKey(path);
-    if (key.empty())
-        return;
-
-    std::wstring file = GetFolderViewsFilePath();
-    std::map<std::wstring, int> entries;
-
-    FILE* fp = nullptr;
-    if (_wfopen_s(&fp, file.c_str(), L"rb") == 0 && fp) {
-        fseek(fp, 0, SEEK_END);
-        long sz = ftell(fp);
-        fseek(fp, 0, SEEK_SET);
-        if (sz >= 4) {
-            std::wstring content;
-            content.resize(sz / sizeof(wchar_t));
-            fread(&content[0], 1, sz, fp);
-            if (!content.empty() && content[0] == 0xFEFF)
-                content.erase(content.begin());
-            size_t pos = 0;
-            while (pos < content.size()) {
-                size_t eol = content.find(L'\n', pos);
-                if (eol == std::wstring::npos) eol = content.size();
-                std::wstring line = content.substr(pos, eol - pos);
-                if (!line.empty() && line.back() == L'\r') line.pop_back();
-                pos = eol + 1;
-                if (line.empty() || line[0] == L'[' || line[0] == L';') continue;
-                size_t eq = line.find(L'=');
-                if (eq == std::wstring::npos) continue;
-                std::wstring k = line.substr(0, eq);
-                int v = _wtoi(line.substr(eq + 1).c_str());
-                if (!k.empty() && v >= 0 && v <= static_cast<int>(ViewMode::Content))
-                    entries[k] = v;
-            }
-        }
-        fclose(fp);
-    }
-
-    entries[key] = static_cast<int>(mode);
-
-    if (_wfopen_s(&fp, file.c_str(), L"wb") != 0 || !fp)
-        return;
-    unsigned char bom[2] = { 0xFF, 0xFE };
-    fwrite(bom, 1, 2, fp);
-    auto writeLine = [&](const std::wstring& s) {
-        fwrite(s.c_str(), sizeof(wchar_t), s.size(), fp);
-        wchar_t nl = L'\n';
-        fwrite(&nl, sizeof(wchar_t), 1, fp);
-    };
-    writeLine(L"[FolderViews]");
-    for (const auto& kv : entries) {
-        wchar_t buf[32];
-        swprintf_s(buf, L"=%d", kv.second);
-        writeLine(kv.first + buf);
-    }
-    fclose(fp);
+    if (!m_settings.rememberViews) return;
+    FastFileSession::SaveFolderView(
+        GetFolderViewsFilePath(),
+        NormalizeViewKey(path),
+        static_cast<int>(mode),
+        static_cast<int>(ViewMode::Content));
 }
 
 void CMainWnd::SaveSession() const
 {
     SaveLeftNavSplitter();
-    // Persist current tab path/filter first
-    // (const_cast not needed — write from copies)
-    std::wstring path = GetSessionFilePath();
-    FILE* fp = nullptr;
-    if (_wfopen_s(&fp, path.c_str(), L"wb") != 0 || !fp)
-        return;
-    // UTF-16 LE BOM
-    unsigned char bom[2] = { 0xFF, 0xFE };
-    fwrite(bom, 1, 2, fp);
-
-    auto writeLine = [&](const std::wstring& s) {
-        fwrite(s.c_str(), sizeof(wchar_t), s.size(), fp);
-        wchar_t nl = L'\n';
-        fwrite(&nl, sizeof(wchar_t), 1, fp);
-    };
-
-    writeLine(L"[Session]");
-    {
-        wchar_t buf[128];
-        swprintf_s(buf, L"ActiveTab=%d", m_activeTab);
-        writeLine(buf);
-        swprintf_s(buf, L"ViewMode=%d", static_cast<int>(m_viewMode));
-        writeLine(buf);
-        swprintf_s(buf, L"Recursive=%d", IsRecursiveSearch() ? 1 : 0);
-        writeLine(buf);
-        swprintf_s(buf, L"ColName=%d", m_colWidthName);
-        writeLine(buf);
-        swprintf_s(buf, L"ColMTime=%d", m_colWidthMTime);
-        writeLine(buf);
-        swprintf_s(buf, L"ColType=%d", m_colWidthType);
-        writeLine(buf);
-        swprintf_s(buf, L"ColSize=%d", m_colWidthSize);
-        writeLine(buf);
-        swprintf_s(buf, L"SortCol=%d", static_cast<int>(m_sortColumn));
-        writeLine(buf);
-        swprintf_s(buf, L"SortAsc=%d", m_sortAscending ? 1 : 0);
-        writeLine(buf);
-        swprintf_s(buf, L"Preview=%d", m_previewVisible ? 1 : 0);
-        writeLine(buf);
-        swprintf_s(buf, L"ShowHidden=%d", m_showHidden ? 1 : 0);
-        writeLine(buf);
-        swprintf_s(buf, L"FavoritesBar=%d", m_favoritesBarVisible ? 1 : 0);
-        writeLine(buf);
+    FastFileSession::SessionData data;
+    data.activeTab = m_activeTab;
+    data.viewMode = static_cast<int>(m_viewMode);
+    data.recursive = IsRecursiveSearch();
+    data.colWidthName = m_colWidthName;
+    data.colWidthMTime = m_colWidthMTime;
+    data.colWidthType = m_colWidthType;
+    data.colWidthSize = m_colWidthSize;
+    data.sortColumn = static_cast<int>(m_sortColumn);
+    data.sortAscending = m_sortAscending;
+    data.previewVisible = m_previewVisible;
+    data.showHidden = m_showHidden;
+    data.favoritesBarVisible = m_favoritesBarVisible;
+    data.tabs.reserve(m_tabs.size());
+    for (int i = 0; i < static_cast<int>(m_tabs.size()); ++i) {
+        FastFileSession::TabRecord rec;
+        rec.path = (i == m_activeTab && !m_currentPath.empty()) ? m_currentPath : m_tabs[i].path;
+        rec.searchFilter = (i == m_activeTab) ? m_searchFilter : m_tabs[i].searchFilter;
+        rec.isPinned = m_tabs[i].isPinned;
+        data.tabs.push_back(std::move(rec));
     }
-    writeLine(L"[Tabs]");
-    {
-        wchar_t buf[64];
-        swprintf_s(buf, L"Count=%d", static_cast<int>(m_tabs.size()));
-        writeLine(buf);
-    }
-    for (int i = 0; i < (int)m_tabs.size(); ++i) {
-        std::wstring p = m_tabs[i].path;
-        if (i == m_activeTab && !m_currentPath.empty())
-            p = m_currentPath;
-        wchar_t key[64];
-        swprintf_s(key, L"Path%d=", i);
-        writeLine(std::wstring(key) + p);
-        swprintf_s(key, L"Filter%d=", i);
-        writeLine(std::wstring(key) + ((i == m_activeTab) ? m_searchFilter : m_tabs[i].searchFilter));
-        swprintf_s(key, L"Pinned%d=", i);
-        writeLine(std::wstring(key) + (m_tabs[i].isPinned ? L"1" : L"0"));
-    }
-    fclose(fp);
+    FastFileSession::SaveSession(GetSessionFilePath(), data);
 }
 
 bool CMainWnd::LoadSession()
 {
-    std::wstring path = GetSessionFilePath();
-    FILE* fp = nullptr;
-    if (_wfopen_s(&fp, path.c_str(), L"rb") != 0 || !fp)
-        return false;
-    fseek(fp, 0, SEEK_END);
-    long sz = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-    if (sz < 4) { fclose(fp); return false; }
-    std::wstring content;
-    content.resize(sz / sizeof(wchar_t));
-    fread(&content[0], 1, sz, fp);
-    fclose(fp);
-    if (!content.empty() && content[0] == 0xFEFF)
-        content.erase(content.begin());
+    FastFileSession::SessionData data;
+    data.viewMode = static_cast<int>(ViewMode::Tiles);
+    data.colWidthName = m_colWidthName;
+    data.colWidthMTime = m_colWidthMTime;
+    data.colWidthType = m_colWidthType;
+    data.colWidthSize = m_colWidthSize;
+    data.sortColumn = static_cast<int>(m_sortColumn);
+    data.sortAscending = m_sortAscending;
+    data.previewVisible = m_previewVisible;
+    data.showHidden = m_showHidden;
+    data.favoritesBarVisible = m_favoritesBarVisible;
 
-    int active = 0;
-    int viewMode = static_cast<int>(ViewMode::Tiles);
-    int recursive = 0;
-    int count = 0;
-    std::map<int, std::wstring> paths;
-    std::map<int, std::wstring> filters;
-    std::map<int, bool> pinned;
-
-    size_t pos = 0;
-    while (pos < content.size()) {
-        size_t eol = content.find(L'\n', pos);
-        if (eol == std::wstring::npos) eol = content.size();
-        std::wstring line = content.substr(pos, eol - pos);
-        if (!line.empty() && line.back() == L'\r') line.pop_back();
-        pos = eol + 1;
-        if (line.empty() || line[0] == L'[' || line[0] == L';') continue;
-        size_t eq = line.find(L'=');
-        if (eq == std::wstring::npos) continue;
-        std::wstring key = line.substr(0, eq);
-        std::wstring val = line.substr(eq + 1);
-        if (key == L"ActiveTab") active = _wtoi(val.c_str());
-        else if (key == L"ViewMode") viewMode = _wtoi(val.c_str());
-        else if (key == L"Recursive") recursive = _wtoi(val.c_str());
-        else if (key == L"ColName") m_colWidthName = (std::max)(60, _wtoi(val.c_str()));
-        else if (key == L"ColMTime") m_colWidthMTime = (std::max)(50, _wtoi(val.c_str()));
-        else if (key == L"ColType") m_colWidthType = (std::max)(50, _wtoi(val.c_str()));
-        else if (key == L"ColSize") m_colWidthSize = (std::max)(50, _wtoi(val.c_str()));
-        else if (key == L"SortCol") {
-            int sc = _wtoi(val.c_str());
-            if (sc >= 0 && sc <= 3) m_sortColumn = static_cast<SortColumn>(sc);
-        }
-        else if (key == L"SortAsc") m_sortAscending = (_wtoi(val.c_str()) != 0);
-        else if (key == L"Preview") m_previewVisible = (_wtoi(val.c_str()) != 0);
-        else if (key == L"ShowHidden") m_showHidden = (_wtoi(val.c_str()) != 0);
-        else if (key == L"FavoritesBar") m_favoritesBarVisible = (_wtoi(val.c_str()) != 0);
-        else if (key == L"Count") count = _wtoi(val.c_str());
-        else if (key.size() > 4 && key.compare(0, 4, L"Path") == 0)
-            paths[_wtoi(key.c_str() + 4)] = val;
-        else if (key.size() > 6 && key.compare(0, 6, L"Filter") == 0)
-            filters[_wtoi(key.c_str() + 6)] = val;
-        else if (key.size() > 6 && key.compare(0, 6, L"Pinned") == 0)
-            pinned[_wtoi(key.c_str() + 6)] = (_wtoi(val.c_str()) != 0);
-    }
-
-    if (count <= 0 || paths.empty())
+    if (!FastFileSession::LoadSession(GetSessionFilePath(), data))
         return false;
 
-    if(m_settings.startup!=0) {
-        paths.clear();filters.clear();pinned.clear();
-        const auto custom=m_settings.startup==2 && m_startupOpenPaths.empty()
+    m_colWidthName = data.colWidthName;
+    m_colWidthMTime = data.colWidthMTime;
+    m_colWidthType = data.colWidthType;
+    m_colWidthSize = data.colWidthSize;
+    m_sortColumn = static_cast<SortColumn>(data.sortColumn);
+    m_sortAscending = data.sortAscending;
+    m_previewVisible = data.previewVisible;
+    m_showHidden = data.showHidden;
+    m_favoritesBarVisible = data.favoritesBarVisible;
+
+    int active = data.activeTab;
+    int viewMode = data.viewMode;
+
+    if (m_settings.startup != 0) {
+        data.tabs.clear();
+        const auto custom = m_settings.startup == 2 && m_startupOpenPaths.empty()
             ? ResolveFolderOpenTarget(m_settings.startupPath) : std::wstring();
-        paths[0]=m_settings.startup==2 && !custom.empty() ? custom : std::wstring(kThisPcPath);
-        count=1;active=0;
+        FastFileSession::TabRecord rec;
+        rec.path = m_settings.startup == 2 && !custom.empty() ? custom : std::wstring(kThisPcPath);
+        data.tabs.push_back(std::move(rec));
+        active = 0;
     }
-    if(GetFileAttributesW(FastFileSettings::FilePath().c_str())!=INVALID_FILE_ATTRIBUTES) {
-        m_sortColumn=static_cast<SortColumn>(m_settings.sortColumn);m_sortAscending=m_settings.sortAscending;
-        viewMode=m_settings.defaultView;
+    if (GetFileAttributesW(FastFileSettings::FilePath().c_str()) != INVALID_FILE_ATTRIBUTES) {
+        m_sortColumn = static_cast<SortColumn>(m_settings.sortColumn);
+        m_sortAscending = m_settings.sortAscending;
+        viewMode = m_settings.defaultView;
     }
 
     m_tabs.clear();
     m_activeTab = -1;
-    for (int i = 0; i < count; ++i) {
-        auto it = paths.find(i);
-        if (it == paths.end() || it->second.empty()) continue;
+    for (const auto& rec : data.tabs) {
+        if (rec.path.empty()) continue;
         TabInfo tab;
-        tab.path = it->second;
-        auto fit = filters.find(i);
-        if (fit != filters.end())
-            tab.searchFilter = fit->second;
-        auto pit = pinned.find(i);
-        if (pit != pinned.end())
-            tab.isPinned = pit->second;
-        m_tabs.push_back(tab);
+        tab.path = rec.path;
+        tab.searchFilter = rec.searchFilter;
+        tab.isPinned = rec.isPinned;
+        m_tabs.push_back(std::move(tab));
     }
     if (m_tabs.empty())
         return false;
@@ -968,19 +783,19 @@ bool CMainWnd::LoadSession()
     if (viewMode >= 0 && viewMode <= static_cast<int>(ViewMode::Content))
         m_viewMode = static_cast<ViewMode>(viewMode);
     if (m_pChkRecursive)
-        m_pChkRecursive->Selected(recursive != 0);
+        m_pChkRecursive->Selected(data.recursive);
     ApplyColumnWidths();
     SetPreviewVisible(m_previewVisible);
     if (m_pFavoritesBar)
         m_pFavoritesBar->SetVisible(m_favoritesBarVisible);
     UpdateHeaderSortIndicators();
 
-    if (active < 0 || active >= (int)m_tabs.size())
+    if (active < 0 || active >= static_cast<int>(m_tabs.size()))
         active = 0;
-    if(m_startupOpenPaths.empty())ActivateTab(active);
+    if (m_startupOpenPaths.empty()) ActivateTab(active);
     else {
         // Restore the tab model, but let the external target own the first browse.
-        m_activeTab=active;
+        m_activeTab = active;
         RebuildTabStrip();
     }
     RebuildBreadcrumb();

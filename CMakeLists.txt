@@ -89,6 +89,10 @@ add_executable(FastFile WIN32
   src/ShellMenuUtil.h
   src/FileTagManager.cpp
   src/FileTagManager.h
+  src/SessionStore.cpp
+  src/SessionStore.h
+  src/UndoHistory.cpp
+  src/UndoHistory.h
   src/MainWnd.h
   src/MainWndInternal.h
   src/ExplorerAgentProtocol.h
@@ -222,6 +226,17 @@ if(BUILD_TESTING)
   endif()
   add_test(NAME FastFileAutoUpdaterTests COMMAND FastFileAutoUpdaterTests)
   set_tests_properties(FastFileAutoUpdaterTests PROPERTIES TIMEOUT 30)
+  add_executable(FastFileModulesTests
+    tests/SessionStoreTests.cpp
+    src/SessionStore.cpp
+    src/UndoHistory.cpp
+  )
+  target_include_directories(FastFileModulesTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  if(MSVC)
+    target_compile_options(FastFileModulesTests PRIVATE /utf-8 /wd4828)
+  endif()
+  add_test(NAME FastFileModulesTests COMMAND FastFileModulesTests)
+  set_tests_properties(FastFileModulesTests PROPERTIES TIMEOUT 30)
   add_test(NAME FastFileBuildSourceParity
     COMMAND "${CMAKE_COMMAND}" "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/CheckBuildSources.cmake")

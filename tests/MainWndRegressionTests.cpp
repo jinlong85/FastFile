@@ -715,8 +715,7 @@ private:
 
 struct MainWndRegressionAccess {
     static void ClearUndoStacks(CMainWnd& window) {
-        window.m_undoStack.clear();
-        window.m_redoStack.clear();
+        window.m_fallbackUndo.Clear();
     }
     inline static CMainWnd* menuCaptureOwner = nullptr;
     inline static std::wstring menuCapturePath;
@@ -1957,6 +1956,7 @@ struct MainWndRegressionAccess {
             check(window.m_lastNativeVerb.verb == L"undo" && window.m_lastNativeVerb.byOffset
                 && window.m_lastNativeVerb.scope == CMainWnd::NativeScope::Background && SUCCEEDED(window.m_lastNativeVerb.hr),
                 "撤销 invokes the native background undo verb");
+            waitFor([&] { return window.NativeVerbAvailable(L"redo", CMainWnd::NativeScope::Background); }, 3000);
             window.OnRedo();
             check(waitFor([&] { return exists(engineName) && !exists(copied); }), "重做 reapplies it through the Windows history");
         } else {
