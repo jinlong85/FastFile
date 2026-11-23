@@ -6,6 +6,7 @@
 #include "FastFileSettings.h"
 #include "ShellFileOperation.h"
 #include "FileTagManager.h"
+#include "UndoHistory.h"
 
 #include <shtypes.h>
 
@@ -220,13 +221,6 @@ private:
     enum class NativeScope { Selection, Background };
     enum class FileCommand { None, Copy, Cut, Paste, Delete, DeletePermanent, Rename, NewFolder,
         SelectAll, Undo, Redo, Properties };
-    enum class UndoKind { Rename, CopyFiles };
-    struct UndoEntry {
-        UndoKind kind;
-        std::wstring oldPath;
-        std::wstring newPath;
-        std::vector<std::wstring> copiedDests;
-    };
     static FileCommand FileCommandForKey(WPARAM key, bool ctrl, bool shift, bool alt);
     void RunFileCommand(FileCommand command);
     void OnUndo();
@@ -235,7 +229,7 @@ private:
     bool CanRedo();
     void PushUndoRename(const std::wstring& oldPath, const std::wstring& newPath);
     void PushUndoCopy(const std::vector<std::pair<std::wstring, std::wstring>>& completedCopies);
-    bool ApplyUndoEntry(const UndoEntry& entry, bool isRedo);
+    bool ApplyUndoEntry(const UndoHistory::Entry& entry, bool isRedo);
     // Invokes the canonical verb on the selection menu (view selection, tree folder or
     // search-list items) or on the current folder's background menu. extraMask adds
     // CMIC_MASK_* bits (Shift+Delete passes CMIC_MASK_SHIFT_DOWN).
@@ -783,8 +777,7 @@ private:
     std::wstring m_renameOriginalPath;
     bool m_renameIsDirectory = false;
     bool m_finishingInlineRename = false;
-    std::vector<UndoEntry> m_undoStack;
-    std::vector<UndoEntry> m_redoStack;
+    UndoHistory m_fallbackUndo;
     bool m_addressEditMode = false;
     CListUI* m_pFileList = nullptr;
     CTreeViewUI* m_pDirTree = nullptr;

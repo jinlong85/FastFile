@@ -715,8 +715,7 @@ private:
 
 struct MainWndRegressionAccess {
     static void ClearUndoStacks(CMainWnd& window) {
-        window.m_undoStack.clear();
-        window.m_redoStack.clear();
+        window.m_fallbackUndo.Clear();
     }
     inline static CMainWnd* menuCaptureOwner = nullptr;
     inline static std::wstring menuCapturePath;

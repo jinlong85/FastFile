@@ -94,6 +94,8 @@
     <ClCompile Include="..\src\FluentScrollBarUI.cpp" />
     <ClCompile Include="..\src\AutoUpdater.cpp" />
     <ClCompile Include="..\src\FileTagManager.cpp" />
+    <ClCompile Include="..\src\SessionStore.cpp" />
+    <ClCompile Include="..\src\UndoHistory.cpp" />
     <ClInclude Include="..\src\ExplorerAgentProtocol.h" />
     <ClInclude Include="..\src\MainWnd.h" />
     <ClInclude Include="..\src\MainWndInternal.h" />
@@ -109,6 +111,8 @@
     <ClInclude Include="..\src\FluentScrollBarUI.h" />
     <ClInclude Include="..\src\AutoUpdater.h" />
     <ClInclude Include="..\src\FileTagManager.h" />
+    <ClInclude Include="..\src\SessionStore.h" />
+    <ClInclude Include="..\src\UndoHistory.h" />
     <ResourceCompile Include="..\res\FastFile.rc">
       <AdditionalIncludeDirectories>$(IntDir)generated;..\res;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
