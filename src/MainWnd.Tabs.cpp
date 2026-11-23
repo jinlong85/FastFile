@@ -24,6 +24,8 @@ std::wstring CMainWnd::TabTitleForPath(const std::wstring& path) const
 {
     if (IsThisPcPath(path))
         return L"此电脑";
+    if (FileTagManager::IsTagViewPath(path))
+        return FileTagManager::TagViewDisplayName(path);
     std::wstring leaf = GetShellDisplayName(path);
     if (path.size() <= 3 && path.size() >= 2 && path[1] == L':') return path.substr(0, 2);
     if (leaf.empty()) leaf = GetLeafName(path);
@@ -52,7 +54,9 @@ void CMainWnd::RebuildTabStrip()
         const std::wstring title = TabTitleForPath(m_tabs[i].path);
         std::wstring icon = IsThisPcPath(m_tabs[i].path)
             ? GetStockIconBmp(SIID_DESKTOPPC, tabIconPx)
-            : GetShellIconBmp(m_tabs[i].path, true, tabIconPx);
+            : FileTagManager::IsTagViewPath(m_tabs[i].path)
+                ? GetStockIconBmp(SIID_FIND, tabIconPx)
+                : GetShellIconBmp(m_tabs[i].path, true, tabIconPx);
         if (icon.empty()) icon = GetStockIconBmp(SIID_FOLDER, tabIconPx);
         m_pTabStrip->Add(m_tabs[i].path, title, icon, tabIconPx, i == m_activeTab, m_tabs[i].isPinned);
         m_tabs[i].button = nullptr;
@@ -63,9 +67,11 @@ void CMainWnd::RebuildTabStrip()
 
 int CMainWnd::FindTabForPath(const std::wstring& path) const
 {
-    const auto target = IsThisPcPath(path) || path == L"此电脑" ? std::wstring(kThisPcPath) : NormalizePath(path);
+    const auto target = (IsThisPcPath(path) || path == L"此电脑") ? std::wstring(kThisPcPath)
+        : FileTagManager::IsTagViewPath(path) ? path : NormalizePath(path);
     for (int i = 0; i < static_cast<int>(m_tabs.size()); ++i) {
-        const auto candidate = IsThisPcPath(m_tabs[i].path) ? m_tabs[i].path : NormalizePath(m_tabs[i].path);
+        const auto candidate = (IsThisPcPath(m_tabs[i].path) || FileTagManager::IsTagViewPath(m_tabs[i].path))
+            ? m_tabs[i].path : NormalizePath(m_tabs[i].path);
         if (PathEquals(candidate, target)) return i;
     }
     return -1;
@@ -76,7 +82,7 @@ void CMainWnd::AddTab(const std::wstring& path, bool activate, bool forceNew)
     std::wstring target = path.empty() ? GetDefaultStartPath() : path;
     if (target == L"此电脑")
         target = kThisPcPath;
-    else if (!IsThisPcPath(target)) {
+    else if (!IsThisPcPath(target) && !FileTagManager::IsTagViewPath(target)) {
         const std::wstring normalized = NormalizePath(target);
         if (!normalized.empty())
             target = normalized;
@@ -607,6 +613,9 @@ void CMainWnd::ActivateTab(int index)
     if (IsThisPcPath(target) || target == L"此电脑") {
         m_currentPath = kThisPcPath;
         if (m_pAddressEdit) m_pAddressEdit->SetText(_T("此电脑"));
+    } else if (FileTagManager::IsTagViewPath(target)) {
+        m_currentPath = target;
+        if (m_pAddressEdit) m_pAddressEdit->SetText(FileTagManager::TagViewDisplayName(target).c_str());
     } else {
         std::wstring norm = NormalizePath(target);
         if (norm.empty())

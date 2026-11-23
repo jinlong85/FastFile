@@ -77,6 +77,32 @@ void CMainWnd::NavigateToNow(const std::wstring& path, bool addToHistory)
         return;
     }
 
+    // Accept tag/star aggregation virtual views (::Tags, ::Tags:Starred, ::Tags:<Color>).
+    if (FileTagManager::IsTagViewPath(raw) || raw == L"已标记项目" || raw == L"所有已标记项目" || raw == L"星标项目" || raw == L"★ 星标项目") {
+        std::wstring tagTarget = raw;
+        if (raw == L"已标记项目" || raw == L"所有已标记项目") tagTarget = L"::Tags";
+        else if (raw == L"星标项目" || raw == L"★ 星标项目") tagTarget = L"::Tags:Starred";
+        if (addToHistory && !m_currentPath.empty() && !PathEquals(m_currentPath, tagTarget))
+            PushHistoryBeforeNav(m_currentPath);
+        m_currentPath = tagTarget;
+        m_searchFilter.clear();
+        if (m_pSearchEdit) SetSearchPlaceholder(true);
+        if (m_pAddressEdit)
+            m_pAddressEdit->SetText(FileTagManager::TagViewDisplayName(m_currentPath).c_str());
+        UpdateActiveTabPath(m_currentPath);
+        RefreshListing();
+        UpdateFavoritesHighlight();
+        UpdateNavButtons();
+        if (m_addressEditMode) {
+            m_addressEditMode = false;
+            if (m_pAddressEditHost) m_pAddressEditHost->SetVisible(false);
+            if (m_pBreadcrumb) m_pBreadcrumb->SetVisible(true);
+        }
+        RebuildBreadcrumb();
+        ClearPreview();
+        return;
+    }
+
     std::wstring target = NormalizePath(raw);
     if (target.empty()) {
         UpdateStatus(_T("路径为空"));
@@ -229,6 +255,10 @@ void CMainWnd::GoUp()
         UpdateStatus(_T("已在此电脑"));
         return;
     }
+    if (FileTagManager::IsTagViewPath(m_currentPath)) {
+        NavigateTo(kThisPcPath, true);
+        return;
+    }
     std::wstring parent = ParentPath(m_currentPath);
     if (parent.empty()) {
         NavigateTo(kThisPcPath, true);
@@ -333,7 +363,8 @@ void CMainWnd::RefreshListing()
         return;
     }
 
-    if (m_shellBrowser && m_shellBrowser->IsCreated()) {
+    const bool tagView = FileTagManager::IsTagViewPath(m_currentPath);
+    if (!tagView && m_shellBrowser && m_shellBrowser->IsCreated()) {
         const bool alreadyThere = m_shellBrowser->IsAtPath(m_currentPath);
         // Save the destination's remembered mode before Shell creates its view.
         if(!alreadyThere)ApplyShellViewMode();
@@ -370,6 +401,10 @@ void CMainWnd::RefreshListing()
             }
             return;
         }
+        m_shellBrowser->SetVisible(false);
+    }
+
+    if (tagView && m_shellBrowser && m_shellBrowser->IsCreated()) {
         m_shellBrowser->SetVisible(false);
     }
 
@@ -412,6 +447,26 @@ void CMainWnd::RefreshListing()
             if (db == L'C') return false;
             return da < db;
         });
+    } else if (tagView) {
+        FileTagColor colorFilter = FileTagColor::None;
+        bool starredOnly = false;
+        FileTagManager::ParseTagViewPath(m_currentPath, colorFilter, starredOnly);
+        const auto matches = FileTagManager::Instance().QueryTags(colorFilter, starredOnly);
+        for (const auto& kv : matches) {
+            WIN32_FILE_ATTRIBUTE_DATA fad{};
+            if (!::GetFileAttributesExW(kv.first.c_str(), GetFileExInfoStandard, &fad)) continue;
+            DirEntry e;
+            e.fullPath = kv.first;
+            e.name = GetLeafName(kv.first);
+            if (e.name.empty()) e.name = kv.first;
+            e.isDir = (fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            e.size = (static_cast<ULONGLONG>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
+            e.mtime = FileTimeToU64(fad.ftLastWriteTime);
+            e.attrs = fad.dwFileAttributes;
+            if (!EntryMatchesFilter(e)) continue;
+            if (e.isDir) dirs.push_back(std::move(e));
+            else files.push_back(std::move(e));
+        }
     } else if (IsRecursiveSearch() && !m_searchFilter.empty()) {
         CollectRecursiveMatches(m_currentPath, m_searchFilter, dirs, files, truncated);
     } else {
@@ -535,6 +590,8 @@ void CMainWnd::UpdateListingStatusTip()
         } else {
             tip.Format(_T("此电脑  ·  %d 个驱动器"), shown);
         }
+    } else if (FileTagManager::IsTagViewPath(m_currentPath)) {
+        tip.Format(_T("%s  ·  %d 项"), FileTagManager::TagViewDisplayName(m_currentPath).c_str(), shown);
     } else if (m_listingTruncated) {
         tip.Format(_T("%s  ·  显示 %d 项（已截断）"), m_currentPath.c_str(), shown);
     } else {
@@ -606,6 +663,8 @@ void CMainWnd::UpdateEmptyStateHint()
         text.Format(_T("没有找到名称包含「%s」的项目"), m_searchFilter.c_str());
     else if (IsThisPcPath(m_currentPath))
         text = _T("未检测到可用的驱动器");
+    else if (FileTagManager::IsTagViewPath(m_currentPath))
+        text = _T("当前标签分类下暂无项目（按 Alt+1~6 打色标，Alt+B 标星）");
     else
         text = _T("此文件夹为空");
     hint->SetText(text);
@@ -795,6 +854,8 @@ void CMainWnd::SyncAddressEditFromPath()
     if (!m_pAddressEdit) return;
     if (IsThisPcPath(m_currentPath) || m_currentPath.empty())
         m_pAddressEdit->SetText(_T("此电脑"));
+    else if (FileTagManager::IsTagViewPath(m_currentPath))
+        m_pAddressEdit->SetText(FileTagManager::TagViewDisplayName(m_currentPath).c_str());
     else
         m_pAddressEdit->SetText(m_currentPath.c_str());
 }
@@ -904,7 +965,9 @@ void CMainWnd::RebuildBreadcrumb()
     chain.push_back({ L"此电脑", kThisPcPath });
     // 此电脑 is a pseudo path ("::ThisPC"): never run it through NormalizePath, which
     // would turn it into a bogus drive-relative path and fake a "本地磁盘 (:)" segment.
-    if (!IsThisPcPath(m_currentPath) && !m_currentPath.empty()) {
+    if (FileTagManager::IsTagViewPath(m_currentPath)) {
+        chain.push_back({ FileTagManager::TagViewDisplayName(m_currentPath), m_currentPath });
+    } else if (!IsThisPcPath(m_currentPath) && !m_currentPath.empty()) {
         std::wstring path = NormalizePath(m_currentPath);
         if (!path.empty()) {
             if (path.size() >= 2 && path[1] == L':') {

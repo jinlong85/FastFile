@@ -1298,6 +1298,55 @@ struct MainWndRegressionAccess {
             ::DeleteFileW(existingTmp.c_str());
         }
 
+        // 3e. Cross-folder tag/star aggregation virtual views (::Tags, ::Tags:Starred, ::Tags:<Color>)
+        {
+            FileTagColor parsedColor = FileTagColor::None;
+            bool starredOnly = false;
+            check(FileTagManager::IsTagViewPath(L"::Tags") && FileTagManager::ParseTagViewPath(L"::Tags", parsedColor, starredOnly)
+                && parsedColor == FileTagColor::None && !starredOnly, "::Tags parses as all tagged items");
+            check(FileTagManager::IsTagViewPath(L"::Tags:Starred") && FileTagManager::ParseTagViewPath(L"::Tags:Starred", parsedColor, starredOnly)
+                && starredOnly && FileTagManager::TagViewDisplayName(L"::Tags:Starred") == L"★ 星标项目", "::Tags:Starred parses and formats");
+            check(FileTagManager::IsTagViewPath(L"::Tags:Red") && FileTagManager::ParseTagViewPath(L"::Tags:Red", parsedColor, starredOnly)
+                && parsedColor == FileTagColor::Red && !starredOnly, "::Tags:Red parses as red tag filter");
+            check(!FileTagManager::IsTagViewPath(L"C:\\Windows"), "normal path is not a tag view");
+
+            wchar_t tmpDir[MAX_PATH]{};
+            if (::GetTempPathW(_countof(tmpDir), tmpDir) > 0) {
+                const std::wstring fStar = std::wstring(tmpDir) + L"FastFileTagAggStar_" + std::to_wstring(::GetCurrentProcessId()) + L".txt";
+                const std::wstring fBlue = std::wstring(tmpDir) + L"FastFileTagAggBlue_" + std::to_wstring(::GetCurrentProcessId()) + L".txt";
+                for (const auto& p : { fStar, fBlue }) {
+                    HANDLE hf = ::CreateFileW(p.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                    if (hf != INVALID_HANDLE_VALUE) ::CloseHandle(hf);
+                }
+                mgr.SetColor(fStar, FileTagColor::Red);
+                mgr.SetStarred(fStar, true);
+                mgr.SetColor(fBlue, FileTagColor::Blue);
+
+                const auto starredRes = mgr.QueryTags(FileTagColor::None, true);
+                bool foundStar = false, foundBlueInStar = false;
+                for (const auto& kv : starredRes) {
+                    if (kv.first == FileTagManager::Normalize(fStar)) foundStar = true;
+                    if (kv.first == FileTagManager::Normalize(fBlue)) foundBlueInStar = true;
+                }
+                check(foundStar && !foundBlueInStar, "QueryTags(starredOnly) returns only starred entries");
+
+                const std::wstring savedPath = window.m_currentPath;
+                window.NavigateToNow(L"::Tags:Starred", false);
+                bool listedStar = false;
+                for (const auto& e : window.m_listingFiles) {
+                    if (FileTagManager::Normalize(e.fullPath) == FileTagManager::Normalize(fStar)) listedStar = true;
+                }
+                check(window.m_currentPath == L"::Tags:Starred" && listedStar,
+                    "navigating to ::Tags:Starred aggregates starred files across folders");
+                window.NavigateToNow(savedPath.empty() ? std::wstring(CMainWnd::kThisPcPath) : savedPath, false);
+
+                mgr.ClearTag(fStar);
+                mgr.ClearTag(fBlue);
+                ::DeleteFileW(fStar.c_str());
+                ::DeleteFileW(fBlue.c_str());
+            }
+        }
+
         // 4. Drawing functions sanity (GDI+ anti-aliased rendering into DIB)
         HDC dc = ::CreateCompatibleDC(nullptr);
         if (dc) {
