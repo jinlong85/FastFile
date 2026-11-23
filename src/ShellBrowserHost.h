@@ -79,6 +79,8 @@ public:
     // Large / extra-large thumbnail memory cache bounds (LRU; tests shrink them).
     void SetThumbnailCacheLimits(size_t maxBytes, size_t maxEntries);
     size_t ThumbWorkerCount() const { return m_thumbThreads.size(); }
+    void SetDarkMode(bool dark);
+    bool IsDarkMode() const { return m_darkMode; }
 
 private:
     HRESULT DefaultCommand(IShellView* view, BOOL (WINAPI *execute)(SHELLEXECUTEINFOW*) = ShellExecuteExW);
@@ -229,6 +231,8 @@ private:
     IFolderFilter* m_filter = nullptr;
     bool m_visible = true;
     bool m_showHidden = false;
+    bool m_darkMode = false;
+    void ApplyListDarkMode();
     int m_groupingMode=-1;
     PROPERTYKEY m_windowsGrouping{};
     BOOL m_windowsGroupingAscending=TRUE;

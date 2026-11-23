@@ -108,6 +108,28 @@ void CMainWnd::ApplyWindowCornerAndPadding()
     ApplyDwmChrome();
 }
 
+bool CMainWnd::IsSystemDarkTheme()
+{
+    DWORD value = 1;
+    DWORD size = sizeof(value);
+    const LSTATUS st = ::RegGetValueW(
+        HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        L"AppsUseLightTheme",
+        RRF_RT_REG_DWORD,
+        nullptr,
+        &value,
+        &size);
+    return (st == ERROR_SUCCESS) && (value == 0);
+}
+
+bool CMainWnd::IsDarkThemeActive() const
+{
+    if (m_settings.themeMode == 2) return true;
+    if (m_settings.themeMode == 1) return false;
+    return IsSystemDarkTheme();
+}
+
 // DWM shell: rounded corners, Mica Alt backdrop (DWMSBT_TABBEDWINDOW) and the frame extended
 // over the client area so the tab strip / title row shows the material. Everything below the
 // title row paints its own opaque surface, so Mica is only visible where we want it.
@@ -144,12 +166,9 @@ void CMainWnd::ApplyDwmChrome()
 #define DWMWA_COLOR_NONE 0xFFFFFFFE
 #endif
 
-    // FastFile ships a light palette, so the DWM frame stays light as well: a dark Mica band
-    // over a light content area looked broken. Flip this together with a dark skin.
-    const BOOL darkMode = FALSE;
+    const bool dark = IsDarkThemeActive();
+    const BOOL darkMode = dark ? TRUE : FALSE;
     ::DwmSetWindowAttribute(m_hWnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
-    // With the frame extended DWM also paints its own 1-2px border around the window, which
-    // showed up as a dark hairline on all four sides of our light chrome. Turn it off.
     const COLORREF borderNone = DWMWA_COLOR_NONE;
     ::DwmSetWindowAttribute(m_hWnd, DWMWA_BORDER_COLOR, &borderNone, sizeof(borderNone));
 
@@ -164,21 +183,32 @@ void CMainWnd::ApplyDwmChrome()
     MARGINS margins = { 0, 0, 0, 0 };
     ::DwmExtendFrameIntoClientArea(m_hWnd, &margins);
     if (CControlUI* bar = m_PaintManager.FindControl(_T("titlebar"))) {
-        // With Mica the band must stay unpainted; without it, a slightly darker grey than the
-        // white rows below so the active "card" (white, merging downwards) still reads.
         bar->SetAttribute(_T("bkcolor"),
-            m_micaActive ? UiTokens::ColorTransparent : L"#FFEDEDED");
+            m_micaActive ? UiTokens::ColorTransparent : (dark ? L"#FF202020" : L"#FFEDEDED"));
         bar->Invalidate();
     }
+    const LPCWSTR captionText = dark ? L"#FFF3F3F3" : UiTokens::ColorTextPrimary;
+    for (LPCTSTR name : { _T("minbtn"), _T("maxbtn"), _T("restorebtn"), _T("closebtn") }) {
+        if (CControlUI* btn = m_PaintManager.FindControl(name)) {
+            btn->SetAttribute(_T("textcolor"), captionText);
+            btn->Invalidate();
+        }
+    }
     if (m_pTabStrip) {
-        m_pTabStrip->SetDarkMode(false);
+        m_pTabStrip->SetDarkMode(dark);
         m_pTabStrip->SetMetrics(static_cast<int>(m_dpi));
         m_pTabStrip->Invalidate();
+    }
+    if (m_shellBrowser) {
+        m_shellBrowser->SetDarkMode(dark);
     }
 }
 
 void CMainWnd::UpdateCaptionButtonHover(POINT ptClient, bool hovering)
 {
+    const bool dark = IsDarkThemeActive();
+    const LPCWSTR textNorm = dark ? L"#FFF3F3F3" : UiTokens::ColorTextPrimary;
+    const LPCWSTR btnHotBg = dark ? L"#FF3A3A3A" : L"#FFE0E0E0";
     struct BtnState {
         LPCTSTR name;
         LPCWSTR hotBg;
@@ -186,11 +216,11 @@ void CMainWnd::UpdateCaptionButtonHover(POINT ptClient, bool hovering)
         LPCWSTR hotText;
         LPCWSTR normalText;
     };
-    static const BtnState kBtns[] = {
-        { _T("minbtn"),     L"#FFE0E0E0", UiTokens::ColorTransparent, UiTokens::ColorTextPrimary, UiTokens::ColorTextPrimary },
-        { _T("maxbtn"),     L"#FFE0E0E0", UiTokens::ColorTransparent, UiTokens::ColorTextPrimary, UiTokens::ColorTextPrimary },
-        { _T("restorebtn"), L"#FFE0E0E0", UiTokens::ColorTransparent, UiTokens::ColorTextPrimary, UiTokens::ColorTextPrimary },
-        { _T("closebtn"),   L"#FFE81123", UiTokens::ColorTransparent, L"#FFFFFFFF", UiTokens::ColorTextPrimary },
+    const BtnState kBtns[] = {
+        { _T("minbtn"),     btnHotBg,     UiTokens::ColorTransparent, textNorm,     textNorm },
+        { _T("maxbtn"),     btnHotBg,     UiTokens::ColorTransparent, textNorm,     textNorm },
+        { _T("restorebtn"), btnHotBg,     UiTokens::ColorTransparent, textNorm,     textNorm },
+        { _T("closebtn"),   L"#FFE81123", UiTokens::ColorTransparent, L"#FFFFFFFF", textNorm },
     };
     int hot = -1;
     if (hovering) {
@@ -267,11 +297,26 @@ void CMainWnd::ApplyUiChromeTokens()
     setPad(_T("preview_body"), UiTokens::PreviewPad - UiTokens::SidePaneScrollBarW, UiTokens::PreviewPad,
         UiTokens::PreviewPad, UiTokens::PreviewPad);
 
-    // Chrome bands. Phase 6 (Explorer-style reference): the tab strip is a slightly darker
-    // band carrying tab "cards", the address row keeps the chrome surface, and the command
-    // bar sits on the white content surface with a divider above and below it.
-    const LPCWSTR surf = UiTokens::ColorSurface;
-    const LPCWSTR border = UiTokens::ColorChromeDivider;
+    const bool dark = IsDarkThemeActive();
+    const LPCWSTR surf = dark ? L"#FF202020" : UiTokens::ColorSurface;
+    const LPCWSTR content = dark ? L"#FF191919" : UiTokens::ColorContent;
+    const LPCWSTR border = dark ? L"#FF333333" : UiTokens::ColorChromeDivider;
+    const LPCWSTR borderLight = dark ? L"#FF383838" : UiTokens::ColorBorder;
+    const LPCWSTR borderStrong = dark ? L"#FF3F3F3F" : UiTokens::ColorBorderStrong;
+    const LPCWSTR fieldBg = dark ? L"#FF2B2B2B" : UiTokens::ColorFieldBg;
+    const LPCWSTR fieldBorder = dark ? L"#FF3E3E3E" : UiTokens::ColorFieldBorder;
+    const LPCWSTR textPrimary = dark ? L"#FFF3F3F3" : UiTokens::ColorTextPrimary;
+    const LPCWSTR textSecondary = dark ? L"#FFB3B3B3" : UiTokens::ColorTextSecondary;
+    const LPCWSTR textMuted = dark ? L"#FF9A9A9A" : UiTokens::ColorTextMuted;
+    const LPCWSTR listHover = dark ? L"#FF2D2D2D" : UiTokens::ColorListHover;
+    const LPCWSTR listSelected = dark ? L"#FF364E6B" : UiTokens::ColorListSelected;
+    const LPCWSTR listHeaderBg = dark ? L"#FF202020" : UiTokens::ColorListHeaderBg;
+    const LPCWSTR navHover = dark ? L"#FF2D2D2D" : UiTokens::ColorNavHover;
+    const LPCWSTR navSelected = dark ? L"#FF363636" : UiTokens::ColorNavSelected;
+    const LPCWSTR navSection = dark ? L"#FFA0A0A0" : UiTokens::ColorNavSection;
+    const LPCWSTR sepColor = dark ? L"#FF383838" : UiTokens::ColorSeparator;
+    const LPCWSTR metaLabel = dark ? L"#FFA0A0A0" : L"#FF616161";
+
     // 1 design px dividers must land on 2 physical px at 150% (a 1.5px line renders blurry).
     CDuiString hair;
     hair.Format(_T("0,0,0,%d"), DpiScaleHairline(UiTokens::Hairline));
@@ -282,49 +327,52 @@ void CMainWnd::ApplyUiChromeTokens()
         setBk(band, surf);
         setBorder(band, border, hair.GetData());
     }
-    // One white surface from the favourites row down to the command bar, so the active tab's
-    // white card merges into it (Mica / flat grey band above).
-    setBk(_T("favorites_bar"), UiTokens::ColorContent);
+    setBk(_T("favorites_bar"), content);
     setBorder(_T("favorites_bar"), border, hair.GetData());
-    setBk(_T("toolbar"), UiTokens::ColorContent);
-    // Address row keeps FastFile's chrome surface (#F3F3F3; Explorer's backdrop is #F4F4F2).
-    // No border: the command bar's own top hairline separates the two rows.
+    setBk(_T("toolbar"), content);
     setBk(_T("address_bar"), surf);
     setBorder(_T("address_bar"), UiTokens::ColorTransparent, _T("0"));
     setBorder(_T("toolbar"), UiTokens::ColorTransparent, _T("0"));
-    // Path / search fields: Explorer's borderless #FCFCFB rounded boxes on the chrome surface
-    // (the idle border matches the fill; address edit mode swaps in the accent border).
     for (LPCTSTR field : { _T("path_host"), _T("search_box") }) {
         setPad(field, 0, 0, 0, 0);
         if (CControlUI* c = m_PaintManager.FindControl(field)) {
-            c->SetAttribute(_T("bkcolor"), UiTokens::ColorFieldBg);
+            c->SetAttribute(_T("bkcolor"), fieldBg);
             const bool editing = m_addressEditMode && wcscmp(field, _T("path_host")) == 0;
-            c->SetAttribute(_T("bordercolor"), editing ? UiTokens::ColorFieldFocus : UiTokens::ColorFieldBorder);
+            c->SetAttribute(_T("bordercolor"), editing ? UiTokens::ColorFieldFocus : fieldBorder);
             c->SetAttribute(_T("bordersize"), _T("1"));
             CDuiString round;
             round.Format(_T("%d,%d"), DpiScale(UiTokens::FieldRound), DpiScale(UiTokens::FieldRound));
             c->SetAttribute(_T("borderround"), round.GetData());
         }
     }
+    if (m_pAddressEdit) {
+        m_pAddressEdit->SetAttribute(_T("bkcolor"), fieldBg);
+        m_pAddressEdit->SetAttribute(_T("nativebkcolor"), fieldBg);
+        m_pAddressEdit->SetAttribute(_T("textcolor"), textPrimary);
+    }
+    if (m_pSearchEdit) {
+        m_pSearchEdit->SetAttribute(_T("bkcolor"), fieldBg);
+        m_pSearchEdit->SetAttribute(_T("nativebkcolor"), fieldBg);
+        m_pSearchEdit->SetAttribute(_T("textcolor"), m_searchPlaceholder ? textMuted : textPrimary);
+    }
     setPad(_T("address_edit_host"), 0, 0, 0, 0);
     // status_bar top border only
     {
         CDuiString top;
         top.Format(_T("0,%d,0,0"), DpiScaleHairline(UiTokens::Hairline));
-        setBorder(_T("status_bar"), UiTokens::ColorBorderStrong, top.GetData());
+        setBorder(_T("status_bar"), borderStrong, top.GetData());
         CDuiString right;
         right.Format(_T("0,0,%d,0"), DpiScaleHairline(UiTokens::Hairline));
-        setBorder(_T("left_panel"), UiTokens::ColorBorder, right.GetData());
+        setBorder(_T("left_panel"), borderLight, right.GetData());
     }
     setBorder(_T("preview_pane"), _T("#00000000"), _T("0"));
-    setBk(_T("preview_pane"), UiTokens::ColorContent);
-    // breadcrumb_bar removed (merged into address_bar)
+    setBk(_T("preview_pane"), content);
 
-    // Body / list stay content white
-    setBk(_T("body_host"), UiTokens::ColorContent);
-    setBk(_T("list_host"), UiTokens::ColorContent);
+    // Body / list surface
+    setBk(_T("body_host"), content);
+    setBk(_T("list_host"), content);
     if (m_pFileList)
-        m_pFileList->SetAttribute(_T("bkcolor"), UiTokens::ColorContent);
+        m_pFileList->SetAttribute(_T("bkcolor"), content);
 
     // Toolbar group gaps use SpaceSm
     for (LPCTSTR gap : {
@@ -338,21 +386,21 @@ void CMainWnd::ApplyUiChromeTokens()
 
     // Phase 2: details list hover/select + header chrome-aligned surface
     if (m_pFileList) {
-        m_pFileList->SetAttribute(_T("itemhotbkcolor"), UiTokens::ColorListHover);
-        m_pFileList->SetAttribute(_T("itemselectedbkcolor"), UiTokens::ColorListSelected);
-        m_pFileList->SetAttribute(_T("itemtextcolor"), UiTokens::ColorTextPrimary);
-        m_pFileList->SetAttribute(_T("itemselectedtextcolor"), UiTokens::ColorTextPrimary);
-        m_pFileList->SetAttribute(_T("headerbkcolor"), UiTokens::ColorListHeaderBg);
+        m_pFileList->SetAttribute(_T("itemhotbkcolor"), listHover);
+        m_pFileList->SetAttribute(_T("itemselectedbkcolor"), listSelected);
+        m_pFileList->SetAttribute(_T("itemtextcolor"), textPrimary);
+        m_pFileList->SetAttribute(_T("itemselectedtextcolor"), textPrimary);
+        m_pFileList->SetAttribute(_T("headerbkcolor"), listHeaderBg);
         if (CListHeaderUI* hdr = m_pFileList->GetHeader()) {
-            hdr->SetAttribute(_T("bkcolor"), UiTokens::ColorListHeaderBg);
-            hdr->SetAttribute(_T("bordercolor"), UiTokens::ColorBorder);
+            hdr->SetAttribute(_T("bkcolor"), listHeaderBg);
+            hdr->SetAttribute(_T("bordercolor"), borderLight);
             hdr->SetAttribute(_T("bordersize"), _T("0,0,0,1"));
             hdr->SetFixedHeight(DpiScale(UiTokens::DetailsHeaderH));
             const int n = hdr->GetCount();
             for (int i = 0; i < n; ++i) {
                 if (CControlUI* hi = hdr->GetItemAt(i)) {
-                    hi->SetAttribute(_T("textcolor"), UiTokens::ColorTextSecondary);
-                    hi->SetAttribute(_T("sepcolor"), UiTokens::ColorBorder);
+                    hi->SetAttribute(_T("textcolor"), textSecondary);
+                    hi->SetAttribute(_T("sepcolor"), borderLight);
                 }
             }
         }
@@ -361,57 +409,50 @@ void CMainWnd::ApplyUiChromeTokens()
     // Phase 2: left nav surface + section headers + tree interaction colors
     setBk(_T("left_quick"), surf);
     setBk(_T("left_thispc"), surf);
-    // Visible divider between the two nav sections; it doubles as the splitter's grab line.
-    setBk(_T("left_nav_divider"), UiTokens::ColorSeparator);
+    setBk(_T("left_nav_divider"), sepColor);
     if (m_pDirTree) {
         m_pDirTree->SetAttribute(_T("bkcolor"), surf);
-        m_pDirTree->SetAttribute(_T("itemhotbkcolor"), UiTokens::ColorNavHover);
-        m_pDirTree->SetAttribute(_T("itemselectedbkcolor"), UiTokens::ColorNavSelected);
-        m_pDirTree->SetAttribute(_T("itemtextcolor"), UiTokens::ColorTextPrimary);
-        m_pDirTree->SetAttribute(_T("itemhottextcolor"), UiTokens::ColorTextPrimary);
-        m_pDirTree->SetAttribute(_T("selitemtextcolor"), UiTokens::ColorTextPrimary);
-        m_pDirTree->SetAttribute(_T("selitemhottextcolor"), UiTokens::ColorTextPrimary);
+        m_pDirTree->SetAttribute(_T("itemhotbkcolor"), navHover);
+        m_pDirTree->SetAttribute(_T("itemselectedbkcolor"), navSelected);
+        m_pDirTree->SetAttribute(_T("itemtextcolor"), textPrimary);
+        m_pDirTree->SetAttribute(_T("itemhottextcolor"), textPrimary);
+        m_pDirTree->SetAttribute(_T("selitemtextcolor"), textPrimary);
+        m_pDirTree->SetAttribute(_T("selitemhottextcolor"), textPrimary);
     }
     for (LPCTSTR hdrName : { _T("nav_hdr_quick"), _T("nav_hdr_thispc") }) {
         if (CControlUI* h = m_PaintManager.FindControl(hdrName)) {
             h->SetFixedHeight(DpiScale(UiTokens::NavSectionHeaderH));
-            h->SetAttribute(_T("textcolor"), UiTokens::ColorNavSection);
-            // Same size as the rows below, only lighter. Forcing font 3 (10px) made the
-            // headers smaller AND fainter than their own items, i.e. an inverted hierarchy,
-            // and it silently undid the matching change in main.xml.
+            h->SetAttribute(_T("textcolor"), navSection);
             h->SetAttribute(_T("font"), _T("0"));
             CDuiString pad;
             pad.Format(_T("%d,%d,0,0"), DpiScale(UiTokens::NavHeaderPadL), DpiScale(UiTokens::SpaceXs));
             h->SetAttribute(_T("padding"), pad);
         }
     }
-    // (the four built-in quick-access rows are created at runtime by RebuildLeftQuickRows,
-    // which applies the same row metrics through ApplyQuickAccessRow)
 
     // Phase 3: preview pane density + Surface header chrome; status bar density
-    // (the rail owns the pane's left edge; preview_body holds the content inset)
     setPad(_T("preview_pane"), 0, 0, 0, 0);
     setPad(_T("preview_body"), UiTokens::PreviewPad - UiTokens::SidePaneScrollBarW, UiTokens::PreviewPad,
         UiTokens::PreviewPad, UiTokens::PreviewPad);
     setPad(_T("status_bar"), UiTokens::StatusPadX, UiTokens::StatusPadY,
         UiTokens::StatusPadX, UiTokens::StatusPadY);
-    setBorder(_T("status_bar"), UiTokens::ColorBorderStrong, _T("0,1,0,0"));
+    setBorder(_T("status_bar"), borderStrong, _T("0,1,0,0"));
     if (CControlUI* st = m_PaintManager.FindControl(_T("status_text"))) {
-        st->SetAttribute(_T("textcolor"), UiTokens::ColorTextSecondary);
+        st->SetAttribute(_T("textcolor"), textSecondary);
         st->SetAttribute(_T("font"), _T("2"));  // FontSmall
         st->SetAttribute(_T("padding"), _T("0,0,0,0"));
     }
     if (m_pPreviewTitle) {
         m_pPreviewTitle->SetFixedHeight(DpiScale(UiTokens::PreviewTitleH));
-        m_pPreviewTitle->SetAttribute(_T("textcolor"), UiTokens::ColorTextPrimary);
+        m_pPreviewTitle->SetAttribute(_T("textcolor"), textPrimary);
         m_pPreviewTitle->SetAttribute(_T("font"), _T("5"));  // FontPreviewTitle
         m_pPreviewTitle->SetAttribute(_T("bkcolor"), UiTokens::ColorTransparent);
     }
     if (CControlUI* fh = m_PaintManager.FindControl(_T("fav_bar_hint"))) {
         fh->SetAttribute(_T("font"), _T("0"));
+        fh->SetAttribute(_T("textcolor"), textMuted);
         fh->SetAttribute(_T("valign"), _T("vcenter"));
     }
-    // Gap spacers DPI-scaled (also in ApplyDpiScaledChrome; re-apply after chrome token pass)
     ScaleNamedFixed(m_PaintManager, _T("preview_gap_title"), 0, UiTokens::PreviewTitleGap, m_dpi);
     ScaleNamedFixed(m_PaintManager, _T("preview_gap_action"), 0, UiTokens::SpaceSm + 2, m_dpi);
     ScaleNamedFixed(m_PaintManager, _T("preview_gap_image"), 0, UiTokens::PreviewImageGap, m_dpi);
@@ -424,7 +465,7 @@ void CMainWnd::ApplyUiChromeTokens()
     }) {
         if (CControlUI* lbl = m_PaintManager.FindControl(lblName)) {
             lbl->SetFixedWidth(DpiScale(UiTokens::PreviewMetaLabelW));
-            lbl->SetAttribute(_T("textcolor"), _T("#FF616161"));
+            lbl->SetAttribute(_T("textcolor"), metaLabel);
             lbl->SetAttribute(_T("font"), _T("0"));  // FontPreviewMeta
         }
     }
@@ -440,9 +481,9 @@ void CMainWnd::ApplyUiChromeTokens()
             if (_tcscmp(valName, _T("preview_location")) == 0)
                 static_cast<CLabelUI*>(v)->SetTextStyle(DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS | DT_NOPREFIX);
             if (_tcscmp(valName, _T("preview_text")) == 0)
-                v->SetAttribute(_T("textcolor"), UiTokens::ColorTextMuted);
+                v->SetAttribute(_T("textcolor"), textMuted);
             else
-                v->SetAttribute(_T("textcolor"), UiTokens::ColorTextPrimary);
+                v->SetAttribute(_T("textcolor"), textPrimary);
         }
     }
     for (LPCTSTR rowName : {
@@ -456,7 +497,7 @@ void CMainWnd::ApplyUiChromeTokens()
     }
     if (m_pPreviewImage) {
         m_pPreviewImage->SetFixedHeight(DpiScale(UiTokens::PreviewImageH));
-        m_pPreviewImage->SetAttribute(_T("bkcolor"), UiTokens::ColorContent);
+        m_pPreviewImage->SetAttribute(_T("bkcolor"), content);
         m_pPreviewImage->SetAttribute(_T("bordercolor"), _T("#00000000"));
         m_pPreviewImage->SetAttribute(_T("bordersize"), _T("0"));
         CDuiString br;

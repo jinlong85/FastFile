@@ -18,6 +18,9 @@
 #include <ocidl.h>
 #include <servprov.h>
 #include <shlguid.h>
+#include <uxtheme.h>
+
+#pragma comment(lib, "uxtheme.lib")
 
 namespace {
 
@@ -1012,6 +1015,7 @@ void ShellBrowserHost::StyleNativeView(IFolderView2* view)
         if (list) {
             SetWindowSubclass(list, ListSubclass, reinterpret_cast<UINT_PTR>(this), reinterpret_cast<DWORD_PTR>(this));
             SetWindowSubclass(m_viewWindow, ViewSubclass, reinterpret_cast<UINT_PTR>(this), reinterpret_cast<DWORD_PTR>(this));
+            ApplyListDarkMode();
         }
     }
     EnsureBufferedList(list);
@@ -1189,6 +1193,37 @@ bool ShellBrowserHost::GetItemPath(int itemIndex, std::wstring& outPath) const
     return !outPath.empty();
 }
 
+void ShellBrowserHost::SetDarkMode(bool dark)
+{
+    if (m_darkMode == dark) return;
+    m_darkMode = dark;
+    ApplyListDarkMode();
+}
+
+void ShellBrowserHost::ApplyListDarkMode()
+{
+    if (!m_listWindow || !IsWindow(m_listWindow)) return;
+    SetWindowTheme(m_listWindow, m_darkMode ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+    if (m_darkMode) {
+        const COLORREF bg = RGB(0x19, 0x19, 0x19);
+        const COLORREF fg = RGB(0xF3, 0xF3, 0xF3);
+        ListView_SetBkColor(m_listWindow, bg);
+        ListView_SetTextBkColor(m_listWindow, bg);
+        ListView_SetTextColor(m_listWindow, fg);
+    } else {
+        const COLORREF bg = RGB(255, 255, 255);
+        const COLORREF fg = RGB(0x1A, 0x1A, 0x1A);
+        ListView_SetBkColor(m_listWindow, bg);
+        ListView_SetTextBkColor(m_listWindow, bg);
+        ListView_SetTextColor(m_listWindow, fg);
+    }
+    if (HWND header = ListView_GetHeader(m_listWindow)) {
+        SetWindowTheme(header, m_darkMode ? L"DarkMode_ItemsView" : L"ItemsView", nullptr);
+        InvalidateRect(header, nullptr, TRUE);
+    }
+    InvalidateRect(m_listWindow, nullptr, TRUE);
+}
+
 LRESULT ShellBrowserHost::DrawListIcon(NMLVCUSTOMDRAW* draw)
 {
     if(draw->nmcd.dwDrawStage==CDDS_PREPAINT)return CDRF_NOTIFYITEMDRAW;
@@ -1244,8 +1279,11 @@ LRESULT ShellBrowserHost::DrawListIcon(NMLVCUSTOMDRAW* draw)
         && ListView_GetItemRect(m_listWindow, itemIndex, &icon, LVIR_ICON)
         && ListView_GetItemRect(m_listWindow, itemIndex, &row, LVIR_BOUNDS)) {
         const bool selected = (item.state & LVIS_SELECTED) != 0;
-        const COLORREF rowBg = selected ? RGB(0xE5, 0xF1, 0xFB)
-            : (draw->nmcd.uItemState & CDIS_HOT) ? RGB(0xF5, 0xF5, 0xF5) : RGB(255, 255, 255);
+        const COLORREF rowBg = m_darkMode
+            ? (selected ? RGB(0x36, 0x4E, 0x6B)
+                : (draw->nmcd.uItemState & CDIS_HOT) ? RGB(0x2D, 0x2D, 0x2D) : RGB(0x19, 0x19, 0x19))
+            : (selected ? RGB(0xE5, 0xF1, 0xFB)
+                : (draw->nmcd.uItemState & CDIS_HOT) ? RGB(0xF5, 0xF5, 0xF5) : RGB(255, 255, 255));
         const COLORREF oldBgColor = SetDCBrushColor(draw->nmcd.hdc, rowBg);
         FillRect(draw->nmcd.hdc, &row, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
         SetDCBrushColor(draw->nmcd.hdc, oldBgColor);
@@ -1276,7 +1314,8 @@ LRESULT ShellBrowserHost::DrawListIcon(NMLVCUSTOMDRAW* draw)
         ListView_GetItemText(m_listWindow, itemIndex, 0, title, _countof(title));
         const int saved = SaveDC(draw->nmcd.hdc);
         SelectObject(draw->nmcd.hdc, reinterpret_cast<HFONT>(SendMessageW(m_listWindow, WM_GETFONT, 0, 0)));
-        SetBkMode(draw->nmcd.hdc, TRANSPARENT); SetTextColor(draw->nmcd.hdc, RGB(0x1A, 0x1A, 0x1A));
+        SetBkMode(draw->nmcd.hdc, TRANSPARENT);
+        SetTextColor(draw->nmcd.hdc, m_darkMode ? RGB(0xF3, 0xF3, 0xF3) : RGB(0x1A, 0x1A, 0x1A));
         const int iconRight = (w > 0) ? (iconLeft + w) : (iconLeft + MulDiv(16, m_dpi, 96));
         RECT text{iconRight + MulDiv(4, m_dpi, 96), row.top, row.right - MulDiv(4, m_dpi, 96), row.bottom};
         DrawTextW(draw->nmcd.hdc, title, -1, &text, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);

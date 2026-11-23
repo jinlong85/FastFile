@@ -1232,7 +1232,9 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         }
     }
     if (uMsg == WM_THEMECHANGED || (uMsg == WM_SETTINGCHANGE && wParam == 0)) {
+        ApplyUiChromeTokens();
         ApplyDwmChrome();   // backdrop / AppsUseLightTheme changed while running
+        m_PaintManager.NeedUpdate();
     }
     return WindowImplBase::HandleMessage(uMsg, wParam, lParam);
 }

@@ -1192,10 +1192,30 @@ struct MainWndRegressionAccess {
         check(settings.backdropType == 3, "out of range backdropType clamped to 3");
 
         const int savedType = window.m_settings.backdropType;
+        const int savedTheme = window.m_settings.themeMode;
         window.m_settings.backdropType = 2; // Acrylic
+        window.m_settings.themeMode = 2;    // Dark mode
         window.ApplySettingsAppearance();
         check(window.m_settings.backdropType == 2, "appearance settings applied");
+        check(window.IsDarkThemeActive(), "dark mode activates when themeMode == 2");
+        if (window.m_shellBrowser) {
+            check(window.m_shellBrowser->IsDarkMode(), "ShellBrowserHost mirrors dark theme state");
+        }
+        window.m_settings.themeMode = 1;    // Light mode
+        window.ApplySettingsAppearance();
+        check(!window.IsDarkThemeActive(), "light mode deactivates dark theme when themeMode == 1");
+        if (window.m_shellBrowser) {
+            check(!window.m_shellBrowser->IsDarkMode(), "ShellBrowserHost mirrors light theme state");
+        }
+        {
+            FastFileSettings s;
+            s.themeMode = -5; s.Normalize();
+            check(s.themeMode == 0, "themeMode normalizes below lower bound to 0 (follow system)");
+            s.themeMode = 9; s.Normalize();
+            check(s.themeMode == 2, "themeMode normalizes above upper bound to 2 (dark)");
+        }
         window.m_settings.backdropType = savedType;
+        window.m_settings.themeMode = savedTheme;
         window.ApplySettingsAppearance();
         return failures;
     }
