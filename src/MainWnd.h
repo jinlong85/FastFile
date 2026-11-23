@@ -61,6 +61,8 @@ public:
     static int RunExplorerAgent();
     LRESULT HandleExplorerAgentMessage(const COPYDATASTRUCT& data);
     static bool RestoreNativeFolderHandlers();
+    static bool IsSystemDarkTheme();
+    bool IsDarkThemeActive() const;
     static void ReadSystemIntegration(FastFileSettings& settings);
     static bool ApplySystemIntegration(const FastFileSettings& settings);
     static bool RepairOwnedSystemIntegration();
@@ -362,9 +364,7 @@ private:
     void OpenPathInNewWindow(const std::wstring& path, POINT screenPt);
     // Caption buttons report HTMINBUTTON/HTMAXBUTTON/HTCLOSE, so their hover is painted here.
     void UpdateCaptionButtonHover(POINT ptClient, bool hovering);
-    void ApplyDwmChrome();
-    static bool IsSystemDarkTheme();
-    bool IsDarkThemeActive() const;          // Mica Alt backdrop + frame extension (Win11 22H2+)
+    void ApplyDwmChrome();          // Mica Alt backdrop + frame extension (Win11 22H2+)
     // DuiLib's pre-translate pass swallows Tab (dialog navigation) before the window proc
     // sees WM_KEYDOWN, so Ctrl+Tab / Ctrl+Shift+Tab are handled in this filter instead.
     LRESULT MessageHandler(UINT uMsg, WPARAM wParam, LPARAM lParam, bool& bHandled) override;
