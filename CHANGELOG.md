@@ -2,9 +2,19 @@
 
 面向使用者的改动记录（开发细节 / 踩坑见 [HANDOFF.md](HANDOFF.md)）。
 版本号来自根目录 [VERSION](VERSION)，安装包产物在 `dist\FastFile-Setup-<版本>.exe`。
-当前 GitHub 发行版为 [**1.0.29（预发布）**](https://github.com/jinlong85/FastFile/releases/tag/v1.0.29)，安装包已发布并提供应用内在线更新。
+当前 GitHub 发行版为 [**1.0.30（预发布）**](https://github.com/jinlong85/FastFile/releases/tag/v1.0.30)，安装包已发布并提供应用内在线更新。
 
 ## 2026-11-23
+
+### 1.0.30
+
+- **完整深色模式（Dark Mode）支持**：
+  - 在「设置 → 外观与布局」新增「主题外观」选项，支持 **跟随 Windows 系统 / 浅色模式 / 深色模式** 即时切换，并持久化至 `settings.ini`；
+  - 响应 Windows 主题变更通知（`WM_THEMECHANGED` / `WM_SETTINGCHANGE`），在「跟随系统」模式下自动热切换；
+  - 全链路打通 DWM 沉浸深色标题栏/材质（`DWMWA_USE_IMMERSIVE_DARK_MODE`）、标签栏深色配色、主界面 DuiLib 面板/输入框/目录树/预览窗格/状态栏调色板，以及原生 Shell 列表与自绘行深色主题适配。
+- **文件标签 & 星标跨目录聚合视图**：
+  - 新增虚拟视图路径 `::Tags`（所有已标记项目）、`::Tags:Starred`（★ 星标项目）及 `::Tags:Red` ~ `::Tags:Purple`（按 6 色筛选）；
+  - 在「更多选项 → 文件标签与标记」中新增「查看所有已标记项目」与「查看 ★ 星标项目」入口（地址栏亦支持直接输入 `星标项目` / `已标记项目`），支持跨目录聚合展示、星标自动置顶、二次名称筛选、双击打开与原生右键菜单。
 
 ### 1.0.29
 
