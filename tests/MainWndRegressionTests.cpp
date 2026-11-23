@@ -3816,8 +3816,8 @@ struct MainWndRegressionAccess {
             check(handler < 50.0, "large icon selection handler returns quickly");
             const DWORD deadline = GetTickCount() + 3000;
             while ((title() != L"Battle.net" || window.m_previewBmp.empty()) && GetTickCount() < deadline) pump(20);
-            check(title() == L"Battle.net" && !window.m_previewBmp.empty() && window.m_previewIconThreads.empty(),
-                "deferred details pane and off-thread folder icon arrive for the selected folder");
+            check(title() == L"Battle.net" && !window.m_previewBmp.empty() && window.m_previewWorker.joinable(),
+                "deferred details pane and off-thread folder icon arrive via reusable preview worker");
             // Real click through the list: the selected frame is painted, and before the pane.
             const bool wasShown = IsWindowVisible(window.m_hWnd) != FALSE;
             if (!wasShown) { ShowWindow(window.m_hWnd, SW_SHOWNOACTIVATE); pump(300); }
@@ -3834,11 +3834,12 @@ struct MainWndRegressionAccess {
             select(target); window.SyncShellViewSelection(); window.FlushSelectionPreview();
             const unsigned serial = window.m_previewSerial;
             select(folder + L"\\115Chrome"); window.SyncShellViewSelection(); window.FlushSelectionPreview();
+            const std::wstring expectedTag = L"preview_icon_" + std::to_wstring(serial + 1);
             const DWORD deadline = GetTickCount() + 3000;
-            while (!window.m_previewIconThreads.empty() && GetTickCount() < deadline) pump(20);
+            while (window.m_previewBmp.find(expectedTag) == std::wstring::npos && GetTickCount() < deadline) pump(20);
             pump(100);
             check(window.m_previewSerial == serial + 1 && title() == L"115Chrome" &&
-                window.m_previewBmp.find(L"preview_icon_" + std::to_wstring(serial + 1)) != std::wstring::npos,
+                window.m_previewBmp.find(expectedTag) != std::wstring::npos,
                 "only the newest folder icon is applied");
         }
         // Timing on the user's real Pictures folder (read-only): the legacy synchronous handler
