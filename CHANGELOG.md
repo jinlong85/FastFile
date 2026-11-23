@@ -2,7 +2,19 @@
 
 面向使用者的改动记录（开发细节 / 踩坑见 [HANDOFF.md](HANDOFF.md)）。
 版本号来自根目录 [VERSION](VERSION)，安装包产物在 `dist\FastFile-Setup-<版本>.exe`。
-当前 GitHub 发行版为 [**1.0.27（预发布）**](https://github.com/jinlong85/FastFile/releases/tag/v1.0.27)，安装包已发布并提供应用内在线更新。
+当前 GitHub 发行版为 [**1.0.29（预发布）**](https://github.com/jinlong85/FastFile/releases/tag/v1.0.29)，安装包已发布并提供应用内在线更新。
+
+## 2026-11-23
+
+### 1.0.29
+
+- **缩略图多线程并发提速**：将 `ShellBrowserHost` 后台缩略图提取从单线程升级为自适应 2–4 线程 STA 并发线程池，保持可见区域优先调度，显著减少图片/视频密集目录的缩略图排队等待。
+- **文件颜色标签与星标闭环增强**：
+  - 重命名、撤销/重做重命名以及拖放移动文件/文件夹时自动同步迁移标签（支持文件夹递归迁移且隔离相似前缀兄弟目录）；
+  - 在「更多选项 → 文件标签与标记」中新增「清理失效标签」，自动忽略未挂载盘符与网络路径；
+  - 彩色标签圆点与星标升级为 GDI+ 抗锯齿绘制，高 DPI 下边缘更平滑。
+- **架构模块化演进**：从 `CMainWnd` 抽离零 DuiLib 依赖的 `SessionStore`（升级为原子落盘写入）与 `UndoHistory`（增加容量上限保护），新增 `FastFileModulesTests` 独立单元测试套件。
+- **正式声明 MIT 开源协议**：新增根目录 `LICENSE`（MIT License），同步更新中英文 README 与「关于 FastFile」内置许可说明。
 
 ## 2026-10-13
 

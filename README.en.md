@@ -51,6 +51,6 @@ Built with **C++17, Win32, DuiLib, and Windows Shell**. Build and test instructi
 
 ## License and assets
 
-The source is public, but no project-wide open-source license has been declared. The [DuiLib license](third_party/duilib/LICENSE) applies to that dependency and does not license the entire project.
+FastFile is licensed under the [MIT License](LICENSE). The vendored DuiLib component is also licensed under the MIT License; see [third_party/duilib/LICENSE](third_party/duilib/LICENSE).
 
 FastFile is an original implementation. Icons come from Windows Shell or are drawn by the application; no assets or trademarks from third-party proprietary file managers are included.

@@ -4406,6 +4406,7 @@ struct MainWndRegressionAccess {
                   << ", max queue/extract/delivery ms " << c2.maxThumbQueueMs << "/"
                   << c2.maxThumbExtractionMs << "/" << c2.maxThumbDeliveryMs << '\n';
         check(c2.syncExtractions == c0.syncExtractions, "large-icon paint path never extracts thumbnails synchronously");
+        check(host.ThumbWorkerCount() >= 2 && host.ThumbWorkerCount() <= 4, "thumbnail worker pool uses 2-4 concurrent STA threads");
         check(c2.placeholders - c0.placeholders >= 10, "uncached cells paint a placeholder icon first");
         check(c2.thumbRequests - c0.thumbRequests >= 10, "uncached cells queue an async thumbnail request");
         check(c2.thumbExtractions - c0.thumbExtractions == c2.thumbRequests - c0.thumbRequests,

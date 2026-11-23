@@ -70,6 +70,6 @@ FastFile 将多个文件夹放在同一个窗口的标签页中，提供地址�
 
 ## 许可与资源
 
-项目源码公开，但目前尚未声明项目级开源许可证。DuiLib 的许可见 [third_party/duilib/LICENSE](third_party/duilib/LICENSE)，不代表整个项目的许可。
+本项目采用 [MIT License](LICENSE) 开源许可。内嵌的 DuiLib 同样采用 MIT License，详见 [third_party/duilib/LICENSE](third_party/duilib/LICENSE)。
 
 FastFile 为原创实现，图标来自 Windows Shell 或自绘；不包含第三方闭源文件管理器的软件、商标或素材。

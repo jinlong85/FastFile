@@ -78,6 +78,7 @@ public:
     bool IsCreated() const { return m_browser != nullptr; }
     // Large / extra-large thumbnail memory cache bounds (LRU; tests shrink them).
     void SetThumbnailCacheLimits(size_t maxBytes, size_t maxEntries);
+    size_t ThumbWorkerCount() const { return m_thumbThreads.size(); }
 
 private:
     HRESULT DefaultCommand(IShellView* view, BOOL (WINAPI *execute)(SHELLEXECUTEINFOW*) = ShellExecuteExW);
@@ -189,7 +190,7 @@ private:
     size_t m_thumbMaxBytes = 96u * 1024u * 1024u;
     size_t m_thumbMaxEntries = 2000;
     std::unordered_set<std::wstring> m_thumbPending; // queued / in flight (UI thread)
-    std::thread m_thumbThread;
+    std::vector<std::thread> m_thumbThreads;
     std::mutex m_thumbMutex;
     std::condition_variable m_thumbCv;
     std::deque<ThumbRequest> m_thumbQueue;     // guarded by m_thumbMutex

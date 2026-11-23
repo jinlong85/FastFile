@@ -1448,7 +1448,7 @@ LRESULT CALLBACK ShellBrowserHost::ThumbWindowProc(HWND window, UINT msg, WPARAM
 
 void ShellBrowserHost::StartThumbWorker()
 {
-    if (m_thumbThread.joinable()) return;
+    if (!m_thumbThreads.empty()) return;
     if (!m_thumbWindow) {
         WNDCLASSEXW wc{sizeof(wc)};
         wc.lpfnWndProc = ThumbWindowProc;
@@ -1464,7 +1464,12 @@ void ShellBrowserHost::StartThumbWorker()
         std::lock_guard<std::mutex> lock(m_thumbMutex);
         m_thumbStop = false;
     }
-    m_thumbThread = std::thread(ThumbWorkerMain, this);
+    const unsigned hw = std::thread::hardware_concurrency();
+    const size_t workers = static_cast<size_t>((std::max)(2u, (std::min)(4u, hw > 1 ? hw / 2 : 2u)));
+    m_thumbThreads.reserve(workers);
+    for (size_t i = 0; i < workers; ++i) {
+        m_thumbThreads.emplace_back(ThumbWorkerMain, this);
+    }
 }
 
 void ShellBrowserHost::StopThumbWorker()
@@ -1474,7 +1479,10 @@ void ShellBrowserHost::StopThumbWorker()
         m_thumbStop = true;
     }
     m_thumbCv.notify_all();
-    if (m_thumbThread.joinable()) m_thumbThread.join();
+    for (auto& thread : m_thumbThreads) {
+        if (thread.joinable()) thread.join();
+    }
+    m_thumbThreads.clear();
     std::lock_guard<std::mutex> lock(m_thumbMutex);
     for (auto& request : m_thumbQueue) CoTaskMemFree(request.pidl);
     m_thumbQueue.clear();
@@ -1509,7 +1517,7 @@ void ShellBrowserHost::RequestThumb(IShellItem* item, const std::wstring& key, c
     PIDLIST_ABSOLUTE pidl = nullptr;
     if (FAILED(SHGetIDListFromObject(item, &pidl)) || !pidl) return;
     StartThumbWorker();
-    if (!m_thumbThread.joinable()) { CoTaskMemFree(pidl); return; }
+    if (m_thumbThreads.empty()) { CoTaskMemFree(pidl); return; }
     m_thumbPending.insert(key);
     ++m_counters.thumbRequests;
     {
