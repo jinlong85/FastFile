@@ -232,6 +232,39 @@ const wchar_t* FileTagManager::GetColorName(FileTagColor color) {
     }
 }
 
+bool FileTagManager::IsTagViewPath(const std::wstring& path) {
+    FileTagColor color = FileTagColor::None;
+    bool starredOnly = false;
+    return ParseTagViewPath(path, color, starredOnly);
+}
+
+bool FileTagManager::ParseTagViewPath(const std::wstring& path, FileTagColor& outColor, bool& outStarredOnly) {
+    outColor = FileTagColor::None;
+    outStarredOnly = false;
+    if (path.empty()) return false;
+    if (::_wcsicmp(path.c_str(), L"::Tags") == 0) return true;
+    if (::_wcsicmp(path.c_str(), L"::Tags:Starred") == 0) {
+        outStarredOnly = true;
+        return true;
+    }
+    if (::_wcsicmp(path.c_str(), L"::Tags:Red") == 0)    { outColor = FileTagColor::Red; return true; }
+    if (::_wcsicmp(path.c_str(), L"::Tags:Orange") == 0) { outColor = FileTagColor::Orange; return true; }
+    if (::_wcsicmp(path.c_str(), L"::Tags:Yellow") == 0) { outColor = FileTagColor::Yellow; return true; }
+    if (::_wcsicmp(path.c_str(), L"::Tags:Green") == 0)  { outColor = FileTagColor::Green; return true; }
+    if (::_wcsicmp(path.c_str(), L"::Tags:Blue") == 0)   { outColor = FileTagColor::Blue; return true; }
+    if (::_wcsicmp(path.c_str(), L"::Tags:Purple") == 0) { outColor = FileTagColor::Purple; return true; }
+    return false;
+}
+
+std::wstring FileTagManager::TagViewDisplayName(const std::wstring& path) {
+    FileTagColor color = FileTagColor::None;
+    bool starredOnly = false;
+    if (!ParseTagViewPath(path, color, starredOnly)) return path;
+    if (starredOnly) return L"★ 星标项目";
+    if (color != FileTagColor::None) return std::wstring(GetColorName(color)) + L"标签";
+    return L"所有已标记项目";
+}
+
 std::unordered_map<std::wstring, FileTagInfo> FileTagManager::ParseTagsJson(const std::string& text) {
     std::unordered_map<std::wstring, FileTagInfo> parsed;
     size_t pos = 0;
@@ -547,6 +580,26 @@ size_t FileTagManager::PruneMissingPaths() {
     }
     SaveLocked();
     return toErase.size();
+}
+
+std::vector<std::pair<std::wstring, FileTagInfo>> FileTagManager::QueryTags(
+    FileTagColor colorFilter, bool starredOnly) const {
+    std::vector<std::pair<std::wstring, FileTagInfo>> results;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        results.reserve(m_tags.size());
+        for (const auto& kv : m_tags) {
+            if (kv.second.color == FileTagColor::None && !kv.second.starred) continue;
+            if (starredOnly && !kv.second.starred) continue;
+            if (colorFilter != FileTagColor::None && kv.second.color != colorFilter) continue;
+            results.push_back(kv);
+        }
+    }
+    std::sort(results.begin(), results.end(), [](const auto& a, const auto& b) {
+        if (a.second.starred != b.second.starred) return a.second.starred && !b.second.starred;
+        return a.first < b.first;
+    });
+    return results;
 }
 
 void FileTagManager::DrawTagDot(HDC dc, int cx, int cy, int radius, COLORREF fill, COLORREF border) {

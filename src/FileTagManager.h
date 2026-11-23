@@ -40,9 +40,15 @@ public:
     size_t RenamePathsBatch(const std::vector<std::pair<std::wstring, std::wstring>>& moves);
     // Remove entries whose files/folders no longer exist on mounted local drives.
     size_t PruneMissingPaths();
+    // Thread-safe snapshot query for cross-folder tag/star aggregation views.
+    std::vector<std::pair<std::wstring, FileTagInfo>> QueryTags(
+        FileTagColor colorFilter = FileTagColor::None, bool starredOnly = false) const;
 
     static COLORREF GetColorRef(FileTagColor color);
     static const wchar_t* GetColorName(FileTagColor color);
+    static bool IsTagViewPath(const std::wstring& path);
+    static bool ParseTagViewPath(const std::wstring& path, FileTagColor& outColor, bool& outStarredOnly);
+    static std::wstring TagViewDisplayName(const std::wstring& path);
 
     const std::unordered_map<std::wstring, FileTagInfo>& GetAll() const { return m_tags; }
 

@@ -179,6 +179,9 @@ void CMainWnd::OnMoreMenuClicked()
     ::AppendMenuW(tagMenu, MF_SEPARATOR, 0, nullptr);
     ::AppendMenuW(tagMenu, MF_STRING, 100, L"清除标签\tAlt+0");
     ::AppendMenuW(tagMenu, MF_SEPARATOR, 0, nullptr);
+    ::AppendMenuW(tagMenu, MF_STRING, 110, L"查看所有已标记项目");
+    ::AppendMenuW(tagMenu, MF_STRING, 111, L"查看 ★ 星标项目");
+    ::AppendMenuW(tagMenu, MF_SEPARATOR, 0, nullptr);
     ::AppendMenuW(tagMenu, MF_STRING, 108, L"清理失效标签");
     ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(tagMenu), L"文件标签与标记");
 
@@ -211,6 +214,10 @@ void CMainWnd::OnMoreMenuClicked()
         ApplyTagColorToSelection(FileTagColor::None);
     } else if (cmd == 107) {
         ToggleStarSelection();
+    } else if (cmd == 110) {
+        NavigateTo(L"::Tags", true);
+    } else if (cmd == 111) {
+        NavigateTo(L"::Tags:Starred", true);
     } else if (cmd == 108) {
         const size_t pruned = FileTagManager::Instance().PruneMissingPaths();
         if (pruned > 0) {
