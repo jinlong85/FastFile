@@ -882,6 +882,7 @@ void CMainWnd::ApplyTagColorToSelection(FileTagColor color)
         paths.push_back(item.path);
     }
     FileTagManager::Instance().SetColorBatch(paths, color);
+    RebuildLeftTagRows();
 
     if (m_shellBrowser && m_shellBrowser->IsCreated()) {
         m_shellBrowser->Redraw();
@@ -919,6 +920,7 @@ void CMainWnd::ToggleStarSelection()
         paths.push_back(item.path);
     }
     FileTagManager::Instance().ToggleStarredBatch(paths);
+    RebuildLeftTagRows();
 
     if (m_shellBrowser && m_shellBrowser->IsCreated()) {
         m_shellBrowser->Redraw();

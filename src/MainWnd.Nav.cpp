@@ -322,13 +322,16 @@ void CMainWnd::UpdateNavButtons()
         canBack = !m_tabs[m_activeTab].backStack.empty();
         canFwd = !m_tabs[m_activeTab].forwardStack.empty();
     }
+    const bool dark = IsDarkThemeActive();
+    const LPCTSTR navEnabledColor = dark ? _T("#FFF3F3F3") : _T("#FF1F2937");
+    const LPCTSTR navDisabledColor = dark ? _T("#FF6E6E6E") : _T("#FF9CA3AF");
     if (m_pBtnBack) {
         m_pBtnBack->SetEnabled(canBack);
-        m_pBtnBack->SetAttribute(_T("textcolor"), canBack ? _T("#FF1F2937") : _T("#FF9CA3AF"));
+        m_pBtnBack->SetAttribute(_T("textcolor"), canBack ? navEnabledColor : navDisabledColor);
     }
     if (m_pBtnForward) {
         m_pBtnForward->SetEnabled(canFwd);
-        m_pBtnForward->SetAttribute(_T("textcolor"), canFwd ? _T("#FF1F2937") : _T("#FF9CA3AF"));
+        m_pBtnForward->SetAttribute(_T("textcolor"), canFwd ? navEnabledColor : navDisabledColor);
     }
     // Glyph bitmaps carry the colour: #1A1A1A enabled, #A2A2A0 disabled (Explorer).
     ApplyNavButtonIcon(m_pBtnBack, UiTokens::GlyphNavBack);
@@ -829,13 +832,13 @@ void CMainWnd::SetSearchPlaceholder(bool show)
             if (!leaf.empty()) tip = L"搜索 " + leaf;
         }
         m_pSearchEdit->SetText(tip.c_str());
-        m_pSearchEdit->SetAttribute(_T("textcolor"), _T("#FFB0B0B0"));
+        m_pSearchEdit->SetAttribute(_T("textcolor"), IsDarkThemeActive() ? _T("#FF8E8E8E") : _T("#FFB0B0B0"));
     } else {
         // Clear placeholder glyph; keep any real typed text.
         const std::wstring cur = m_pSearchEdit->GetText().GetData();
         if (cur == L"搜索" || cur.compare(0, 3, L"搜索 ") == 0 || cur == L"搜索此电脑")
             m_pSearchEdit->SetText(_T(""));
-        m_pSearchEdit->SetAttribute(_T("textcolor"), UiTokens::ColorTextPrimary);
+        m_pSearchEdit->SetAttribute(_T("textcolor"), IsDarkThemeActive() ? _T("#FFF3F3F3") : UiTokens::ColorTextPrimary);
     }
 }
 
@@ -1080,10 +1083,12 @@ void CMainWnd::RebuildBreadcrumb()
         btn->SetAttribute(_T("bkcolor"), UiTokens::ColorTransparent);
         btn->SetAttribute(_T("bordercolor"), UiTokens::ColorTransparent);
         btn->SetAttribute(_T("bordersize"), _T("0"));
-        btn->SetAttribute(_T("hotbkcolor"), UiTokens::ColorHover);
-        btn->SetAttribute(_T("pushedbkcolor"), UiTokens::ColorPressed);
+        const bool dark = IsDarkThemeActive();
+        btn->SetAttribute(_T("hotbkcolor"), dark ? L"#FF353535" : UiTokens::ColorHover);
+        btn->SetAttribute(_T("pushedbkcolor"), dark ? L"#FF424242" : UiTokens::ColorPressed);
         btn->SetAttribute(_T("textcolor"),
-            isLast ? UiTokens::ColorTextPrimary : UiTokens::ColorTextTabIdle);
+            isLast ? (dark ? L"#FFF3F3F3" : UiTokens::ColorTextPrimary)
+                   : (dark ? L"#FFB3B3B3" : UiTokens::ColorTextTabIdle));
         if (shown[i].path == kThisPcPath) {
             // Explorer's first breadcrumb segment: machine icon + "此电脑".
             const int iconPx = DpiScale(UiTokens::FavIconPx);

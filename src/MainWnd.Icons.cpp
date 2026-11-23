@@ -1590,7 +1590,10 @@ void CMainWnd::ApplyNavButtonIcon(CControlUI* c, wchar_t glyph)
 {
     if (!c) return;
     const int px = DpiScale(UiTokens::NavGlyphPx);
-    const unsigned argb = c->IsEnabled() ? UiTokens::ArgbNavGlyph : UiTokens::ArgbNavGlyphDisabled;
+    const bool dark = IsDarkThemeActive();
+    const unsigned argb = c->IsEnabled()
+        ? (dark ? 0xFFF3F3F3u : UiTokens::ArgbNavGlyph)
+        : (dark ? 0xFF6E6E6Eu : UiTokens::ArgbNavGlyphDisabled);
     const std::wstring bmp = GetGlyphIconBmp(glyph, px,
         RGB((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF));
     if (bmp.empty()) return;
@@ -1693,7 +1696,7 @@ void CMainWnd::ApplyChromeShellIcons()
     // Search box magnifier (E721) right-aligned inside the box.
     if (CControlUI* glyph = m_PaintManager.FindControl(_T("search_glyph"))) {
         const int px = DpiScale(UiTokens::SearchGlyphPx);
-        const unsigned argb = UiTokens::ArgbSearchGlyph;
+        const unsigned argb = IsDarkThemeActive() ? 0xFFB3B3B3u : UiTokens::ArgbSearchGlyph;
         const std::wstring bmp = GetGlyphIconBmp(UiTokens::GlyphSearch, px,
             RGB((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF));
         if (!bmp.empty()) {

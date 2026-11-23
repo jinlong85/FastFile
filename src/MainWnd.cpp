@@ -34,6 +34,8 @@ CMainWnd::~CMainWnd()
     if (m_hWnd) {
         ::KillTimer(m_hWnd, kTimerVirtSync);
         ::KillTimer(m_hWnd, kTimerColWidth);
+        ::KillTimer(m_hWnd, kTimerLayoutSync);
+        ::KillTimer(m_hWnd, kTimerSelectionPreview);
     }
     StopDetailsFill();
     UninitDragDrop();
@@ -85,6 +87,8 @@ void CMainWnd::InitWindow()
     m_pLeftQuickRows = static_cast<CVerticalLayoutUI*>(m_PaintManager.FindControl(_T("left_quick_rows")));
     m_pLeftQuick = static_cast<CVerticalLayoutUI*>(m_PaintManager.FindControl(_T("left_quick")));
     m_pLeftThisPc = static_cast<CVerticalLayoutUI*>(m_PaintManager.FindControl(_T("left_thispc")));
+    m_pLeftTags = static_cast<CVerticalLayoutUI*>(m_PaintManager.FindControl(_T("left_tags")));
+    m_pLeftTagRows = static_cast<CVerticalLayoutUI*>(m_PaintManager.FindControl(_T("left_tags_rows")));
     m_pPreviewPane = static_cast<CContainerUI*>(m_PaintManager.FindControl(_T("preview_pane")));
     m_pPreviewBody = static_cast<CVerticalLayoutUI*>(m_PaintManager.FindControl(_T("preview_body")));
     m_pPreviewRail = static_cast<CScrollBarUI*>(m_PaintManager.FindControl(_T("preview_rail")));
@@ -143,6 +147,7 @@ void CMainWnd::InitWindow()
     InitTabs();
     LoadFavorites();
     LoadQuickAccess();
+    RebuildLeftTagRows();
     SetTimer(m_hWnd, kTimerQuickAccessSync, 5000, nullptr);
     RebuildFavoritesBar();
     UpdateSearchOptionVisibility();
@@ -465,6 +470,11 @@ void CMainWnd::OnClick(TNotifyUI& msg)
         OnPinnedFavoriteClick(msg.pSender);
         return;
     }
+    if (name.Find(_T("nav_tag_")) == 0) {
+        CDuiString ud = msg.pSender->GetUserData();
+        if (!ud.IsEmpty()) NavigateTo(ud.GetData(), true);
+        return;
+    }
     if (name == _T("btn_toggle_preview")) {
         SetPreviewVisible(!m_previewVisible);
         if (m_previewVisible) UpdatePreviewForSelection();
@@ -757,9 +767,18 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
         if (wParam == kTimerVirtSync) { SyncVisibleIconWindow(false); return 0; }
-        if (wParam == kTimerColWidth) { CaptureColumnWidths(); return 0; }
+        if (wParam == kTimerColWidth) {
+            if (IsWindowVisible(m_hWnd) && !IsIconic(m_hWnd)) CaptureColumnWidths();
+            return 0;
+        }
         if (wParam == kTimerDetailsSync) { UpdateDetailsWindow(false); return 0; }
-        if (wParam == kTimerLayoutSync) { SyncLayoutDependents(); SyncShellViewSelection(); return 0; }
+        if (wParam == kTimerLayoutSync) {
+            if (IsWindowVisible(m_hWnd) && !IsIconic(m_hWnd)) {
+                SyncLayoutDependents();
+                SyncShellViewSelection();
+            }
+            return 0;
+        }
         if (wParam == kTimerSelectionPreview) { FlushSelectionPreview(); return 0; }
         if (wParam == kTimerShellSelect) { TryApplyPendingShellSelect(); return 0; }
         if (wParam == kTimerExplorerTakeover) { PollExplorerTakeover(); return 0; }
@@ -777,7 +796,7 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         // Middle click on a favourite chip opens it in a new tab (Explorer behaviour).
         for (CControlUI* p = m_PaintManager.FindControl(mp); p; p = p->GetParent()) {
             const CDuiString nm = p->GetName();
-            if (nm.Find(_T("fav_pin_")) == 0 && !p->GetUserData().IsEmpty()) {
+            if ((nm.Find(_T("fav_pin_")) == 0 || nm.Find(_T("nav_tag_")) == 0) && !p->GetUserData().IsEmpty()) {
                 AddTab(p->GetUserData().GetData(), true);
                 return 0;
             }

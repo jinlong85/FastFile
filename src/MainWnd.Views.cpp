@@ -1531,6 +1531,7 @@ void CMainWnd::BindDetailsRow(CListContainerElementUI* row, int entryIdx)
 
     row->SetVisible(true);
     row->SetUserData(e.fullPath.c_str());
+    row->SetToolTip(e.fullPath.c_str());
     row->SetTag(e.isDir ? 1 : 0);
 
     if (auto* nameCol = static_cast<CHorizontalLayoutUI*>(row->GetItemAt(0))) {
@@ -1568,8 +1569,13 @@ void CMainWnd::BindDetailsRow(CListContainerElementUI* row, int entryIdx)
         c->Invalidate();
     }
     if (CControlUI* c = row->GetItemAt(2)) {
-        // Real Shell type name ("光盘映像文件", "JPG 文件", ...) instead of a generic "文件".
-        c->SetText(QueryShellTypeNameCached(e.fullPath, e.isDir).c_str());
+        if (FileTagManager::IsTagViewPath(m_currentPath)) {
+            const std::wstring parent = ParentPath(e.fullPath);
+            c->SetText(parent.empty() ? e.fullPath.c_str() : parent.c_str());
+        } else {
+            // Real Shell type name ("光盘映像文件", "JPG 文件", ...) instead of a generic "文件".
+            c->SetText(QueryShellTypeNameCached(e.fullPath, e.isDir).c_str());
+        }
         c->Invalidate();
     }
     if (CControlUI* c = row->GetItemAt(3)) {
@@ -1627,6 +1633,11 @@ void CMainWnd::RebuildDetailsVirtual()
         m_pIconScroll->SetVisible(false);
     ApplyColumnWidths();
     UpdateHeaderSortIndicators();
+    if (CControlUI* hdrType = m_PaintManager.FindControl(_T("hdr_type"))) {
+        if (FileTagManager::IsTagViewPath(m_currentPath)) {
+            hdrType->SetText(L"所在位置");
+        }
+    }
 
     const int total = static_cast<int>(m_detailsEntries.size());
     if (total <= 0) {
@@ -1848,6 +1859,11 @@ void CMainWnd::StartDetailsProgressiveFill(const std::vector<DirEntry>& dirs,
     m_pFileList->SetVisible(false);
     ApplyColumnWidths();
     UpdateHeaderSortIndicators();
+    if (CControlUI* hdrType = m_PaintManager.FindControl(_T("hdr_type"))) {
+        if (FileTagManager::IsTagViewPath(m_currentPath)) {
+            hdrType->SetText(L"所在位置");
+        }
+    }
 
     m_detailsFillQueue.clear();
     {

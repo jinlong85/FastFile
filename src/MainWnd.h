@@ -306,6 +306,8 @@ private:
     void BuildDefaultQuickRows();
     void RebuildLeftQuickRows();
     void UpdateQuickRowHighlight();
+    void RebuildLeftTagRows();
+    void UpdateLeftTagHighlight();
     int HitTestQuickRow(POINT ptClient) const;
     void ActivateQuickRow(int index);
     void ShowQuickRowContextMenu(int index, POINT ptScreen);
@@ -794,6 +796,8 @@ private:
     CVerticalLayoutUI* m_pLeftQuickRows = nullptr;   // runtime rows (built-ins + pins)
     CVerticalLayoutUI* m_pLeftQuick = nullptr;
     CVerticalLayoutUI* m_pLeftThisPc = nullptr;
+    CVerticalLayoutUI* m_pLeftTags = nullptr;
+    CVerticalLayoutUI* m_pLeftTagRows = nullptr;
     CVerticalLayoutUI* m_pIconScroll = nullptr;
     CTileLayoutUI* m_pIconTiles = nullptr;
     int m_leftQuickDesignH = UiTokens::LeftQuickDefaultH; // @96 DPI, persisted
@@ -994,9 +998,13 @@ private:
         int px = 0;
         bool isDir = true;
         bool ok = false;
-        std::thread::id thread;
     };
-    std::vector<std::thread> m_previewIconThreads;
+    std::thread m_previewWorker;
+    std::mutex m_previewMutex;
+    std::condition_variable m_previewCv;
+    std::unique_ptr<PreviewIconJob> m_pendingPreviewJob;
+    bool m_previewStop = false;
+    void PreviewWorkerMain();
     bool m_selectionPreviewPending = false;
     bool m_deferSelectionPreview = true; // false = legacy synchronous pane update (timing comparison)
     bool m_asyncPreviewIcons = true;     // folder icons for the details pane load off the UI thread

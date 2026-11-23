@@ -2,6 +2,7 @@
 #include "MainWndInternal.h"
 #include "FastFileAbout.h"
 #include "AutoUpdater.h"
+#include "SessionStore.h"
 #include <functional>
 #include <algorithm>
 #include <thread>
@@ -18,10 +19,7 @@ void FastFileSettings::Normalize() {
     themeMode=std::clamp(themeMode,0,2);
 }
 std::wstring FastFileSettings::FilePath() {
-    wchar_t buffer[32768]{};DWORD n=GetEnvironmentVariableW(L"APPDATA",buffer,_countof(buffer));
-    std::wstring folder=n && n<_countof(buffer) ? buffer : L".";
-    folder+=L"\\FastFile";CreateDirectoryW(folder.c_str(),nullptr);
-    return folder+L"\\settings.ini";
+    return FastFileSession::ConfigDirectory() + L"\\settings.ini";
 }
 FastFileSettings FastFileSettings::Load(const std::wstring& path) {
     FastFileSettings s;
@@ -228,6 +226,10 @@ struct SettingsDialog {
         auto* self=reinterpret_cast<SettingsDialog*>(GetWindowLongPtrW(window,DWLP_USER));
         if(message==WM_INITDIALOG) {
             self=reinterpret_cast<SettingsDialog*>(l);SetWindowLongPtrW(window,DWLP_USER,l);self->dialog=window;
+            const BOOL darkTitle = (self->draft.themeMode == 2 || (self->draft.themeMode == 0 && CMainWnd::IsSystemDarkTheme())) ? TRUE : FALSE;
+            ::DwmSetWindowAttribute(window, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &darkTitle, sizeof(darkTitle));
+            const int cornerPref = 2; /* DWMWCP_ROUND */
+            ::DwmSetWindowAttribute(window, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &cornerPref, sizeof(cornerPref));
             self->dpi=GetDpiForWindow(window);if(!self->dpi)self->dpi=96;
             self->Build();RECT r{0,0,self->Scale(640),self->Scale(560)};
             AdjustWindowRectExForDpi(&r,GetWindowLongW(window,GWL_STYLE),FALSE,GetWindowLongW(window,GWL_EXSTYLE),self->dpi);
@@ -481,7 +483,7 @@ bool CMainWnd::CommitIntegrationSettings(const FastFileSettings& settings) {
 void CMainWnd::ApplySettingsAppearance() {
     ApplyDpiScaledFonts();ApplyDpiScaledChrome();ApplyUiChromeTokens();
     ApplyDwmChrome();
-    RebuildFavoritesBar();RebuildTabStrip();RebuildLeftQuickRows();
+    RebuildFavoritesBar();RebuildTabStrip();RebuildLeftQuickRows();RebuildLeftTagRows();RebuildBreadcrumb();UpdateNavButtons();
     std::function<void(CTreeNodeUI*)> update=[&](CTreeNodeUI* node){
         if(!node)return;node->SetFixedHeight(DpiScale(m_settings.NavigationRowHeight()));
         for(int i=0;i<node->GetCountChild();++i)update(node->GetChildNode(i));

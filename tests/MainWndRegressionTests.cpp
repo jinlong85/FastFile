@@ -1351,6 +1351,9 @@ struct MainWndRegressionAccess {
                 check(foundStar && !foundBlueInStar, "QueryTags(starredOnly) returns only starred entries");
 
                 const std::wstring savedPath = window.m_currentPath;
+                window.RebuildLeftTagRows();
+                check(window.m_pLeftTagRows != nullptr && window.m_pLeftTagRows->GetCount() >= 3,
+                    "left navigation tag section renders starred, active color, and all-tagged rows");
                 window.NavigateToNow(L"::Tags:Starred", false);
                 bool listedStar = false;
                 for (const auto& e : window.m_listingFiles) {
@@ -1362,6 +1365,7 @@ struct MainWndRegressionAccess {
 
                 mgr.ClearTag(fStar);
                 mgr.ClearTag(fBlue);
+                window.RebuildLeftTagRows();
                 ::DeleteFileW(fStar.c_str());
                 ::DeleteFileW(fBlue.c_str());
             }

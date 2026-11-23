@@ -872,6 +872,30 @@ int CMainWnd::PreviewIconRequestPx(int iconPx)
 // Win11 folder thumbnails, 384 px JUMBO list) and the GDI+ scale / PNG encode run on a
 // worker STA. The pane shows the new title / metadata at once; the icon follows through
 // kMsgPreviewIconReady and is dropped if the selection moved on meanwhile.
+void CMainWnd::PreviewWorkerMain()
+{
+    const HRESULT com = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    ::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    for (;;) {
+        std::unique_ptr<PreviewIconJob> job;
+        {
+            std::unique_lock<std::mutex> lock(m_previewMutex);
+            m_previewCv.wait(lock, [this] { return m_previewStop || m_pendingPreviewJob != nullptr; });
+            if (m_previewStop) break;
+            job = std::move(m_pendingPreviewJob);
+        }
+        if (!job) continue;
+        job->ok = ExtractShellIconSized(job->path, job->isDir, job->px, job->png);
+        const HWND owner = m_hWnd;
+        PreviewIconJob* raw = job.release();
+        if (!owner || !::PostMessageW(owner, kMsgPreviewIconReady, 0, reinterpret_cast<LPARAM>(raw))) {
+            ::DeleteFileW(raw->png.c_str());
+            delete raw;
+        }
+    }
+    if (SUCCEEDED(com)) ::CoUninitialize();
+}
+
 bool CMainWnd::LoadPreviewShellIconAsync(const std::wstring& path, bool isDir, int iconPx)
 {
     if (!m_pPreviewImage || path.empty() || !m_hWnd || !EnsureGdiplus()) return false;
@@ -889,23 +913,21 @@ bool CMainWnd::LoadPreviewShellIconAsync(const std::wstring& path, bool isDir, i
     wchar_t leaf[64] = {};
     swprintf_s(leaf, L"preview_icon_%u.png", job->serial);
     job->png = SessionCacheFile(leaf);
-    PreviewIconJob* raw = job.release();
-    const HWND owner = m_hWnd;
-    try {
-        m_previewIconThreads.emplace_back([raw, owner]() {
-            raw->thread = std::this_thread::get_id();
-            const HRESULT com = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-            raw->ok = ExtractShellIconSized(raw->path, raw->isDir, raw->px, raw->png);
-            if (SUCCEEDED(com)) ::CoUninitialize();
-            if (!::PostMessageW(owner, kMsgPreviewIconReady, 0, reinterpret_cast<LPARAM>(raw))) {
-                ::DeleteFileW(raw->png.c_str());
-                delete raw;
-            }
-        });
-    } catch (...) {
-        delete raw;
-        return false;
+    {
+        std::lock_guard<std::mutex> lock(m_previewMutex);
+        m_previewStop = false;
+        m_pendingPreviewJob = std::move(job);
     }
+    if (!m_previewWorker.joinable()) {
+        try {
+            m_previewWorker = std::thread(&CMainWnd::PreviewWorkerMain, this);
+        } catch (...) {
+            std::lock_guard<std::mutex> lock(m_previewMutex);
+            m_pendingPreviewJob.reset();
+            return false;
+        }
+    }
+    m_previewCv.notify_one();
     return true;
 }
 
@@ -913,9 +935,6 @@ void CMainWnd::OnPreviewIconReady(PreviewIconJob* job)
 {
     if (!job) return;
     std::unique_ptr<PreviewIconJob> owned(job);
-    for (auto it = m_previewIconThreads.begin(); it != m_previewIconThreads.end(); ++it) {
-        if (it->get_id() == job->thread) { it->join(); m_previewIconThreads.erase(it); break; }
-    }
     const bool current = job->serial == m_previewSerial && m_previewFromSelection
         && PathEquals(m_previewPath, job->path) && m_pPreviewImage;
     if (!current) { ::DeleteFileW(job->png.c_str()); return; }
@@ -931,10 +950,13 @@ void CMainWnd::OnPreviewIconReady(PreviewIconJob* job)
 
 void CMainWnd::JoinPreviewIconThreads()
 {
-    for (auto& thread : m_previewIconThreads)
-        if (thread.joinable()) thread.join();
-    m_previewIconThreads.clear();
-    // Results posted after the window went away are freed with the queue by their thread.
+    {
+        std::lock_guard<std::mutex> lock(m_previewMutex);
+        m_previewStop = true;
+        m_pendingPreviewJob.reset();
+    }
+    m_previewCv.notify_all();
+    if (m_previewWorker.joinable()) m_previewWorker.join();
 }
 
 bool CMainWnd::LoadPreviewShellIcon(const std::wstring& path, bool isDir, int iconPx)

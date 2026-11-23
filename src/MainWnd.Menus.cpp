@@ -221,6 +221,7 @@ void CMainWnd::OnMoreMenuClicked()
     } else if (cmd == 108) {
         const size_t pruned = FileTagManager::Instance().PruneMissingPaths();
         if (pruned > 0) {
+            RebuildLeftTagRows();
             if (m_shellBrowser && m_shellBrowser->IsCreated()) m_shellBrowser->Redraw();
             if (m_pFileList) m_pFileList->Invalidate();
             if (m_pIconTiles) m_pIconTiles->Invalidate();

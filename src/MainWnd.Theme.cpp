@@ -409,7 +409,9 @@ void CMainWnd::ApplyUiChromeTokens()
     // Phase 2: left nav surface + section headers + tree interaction colors
     setBk(_T("left_quick"), surf);
     setBk(_T("left_thispc"), surf);
+    setBk(_T("left_tags"), surf);
     setBk(_T("left_nav_divider"), sepColor);
+    setBk(_T("left_tags_divider"), sepColor);
     if (m_pDirTree) {
         m_pDirTree->SetAttribute(_T("bkcolor"), surf);
         m_pDirTree->SetAttribute(_T("itemhotbkcolor"), navHover);

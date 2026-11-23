@@ -5,6 +5,7 @@
 #include "MainWndInternal.h"
 #include "FavoriteStarUI.h"
 #include "FavoritesJson.h"
+#include "SessionStore.h"
 #include "ShellPresentation.h"
 
 namespace {
@@ -61,6 +62,10 @@ void CMainWnd::UpdateFavoritesHighlight()
         star->SetToolTip(IsThisPcPath(m_currentPath) ? L"此电脑不能收藏" :
             pinned ? L"取消收藏当前文件夹" : L"收藏当前文件夹");
     }
+    const bool dark = IsDarkThemeActive();
+    const LPCWSTR surf = dark ? L"#FF202020" : UiTokens::ColorSurface;
+    const LPCWSTR selBg = dark ? L"#FF363636" : UiTokens::ColorNavSelected;
+    const LPCWSTR textFg = dark ? L"#FFF3F3F3" : UiTokens::ColorTextPrimary;
     auto stylePin = [&](CContainerUI* host) {
         if (!host) return;
         const int n = host->GetCount();
@@ -70,15 +75,15 @@ void CMainWnd::UpdateFavoritesHighlight()
             CDuiString ud = c->GetUserData();
             const bool active = !ud.IsEmpty() && PathEquals(m_currentPath, ud.GetData());
             if (active) {
-                c->SetAttribute(_T("bkcolor"), UiTokens::ColorNavSelected);
-                c->SetAttribute(_T("textcolor"), UiTokens::ColorTextPrimary);
+                c->SetAttribute(_T("bkcolor"), selBg);
+                c->SetAttribute(_T("textcolor"), textFg);
             } else {
                 CDuiString nm = c->GetName();
                 if (nm.Find(_T("fav_dyn_")) == 0)
-                    c->SetAttribute(_T("bkcolor"), UiTokens::ColorSurface);
+                    c->SetAttribute(_T("bkcolor"), surf);
                 else
                     c->SetAttribute(_T("bkcolor"), UiTokens::ColorTransparent);
-                c->SetAttribute(_T("textcolor"), UiTokens::ColorTextPrimary);
+                c->SetAttribute(_T("textcolor"), textFg);
             }
             c->Invalidate();
         }
@@ -91,16 +96,7 @@ void CMainWnd::UpdateFavoritesHighlight()
 
 std::wstring CMainWnd::GetLeftNavFilePath()
 {
-    wchar_t appdata[MAX_PATH] = {};
-    DWORD n = ::GetEnvironmentVariableW(L"APPDATA", appdata, MAX_PATH);
-    std::wstring dir;
-    if (n > 0 && n < MAX_PATH)
-        dir = appdata;
-    else
-        dir = L".";
-    dir += L"\\FastFile";
-    ::CreateDirectoryW(dir.c_str(), nullptr);
-    return dir + L"\\left_nav.ini";
+    return FastFileSession::ConfigDirectory() + L"\\left_nav.ini";
 }
 
 void CMainWnd::ApplyLeftNavSplitterHeight(int designHeight)
@@ -764,10 +760,11 @@ void CMainWnd::RebuildFavoritesBar()
         btn->SetAttribute(_T("align"), _T("left"));
         btn->SetAttribute(_T("valign"), _T("vcenter"));
         btn->SetAttribute(_T("font"), _T("0"));
+        const bool dark = IsDarkThemeActive();
         btn->SetAttribute(_T("bkcolor"), _T("#00FFFFFF"));
-        btn->SetAttribute(_T("hotbkcolor"), _T("#14000000"));
-        btn->SetAttribute(_T("pushedbkcolor"), _T("#22000000"));
-        btn->SetAttribute(_T("textcolor"), UiTokens::ColorTextPrimary);
+        btn->SetAttribute(_T("hotbkcolor"), dark ? _T("#18FFFFFF") : _T("#14000000"));
+        btn->SetAttribute(_T("pushedbkcolor"), dark ? _T("#28FFFFFF") : _T("#22000000"));
+        btn->SetAttribute(_T("textcolor"), dark ? _T("#FFF3F3F3") : UiTokens::ColorTextPrimary);
         btn->SetAttribute(_T("bordercolor"), _T("#00FFFFFF"));
         btn->SetAttribute(_T("bordersize"), _T("0"));
         btn->SetAttribute(_T("endellipsis"), _T("true"));
@@ -887,10 +884,11 @@ void CMainWnd::RebuildLeftQuickRows()
         btn->SetAttribute(_T("align"), _T("left"));
         btn->SetAttribute(_T("valign"), _T("vcenter"));
         btn->SetAttribute(_T("endellipsis"), _T("true"));
-        btn->SetAttribute(_T("bkcolor"), UiTokens::ColorSurface);
-        btn->SetAttribute(_T("hotbkcolor"), UiTokens::ColorNavHover);
-        btn->SetAttribute(_T("pushedbkcolor"), UiTokens::ColorNavSelected);
-        btn->SetAttribute(_T("textcolor"), UiTokens::ColorTextPrimary);
+        const bool dark = IsDarkThemeActive();
+        btn->SetAttribute(_T("bkcolor"), dark ? L"#FF202020" : UiTokens::ColorSurface);
+        btn->SetAttribute(_T("hotbkcolor"), dark ? L"#FF2D2D2D" : UiTokens::ColorNavHover);
+        btn->SetAttribute(_T("pushedbkcolor"), dark ? L"#FF363636" : UiTokens::ColorNavSelected);
+        btn->SetAttribute(_T("textcolor"), dark ? L"#FFF3F3F3" : UiTokens::ColorTextPrimary);
         btn->SetAttribute(_T("bordercolor"), UiTokens::ColorTransparent);
         btn->SetAttribute(_T("bordersize"), _T("0"));
         btn->SetBorderRound({ DpiScale(UiTokens::RadiusControl), DpiScale(UiTokens::RadiusControl) });
@@ -950,14 +948,128 @@ void CMainWnd::UpdateQuickRowHighlight()
             ? IsThisPcPath(m_currentPath)
             : PathEquals(m_currentPath, row.path);
         quickOwnsSelection = quickOwnsSelection || active;
+        const bool dark = IsDarkThemeActive();
         c->SetAttribute(_T("bkcolor"),
-            active ? UiTokens::ColorNavSelected : UiTokens::ColorSurface);
-        c->SetAttribute(_T("textcolor"), UiTokens::ColorTextPrimary);
+            active ? (dark ? L"#FF363636" : UiTokens::ColorNavSelected) : (dark ? L"#FF202020" : UiTokens::ColorSurface));
+        c->SetAttribute(_T("textcolor"), dark ? L"#FFF3F3F3" : UiTokens::ColorTextPrimary);
         c->SetAttribute(_T("bordercolor"), UiTokens::ColorTransparent);
         c->SetAttribute(_T("bordersize"), _T("0"));
         c->Invalidate();
     }
     if (quickOwnsSelection && m_pDirTree) {
+        for (int i = 0; i < m_pDirTree->GetCount(); ++i) {
+            if (auto* row = static_cast<CTreeNodeUI*>(m_pDirTree->GetItemAt(i)->GetInterface(DUI_CTR_TREENODE)))
+                row->Select(false, false);
+        }
+    }
+    UpdateLeftTagHighlight();
+}
+
+void CMainWnd::RebuildLeftTagRows()
+{
+    if (!m_pLeftTagRows) return;
+    m_pLeftTagRows->RemoveAll();
+
+    const auto allTags = FileTagManager::Instance().QueryTags(FileTagColor::None, false);
+    int starredCount = 0;
+    int colorCounts[7] = {};
+    for (const auto& kv : allTags) {
+        if (kv.second.starred) ++starredCount;
+        const int ci = static_cast<int>(kv.second.color);
+        if (ci >= 1 && ci <= 6) ++colorCounts[ci];
+    }
+
+    struct TagNavEntry {
+        std::wstring name;
+        std::wstring label;
+        std::wstring path;
+        std::wstring tooltip;
+    };
+    std::vector<TagNavEntry> entries;
+    {
+        std::wstring label = L"★  星标项目";
+        if (starredCount > 0) label += L" (" + std::to_wstring(starredCount) + L")";
+        entries.push_back({ L"nav_tag_starred", label, L"::Tags:Starred", L"查看所有星标/置顶项目（Alt+B 标星）" });
+    }
+    static constexpr const wchar_t* kColorPaths[7] = {
+        L"", L"::Tags:Red", L"::Tags:Orange", L"::Tags:Yellow", L"::Tags:Green", L"::Tags:Blue", L"::Tags:Purple"
+    };
+    for (int ci = 1; ci <= 6; ++ci) {
+        if (colorCounts[ci] <= 0) continue;
+        const auto color = static_cast<FileTagColor>(ci);
+        std::wstring label = std::wstring(L"●  ") + FileTagManager::GetColorName(color)
+            + L" (" + std::to_wstring(colorCounts[ci]) + L")";
+        entries.push_back({
+            L"nav_tag_c" + std::to_wstring(ci),
+            label,
+            kColorPaths[ci],
+            std::wstring(L"查看所有") + FileTagManager::GetColorName(color) + L"标签项目"
+        });
+    }
+    if (!allTags.empty()) {
+        std::wstring label = L"所有已标记 (" + std::to_wstring(allTags.size()) + L")";
+        entries.push_back({ L"nav_tag_all", label, L"::Tags", L"跨目录查看所有带标签或星标的项目" });
+    }
+
+    const bool dark = IsDarkThemeActive();
+    const int rowH = DpiScale(m_settings.NavigationRowHeight());
+    const int padL = DpiScale(UiTokens::NavHeaderPadL);
+    const int padR = DpiScale(8);
+    CDuiString textPad;
+    textPad.Format(_T("%d,0,%d,0"), padL, padR);
+
+    for (const auto& entry : entries) {
+        auto* btn = new CButtonUI;
+        btn->SetName(entry.name.c_str());
+        btn->SetText(entry.label.c_str());
+        btn->SetUserData(entry.path.c_str());
+        btn->SetFixedHeight(rowH);
+        btn->SetAttribute(_T("font"), _T("0"));
+        btn->SetAttribute(_T("align"), _T("left"));
+        btn->SetAttribute(_T("valign"), _T("vcenter"));
+        btn->SetAttribute(_T("endellipsis"), _T("true"));
+        btn->SetAttribute(_T("textpadding"), textPad.GetData());
+        btn->SetAttribute(_T("bkcolor"), dark ? L"#FF202020" : UiTokens::ColorSurface);
+        btn->SetAttribute(_T("hotbkcolor"), dark ? L"#FF2D2D2D" : UiTokens::ColorNavHover);
+        btn->SetAttribute(_T("pushedbkcolor"), dark ? L"#FF363636" : UiTokens::ColorNavSelected);
+        btn->SetAttribute(_T("textcolor"), dark ? L"#FFF3F3F3" : UiTokens::ColorTextPrimary);
+        btn->SetAttribute(_T("bordercolor"), UiTokens::ColorTransparent);
+        btn->SetAttribute(_T("bordersize"), _T("0"));
+        btn->SetBorderRound({ DpiScale(UiTokens::RadiusControl), DpiScale(UiTokens::RadiusControl) });
+        btn->SetToolTip(entry.tooltip.c_str());
+        m_pLeftTagRows->Add(btn);
+    }
+
+    if (m_pLeftTags) {
+        const int visibleRows = (std::min)(static_cast<int>(entries.size()), 4);
+        const int blockH = visibleRows * rowH + DpiScale(8);
+        m_pLeftTags->SetFixedHeight(blockH);
+        m_pLeftTagRows->EnableScrollBar(static_cast<int>(entries.size()) > 4, false);
+        m_pLeftTags->NeedUpdate();
+    }
+    UpdateLeftTagHighlight();
+    m_pLeftTagRows->NeedUpdate();
+}
+
+void CMainWnd::UpdateLeftTagHighlight()
+{
+    if (!m_pLeftTagRows) return;
+    const bool dark = IsDarkThemeActive();
+    const LPCWSTR surf = dark ? L"#FF202020" : UiTokens::ColorSurface;
+    const LPCWSTR selBg = dark ? L"#FF363636" : UiTokens::ColorNavSelected;
+    const LPCWSTR textFg = dark ? L"#FFF3F3F3" : UiTokens::ColorTextPrimary;
+    bool tagOwnsSelection = false;
+    for (int i = 0; i < m_pLeftTagRows->GetCount(); ++i) {
+        CControlUI* c = m_pLeftTagRows->GetItemAt(i);
+        if (!c) continue;
+        CDuiString ud = c->GetUserData();
+        const bool active = !ud.IsEmpty() && PathEquals(m_currentPath, ud.GetData());
+        tagOwnsSelection = tagOwnsSelection || active;
+        c->SetAttribute(_T("bkcolor"), active ? selBg : surf);
+        c->SetAttribute(_T("textcolor"), textFg);
+        c->Invalidate();
+    }
+    if (tagOwnsSelection && m_pDirTree) {
         for (int i = 0; i < m_pDirTree->GetCount(); ++i) {
             if (auto* row = static_cast<CTreeNodeUI*>(m_pDirTree->GetItemAt(i)->GetInterface(DUI_CTR_TREENODE)))
                 row->Select(false, false);
