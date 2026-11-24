@@ -768,12 +768,12 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         }
         if (wParam == kTimerVirtSync) { SyncVisibleIconWindow(false); return 0; }
         if (wParam == kTimerColWidth) {
-            if (IsWindowVisible(m_hWnd) && !IsIconic(m_hWnd)) CaptureColumnWidths();
+            if (!IsIconic(m_hWnd)) CaptureColumnWidths();
             return 0;
         }
         if (wParam == kTimerDetailsSync) { UpdateDetailsWindow(false); return 0; }
         if (wParam == kTimerLayoutSync) {
-            if (IsWindowVisible(m_hWnd) && !IsIconic(m_hWnd)) {
+            if (!IsIconic(m_hWnd)) {
                 SyncLayoutDependents();
                 SyncShellViewSelection();
             }
