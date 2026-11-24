@@ -2,9 +2,16 @@
 
 面向使用者的改动记录（开发细节 / 踩坑见 [HANDOFF.md](HANDOFF.md)）。
 版本号来自根目录 [VERSION](VERSION)，安装包产物在 `dist\FastFile-Setup-<版本>.exe`。
-当前 GitHub 发行版为 [**1.0.34（预发布）**](https://github.com/jinlong85/FastFile/releases/tag/v1.0.34)，安装包已发布并提供应用内在线更新。
+当前 GitHub 发行版为 [**1.0.35（预发布）**](https://github.com/jinlong85/FastFile/releases/tag/v1.0.35)，安装包已发布并提供应用内在线更新。
 
 ## 2026-11-24
+
+### 1.0.35
+
+- **从渲染管线根治深色模式打开文件夹白屏闪烁 & 修复大/中/超大图标视图白格子**：
+  - 在 `ShellBrowserHost::Create()` 初始化完成即绑定外层 `ExplorerBrowserControl` 宿主窗口；
+  - 深色模式下发起导航前自动冻结外层宿主窗口绘制（`WM_SETREDRAW(FALSE)`），待新 `SHELLDLL_DefView` 与 `SysListView32` 创建完成并涂黑（`ApplyListDarkMode`）后再解冻一次性重绘（`WM_SETREDRAW(TRUE)` + `RedrawWindow`），彻底阻断新建子窗口出生第一帧向屏幕刷白；
+  - 修复大图标 / 超大图标 / 中图标自定义绘制（`DrawIconItem`）硬编码纯白格子背景与纯黑文字的问题，完整适配深色背景、选中边框与浅色文字。
 
 ### 1.0.34
 

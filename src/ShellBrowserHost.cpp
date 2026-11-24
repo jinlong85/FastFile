@@ -243,6 +243,7 @@ public:
             m_owner->m_pendingNavigation=path;
             m_owner->m_navigationFailed=false;
             if(!m_owner->m_navigationDeadline)m_owner->m_navigationDeadline=GetTickCount64()+15000;
+            m_owner->FreezeDarkNavigation();
             m_owner->TraceNavigation(L"pending");
         }
         return S_OK;
@@ -264,7 +265,11 @@ public:
     {
         std::wstring shellPath = ShellPathFromPidl(folder);
         if (!m_owner || !m_owner->FinishNavigation(shellPath,false))return S_OK;
-        if (m_owner) m_owner->SetVisible(m_owner->m_visible);
+        if (m_owner) {
+            m_owner->ApplyListDarkMode();
+            m_owner->UnfreezeDarkNavigation();
+            m_owner->SetVisible(m_owner->m_visible);
+        }
         auto* path = new (std::nothrow) std::wstring(std::move(shellPath));
         if (!path || !::PostMessageW(m_parent, m_navigationMessage, 0,
                 reinterpret_cast<LPARAM>(path))) {
@@ -276,6 +281,7 @@ public:
     {
         const auto path=ShellPathFromPidl(folder);
         if(!m_owner || !m_owner->FinishNavigation(path,true))return S_OK;
+        m_owner->UnfreezeDarkNavigation();
         auto* failed=new (std::nothrow) std::wstring(path);
         if(!failed || !PostMessageW(m_parent,m_navigationMessage,1,reinterpret_cast<LPARAM>(failed)))delete failed;
         return S_OK;
@@ -346,6 +352,7 @@ bool ShellBrowserHost::Create(HWND parent, const RECT& bounds,
     }
     // DuiLib owns the flat panel dividers; suppress the Shell host's inset frame.
     m_browser->SetOptions(EBO_NOBORDER);
+    AttachHostWindow();
     if (!m_events || FAILED(m_browser->Advise(m_events, &m_eventCookie))) {
         Destroy();
         return false;
@@ -355,6 +362,7 @@ bool ShellBrowserHost::Create(HWND parent, const RECT& bounds,
 
 void ShellBrowserHost::Destroy()
 {
+    UnfreezeDarkNavigation();
     RestoreListSpacing();
     if (m_systemSmallImages) {
         reinterpret_cast<IImageList*>(m_systemSmallImages)->Release();
@@ -458,6 +466,7 @@ bool ShellBrowserHost::Navigate(const std::wstring& path, bool retryPending)
     m_navigationQueued=false;
     if(!m_navigationDeadline)m_navigationDeadline=GetTickCount64()+15000;
     TraceNavigation(L"request");
+    FreezeDarkNavigation();
     HRESULT hr = E_FAIL;
     if (_wcsicmp(target.c_str(), kThisPcPath) == 0) {
         PIDLIST_ABSOLUTE pidl = nullptr;
@@ -479,7 +488,10 @@ bool ShellBrowserHost::Navigate(const std::wstring& path, bool retryPending)
         TraceNavigation(L"busy-retry",hr);
         return true; // accepted into our queue; not a successful Shell navigation
     }
-    if (FAILED(hr))FinishNavigation(target,true);
+    if (FAILED(hr)) {
+        UnfreezeDarkNavigation();
+        FinishNavigation(target,true);
+    }
     TraceNavigation(L"submitted",hr);
     return SUCCEEDED(hr);
 }
@@ -1230,11 +1242,56 @@ bool ShellBrowserHost::GetItemPath(int itemIndex, std::wstring& outPath) const
     return !outPath.empty();
 }
 
+void ShellBrowserHost::AttachHostWindow()
+{
+    if (!m_parent || !IsWindow(m_parent)) return;
+    HWND found = nullptr;
+    EnumChildWindows(m_parent, [](HWND child, LPARAM param) -> BOOL {
+        wchar_t cls[64]{};
+        GetClassNameW(child, cls, _countof(cls));
+        if (wcscmp(cls, L"ExplorerBrowserControl") == 0) {
+            *reinterpret_cast<HWND*>(param) = child;
+            return FALSE;
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&found));
+    if (found && found != m_hostWindow) {
+        if (m_hostWindow) RemoveWindowSubclass(m_hostWindow, HostSubclass, reinterpret_cast<UINT_PTR>(this));
+        m_hostWindow = found;
+        SetWindowSubclass(m_hostWindow, HostSubclass, reinterpret_cast<UINT_PTR>(this), reinterpret_cast<DWORD_PTR>(this));
+        if (m_darkMode) {
+            SetWindowTheme(m_hostWindow, L"DarkMode_Explorer", nullptr);
+        }
+    }
+}
+
+void ShellBrowserHost::FreezeDarkNavigation()
+{
+    if (!m_darkMode || m_darkNavFrozen) return;
+    if (!m_hostWindow || !IsWindow(m_hostWindow)) AttachHostWindow();
+    if (!m_hostWindow || !IsWindow(m_hostWindow)) return;
+    SendMessageW(m_hostWindow, WM_SETREDRAW, FALSE, 0);
+    m_darkNavFrozen = true;
+}
+
+void ShellBrowserHost::UnfreezeDarkNavigation()
+{
+    if (!m_darkNavFrozen) return;
+    m_darkNavFrozen = false;
+    if (m_hostWindow && IsWindow(m_hostWindow)) {
+        SendMessageW(m_hostWindow, WM_SETREDRAW, TRUE, 0);
+        RedrawWindow(m_hostWindow, nullptr, nullptr,
+            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+    }
+}
+
 void ShellBrowserHost::SetDarkMode(bool dark)
 {
     ApplyProcessPreferredDarkMode(dark);
+    if (!dark) UnfreezeDarkNavigation();
     if (m_darkMode == dark) return;
     m_darkMode = dark;
+    AttachHostWindow();
     ApplyListDarkMode();
 }
 
@@ -1845,13 +1902,17 @@ LRESULT ShellBrowserHost::DrawIconItem(NMLVCUSTOMDRAW* draw)
     const bool selected = (ListView_GetItemState(m_listWindow, index, LVIS_SELECTED) & LVIS_SELECTED) != 0;
     const bool hot = m_hotItem == index;
     HDC dc = draw->nmcd.hdc;
-    HBRUSH fill = CreateSolidBrush(selected ? RGB(0xE5,0xF1,0xFB) : hot ? RGB(0xF5,0xF5,0xF5) : RGB(255,255,255));
-    FillRect(dc, &cell, fill); DeleteObject(fill);
+    const COLORREF cellBg = m_darkMode
+        ? (selected ? RGB(0x36, 0x4E, 0x6B) : hot ? RGB(0x2D, 0x2D, 0x2D) : RGB(0x19, 0x19, 0x19))
+        : (selected ? RGB(0xE5, 0xF1, 0xFB) : hot ? RGB(0xF5, 0xF5, 0xF5) : RGB(255, 255, 255));
+    const COLORREF oldCellBg = SetDCBrushColor(dc, cellBg);
+    FillRect(dc, &cell, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+    SetDCBrushColor(dc, oldCellBg);
     if (selected) {
         if (index == m_probeItem && !m_probeTick) {
             LARGE_INTEGER tick{}; QueryPerformanceCounter(&tick); m_probeTick = tick.QuadPart;
         }
-        HPEN pen = CreatePen(PS_SOLID, MulDiv(1, m_dpi, 96), RGB(0x99,0xD1,0xFF));
+        HPEN pen = CreatePen(PS_SOLID, MulDiv(1, m_dpi, 96), m_darkMode ? RGB(0x60, 0xCD, 0xFF) : RGB(0x99, 0xD1, 0xFF));
         auto oldPen = SelectObject(dc, pen); auto oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
         Rectangle(dc, cell.left, cell.top, cell.right, cell.bottom);
         SelectObject(dc, oldBrush); SelectObject(dc, oldPen); DeleteObject(pen);
@@ -1919,7 +1980,7 @@ LRESULT ShellBrowserHost::DrawIconItem(NMLVCUSTOMDRAW* draw)
         cell.right-pad, cell.bottom-MulDiv(4,m_dpi,96)};
     const int saved = SaveDC(dc);
     SelectObject(dc, reinterpret_cast<HFONT>(SendMessageW(m_listWindow, WM_GETFONT, 0, 0)));
-    SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(0x1A,0x1A,0x1A));
+    SetBkMode(dc, TRANSPARENT); SetTextColor(dc, m_darkMode ? RGB(0xF3, 0xF3, 0xF3) : RGB(0x1A, 0x1A, 0x1A));
     DrawTextW(dc, title.c_str(), -1, &text, DT_CENTER|DT_SINGLELINE|DT_VCENTER|DT_END_ELLIPSIS|DT_NOPREFIX);
     RestoreDC(dc, saved);
     return CDRF_SKIPDEFAULT;

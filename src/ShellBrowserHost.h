@@ -234,7 +234,11 @@ private:
     bool m_visible = true;
     bool m_showHidden = false;
     bool m_darkMode = false;
+    bool m_darkNavFrozen = false;
     void ApplyListDarkMode();
+    void AttachHostWindow();
+    void FreezeDarkNavigation();
+    void UnfreezeDarkNavigation();
     int m_groupingMode=-1;
     PROPERTYKEY m_windowsGrouping{};
     BOOL m_windowsGroupingAscending=TRUE;
