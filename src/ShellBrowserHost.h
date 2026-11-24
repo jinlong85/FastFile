@@ -140,6 +140,7 @@ private:
     struct BadgeInfo { bool media = false; HICON icon = nullptr; int size = 0; int systemIcon = -1; };
     const BadgeInfo& Badge(const std::wstring& path);
     void PaintScrollBar(HWND window);
+    static LRESULT CALLBACK HostSubclass(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
     static LRESULT CALLBACK ViewSubclass(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
     static LRESULT CALLBACK ListSubclass(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
     // Cheap view-switch counters read by the regression tests (never reset).
@@ -175,6 +176,7 @@ private:
     DWORD m_appliedSpacing = 0;
     HWND m_listWindow = nullptr;
     HWND m_viewWindow = nullptr;
+    HWND m_hostWindow = nullptr;
     int m_iconSlot = 0;
     int m_hotItem = -1;
     // Paint probe for tests: first QPC tick at which m_probeItem was custom-drawn selected.

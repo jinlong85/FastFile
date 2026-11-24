@@ -2,9 +2,16 @@
 
 面向使用者的改动记录（开发细节 / 踩坑见 [HANDOFF.md](HANDOFF.md)）。
 版本号来自根目录 [VERSION](VERSION)，安装包产物在 `dist\FastFile-Setup-<版本>.exe`。
-当前 GitHub 发行版为 [**1.0.33（预发布）**](https://github.com/jinlong85/FastFile/releases/tag/v1.0.33)，安装包已发布并提供应用内在线更新。
+当前 GitHub 发行版为 [**1.0.34（预发布）**](https://github.com/jinlong85/FastFile/releases/tag/v1.0.34)，安装包已发布并提供应用内在线更新。
 
 ## 2026-11-24
+
+### 1.0.34
+
+- **消除深色模式打开/切换文件夹时的短暂白屏闪烁**：
+  - 为 `IExplorerBrowser` 宿主容器窗口（`ExplorerBrowserControl`）、`SHELLDLL_DefView` 与 `SysListView32` 三层窗口统一拦截深色模式下的 `WM_ERASEBKGND`，直接以 `#191919` 填充，杜绝旧视图销毁与新视图渲染空档期的纯白闪屏；
+  - 接入 Windows 原生进程级暗黑主题开关（`uxtheme.dll` `SetPreferredAppMode` / `FlushMenuThemes`），确保新建 Shell 视图与系统菜单从创建瞬间即按深色初始化；
+  - 修复原生文件列表垂直滚动条（`PaintScrollBar`）在深色模式下轨道仍使用 `WHITE_BRUSH` 的问题，切换为深色轨道与柔和滑块。
 
 ### 1.0.33
 

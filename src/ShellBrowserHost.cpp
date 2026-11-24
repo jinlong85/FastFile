@@ -35,6 +35,33 @@ void EnsureBufferedList(HWND list)
 }
 
 
+void ApplyProcessPreferredDarkMode(bool dark)
+{
+    if (HMODULE uxtheme = GetModuleHandleW(L"uxtheme.dll")) {
+        using SetPreferredAppModeFn = int(WINAPI*)(int);
+        using FlushMenuThemesFn = void(WINAPI*)();
+        if (auto setMode = reinterpret_cast<SetPreferredAppModeFn>(GetProcAddress(uxtheme, MAKEINTRESOURCEA(135)))) {
+            // 2 = ForceDark, 3 = ForceLight (Windows 10 1903+ / Windows 11)
+            setMode(dark ? 2 : 3);
+        }
+        if (auto flush = reinterpret_cast<FlushMenuThemesFn>(GetProcAddress(uxtheme, MAKEINTRESOURCEA(136)))) {
+            flush();
+        }
+    }
+}
+
+bool PaintDarkEraseBkgnd(HWND window, WPARAM wp)
+{
+    HDC dc = reinterpret_cast<HDC>(wp);
+    if (!dc) return false;
+    RECT rc{};
+    if (!GetClientRect(window, &rc)) return false;
+    const COLORREF old = SetDCBrushColor(dc, RGB(0x19, 0x19, 0x19));
+    FillRect(dc, &rc, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+    SetDCBrushColor(dc, old);
+    return true;
+}
+
 std::wstring TrimFolderTerminator(std::wstring path)
 {
     while (path.size() > 3 && (path.back() == L'\\' || path.back() == L'/'))
@@ -337,6 +364,10 @@ void ShellBrowserHost::Destroy()
     ClearItemImages();
     if (m_listWindow) RemoveWindowSubclass(m_listWindow, ListSubclass, reinterpret_cast<UINT_PTR>(this));
     if (m_viewWindow) RemoveWindowSubclass(m_viewWindow, ViewSubclass, reinterpret_cast<UINT_PTR>(this));
+    if (m_hostWindow) RemoveWindowSubclass(m_hostWindow, HostSubclass, reinterpret_cast<UINT_PTR>(this));
+    m_listWindow = nullptr;
+    m_viewWindow = nullptr;
+    m_hostWindow = nullptr;
     m_listWindow = m_viewWindow = nullptr;
     m_hotItem = -1;
     DetachSelectionEvents();
@@ -1015,6 +1046,12 @@ void ShellBrowserHost::StyleNativeView(IFolderView2* view)
         if (list) {
             SetWindowSubclass(list, ListSubclass, reinterpret_cast<UINT_PTR>(this), reinterpret_cast<DWORD_PTR>(this));
             SetWindowSubclass(m_viewWindow, ViewSubclass, reinterpret_cast<UINT_PTR>(this), reinterpret_cast<DWORD_PTR>(this));
+            HWND hostWin = m_viewWindow ? GetParent(m_viewWindow) : nullptr;
+            if (hostWin && hostWin != m_parent && hostWin != m_hostWindow) {
+                if (m_hostWindow) RemoveWindowSubclass(m_hostWindow, HostSubclass, reinterpret_cast<UINT_PTR>(this));
+                m_hostWindow = hostWin;
+                SetWindowSubclass(m_hostWindow, HostSubclass, reinterpret_cast<UINT_PTR>(this), reinterpret_cast<DWORD_PTR>(this));
+            }
             ApplyListDarkMode();
         }
     }
@@ -1195,6 +1232,7 @@ bool ShellBrowserHost::GetItemPath(int itemIndex, std::wstring& outPath) const
 
 void ShellBrowserHost::SetDarkMode(bool dark)
 {
+    ApplyProcessPreferredDarkMode(dark);
     if (m_darkMode == dark) return;
     m_darkMode = dark;
     ApplyListDarkMode();
@@ -1202,6 +1240,14 @@ void ShellBrowserHost::SetDarkMode(bool dark)
 
 void ShellBrowserHost::ApplyListDarkMode()
 {
+    if (m_hostWindow && IsWindow(m_hostWindow)) {
+        SetWindowTheme(m_hostWindow, m_darkMode ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+        InvalidateRect(m_hostWindow, nullptr, TRUE);
+    }
+    if (m_viewWindow && IsWindow(m_viewWindow)) {
+        SetWindowTheme(m_viewWindow, m_darkMode ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+        InvalidateRect(m_viewWindow, nullptr, TRUE);
+    }
     if (!m_listWindow || !IsWindow(m_listWindow)) return;
     SetWindowTheme(m_listWindow, m_darkMode ? L"DarkMode_Explorer" : L"Explorer", nullptr);
     if (m_darkMode) {
@@ -1879,9 +1925,25 @@ LRESULT ShellBrowserHost::DrawIconItem(NMLVCUSTOMDRAW* draw)
     return CDRF_SKIPDEFAULT;
 }
 
+LRESULT CALLBACK ShellBrowserHost::HostSubclass(HWND window, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR data)
+{
+    auto* host = reinterpret_cast<ShellBrowserHost*>(data);
+    if (msg == WM_ERASEBKGND && host && host->m_darkMode) {
+        if (PaintDarkEraseBkgnd(window, wp)) return 1;
+    }
+    if (msg == WM_NCDESTROY) {
+        if (host && host->m_hostWindow == window) host->m_hostWindow = nullptr;
+        RemoveWindowSubclass(window, HostSubclass, id);
+    }
+    return DefSubclassProc(window, msg, wp, lp);
+}
+
 LRESULT CALLBACK ShellBrowserHost::ViewSubclass(HWND window, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR data)
 {
     auto* host = reinterpret_cast<ShellBrowserHost*>(data);
+    if (msg == WM_ERASEBKGND && host && host->m_darkMode) {
+        if (PaintDarkEraseBkgnd(window, wp)) return 1;
+    }
     // WM_CONTEXTMENU and NM_RCLICK pass straight through: DefView shows its own menu.
     if (msg == WM_NOTIFY && lp) {
         auto* header = reinterpret_cast<NMHDR*>(lp);
@@ -1944,10 +2006,19 @@ void ShellBrowserHost::PaintScrollBar(HWND window)
     const int width=MulDiv(hover ? 8 : 4,m_dpi,96);
     HDC dc=GetWindowDC(window);
     if (!dc) return;
-    FillRect(dc,&bar,reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+    if (m_darkMode) {
+        const COLORREF oldBg = SetDCBrushColor(dc, RGB(0x19, 0x19, 0x19));
+        FillRect(dc, &bar, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+        SetDCBrushColor(dc, oldBg);
+    } else {
+        FillRect(dc,&bar,reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+    }
     if (info.xyThumbBottom>info.xyThumbTop) {
         const int x=(bar.left+bar.right-width)/2;
-        HBRUSH brush=CreateSolidBrush(RGB(0xC4,0xC4,0xC4));
+        const COLORREF thumbColor = m_darkMode
+            ? (hover ? RGB(0x88, 0x88, 0x88) : RGB(0x5E, 0x5E, 0x5E))
+            : RGB(0xC4, 0xC4, 0xC4);
+        HBRUSH brush=CreateSolidBrush(thumbColor);
         auto oldBrush=SelectObject(dc,brush); auto oldPen=SelectObject(dc,GetStockObject(NULL_PEN));
         RoundRect(dc,x,bar.top+info.xyThumbTop,x+width,bar.top+info.xyThumbBottom,width,width);
         SelectObject(dc,oldPen); SelectObject(dc,oldBrush); DeleteObject(brush);
@@ -1958,6 +2029,9 @@ void ShellBrowserHost::PaintScrollBar(HWND window)
 LRESULT CALLBACK ShellBrowserHost::ListSubclass(HWND window, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR data)
 {
     auto* host=reinterpret_cast<ShellBrowserHost*>(data);
+    if (msg == WM_ERASEBKGND && host && host->m_darkMode) {
+        if (PaintDarkEraseBkgnd(window, wp)) return 1;
+    }
     if(msg==WM_PAINT) {
         ++host->m_counters.listPaints;
         RECT update{},client{};
