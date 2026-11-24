@@ -757,7 +757,7 @@ bool CTabStripUI::DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopControl
         }
     }
     // Win11 Explorer quiet separators: only between non-active, non-hovered adjacent tabs.
-    Gdiplus::SolidBrush separator(Gdiplus::Color(m_dark ? 0xFF3A3A3A : 0xFFD4D7DC));
+    Gdiplus::SolidBrush separator(Gdiplus::Color(m_dark ? 0xFF505050 : 0xFFCFCFCF));
     const int lineH = Scaled(14, m_dpi);
     for (size_t i = 1; i < m_tabs.size(); ++i) {
         const int idx = static_cast<int>(i);
