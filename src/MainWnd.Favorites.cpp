@@ -984,12 +984,16 @@ void CMainWnd::RebuildLeftTagRows()
         std::wstring label;
         std::wstring path;
         std::wstring tooltip;
+        wchar_t glyph;
+        COLORREF glyphColor;
     };
+    const bool dark = IsDarkThemeActive();
     std::vector<TagNavEntry> entries;
     {
-        std::wstring label = L"★  星标项目";
+        std::wstring label = L"星标项目";
         if (starredCount > 0) label += L" (" + std::to_wstring(starredCount) + L")";
-        entries.push_back({ L"nav_tag_starred", label, L"::Tags:Starred", L"查看所有星标/置顶项目（Alt+B 标星）" });
+        entries.push_back({ L"nav_tag_starred", label, L"::Tags:Starred",
+            L"查看所有星标/置顶项目（Alt+B 标星）", L'\u2605', RGB(255, 184, 0) });
     }
     static constexpr const wchar_t* kColorPaths[7] = {
         L"", L"::Tags:Red", L"::Tags:Orange", L"::Tags:Yellow", L"::Tags:Green", L"::Tags:Blue", L"::Tags:Purple"
@@ -997,26 +1001,26 @@ void CMainWnd::RebuildLeftTagRows()
     for (int ci = 1; ci <= 6; ++ci) {
         if (colorCounts[ci] <= 0) continue;
         const auto color = static_cast<FileTagColor>(ci);
-        std::wstring label = std::wstring(L"●  ") + FileTagManager::GetColorName(color)
+        std::wstring label = std::wstring(FileTagManager::GetColorName(color))
             + L" (" + std::to_wstring(colorCounts[ci]) + L")";
         entries.push_back({
             L"nav_tag_c" + std::to_wstring(ci),
             label,
             kColorPaths[ci],
-            std::wstring(L"查看所有") + FileTagManager::GetColorName(color) + L"标签项目"
+            std::wstring(L"查看所有") + FileTagManager::GetColorName(color) + L"标签项目",
+            L'\u25CF',
+            FileTagManager::GetColorRef(color)
         });
     }
     if (!allTags.empty()) {
         std::wstring label = L"所有已标记 (" + std::to_wstring(allTags.size()) + L")";
-        entries.push_back({ L"nav_tag_all", label, L"::Tags", L"跨目录查看所有带标签或星标的项目" });
+        entries.push_back({ L"nav_tag_all", label, L"::Tags",
+            L"跨目录查看所有带标签或星标的项目", L'\uE8EC',
+            dark ? RGB(0xB3, 0xB3, 0xB3) : RGB(0x5C, 0x5C, 0x5C) });
     }
 
-    const bool dark = IsDarkThemeActive();
     const int rowH = DpiScale(m_settings.NavigationRowHeight());
-    const int padL = DpiScale(UiTokens::NavHeaderPadL);
-    const int padR = DpiScale(8);
-    CDuiString textPad;
-    textPad.Format(_T("%d,0,%d,0"), padL, padR);
+    const int iconPx = DpiScale(UiTokens::NavIconPx);
 
     for (const auto& entry : entries) {
         auto* btn = new CButtonUI;
@@ -1028,7 +1032,6 @@ void CMainWnd::RebuildLeftTagRows()
         btn->SetAttribute(_T("align"), _T("left"));
         btn->SetAttribute(_T("valign"), _T("vcenter"));
         btn->SetAttribute(_T("endellipsis"), _T("true"));
-        btn->SetAttribute(_T("textpadding"), textPad.GetData());
         btn->SetAttribute(_T("bkcolor"), dark ? L"#FF202020" : UiTokens::ColorSurface);
         btn->SetAttribute(_T("hotbkcolor"), dark ? L"#FF2D2D2D" : UiTokens::ColorNavHover);
         btn->SetAttribute(_T("pushedbkcolor"), dark ? L"#FF363636" : UiTokens::ColorNavSelected);
@@ -1037,6 +1040,8 @@ void CMainWnd::RebuildLeftTagRows()
         btn->SetAttribute(_T("bordersize"), _T("0"));
         btn->SetBorderRound({ DpiScale(UiTokens::RadiusControl), DpiScale(UiTokens::RadiusControl) });
         btn->SetToolTip(entry.tooltip.c_str());
+        const std::wstring icon = GetGlyphIconBmp(entry.glyph, iconPx, entry.glyphColor);
+        ApplyQuickAccessRow(btn, icon);
         m_pLeftTagRows->Add(btn);
     }
 

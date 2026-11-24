@@ -400,32 +400,51 @@ void CMainWnd::ApplyCommandBarLayout()
         bar->SetChildPadding(DpiScale(m_settings.density * 2));
         bar->SetAttribute(_T("bordersize"), _T("0"));
     }
+    const bool dark = IsDarkThemeActive();
     for (LPCTSTR name : { _T("command_top_divider"), _T("command_body_divider") }) {
         if (CControlUI* c = find(name)) {
             c->SetFixedHeight(hair);
-            c->SetBkColor(ArgbCmdLine);
+            c->SetBkColor(dark ? 0xFF333333u : ArgbCmdLine);
         }
     }
     for (LPCTSTR name : { _T("sep_new"), _T("sep_organize"), _T("sep_more") }) {
         if (CControlUI* c = find(name)) {
             c->SetFixedWidth(DpiScale(1));
             c->SetFixedHeight(DpiScale(SepH));
-            c->SetBkColor(ArgbCmdSeparator);
+            c->SetBkColor(dark ? 0xFF3A3A3Au : ArgbCmdSeparator);
         }
         padLeft(name, ToolbarSepMargin);
     }
+    const LPCTSTR cmdHot = dark ? _T("#1FFFFFFF") : _T("#22000000");
+    const LPCTSTR cmdPush = dark ? _T("#2EFFFFFF") : _T("#33000000");
     for (LPCTSTR name : { _T("btn_new"), _T("btn_sort"), _T("btn_view_menu") }) {
         size(name, ToolbarTextBtnMinW, CmdBtnH);
         if (CControlUI* c = find(name)) {
             c->SetAttribute(_T("font"), _T("7"));
             c->SetAttribute(_T("align"), _T("left"));
-            c->SetAttribute(_T("textcolor"), ColorCmdText);
-            c->SetAttribute(_T("disabledtextcolor"), ColorCmdTextDisabled);
+            c->SetAttribute(_T("textcolor"), dark ? _T("#FFF3F3F3") : ColorCmdText);
+            c->SetAttribute(_T("disabledtextcolor"), dark ? _T("#FF6E6E6E") : ColorCmdTextDisabled);
+            c->SetAttribute(_T("hotbkcolor"), cmdHot);
+            c->SetAttribute(_T("pushedbkcolor"), cmdPush);
         }
     }
     for (LPCTSTR name : { _T("btn_cut"), _T("btn_copy"), _T("btn_paste"), _T("btn_rename"),
-                          _T("btn_share"), _T("btn_delete"), _T("btn_more"), _T("btn_settings") })
-        size(name, ToolbarBtnW, CmdBtnH);
+                          _T("btn_share"), _T("btn_delete"), _T("btn_more"), _T("btn_settings"),
+                          _T("btn_back"), _T("btn_forward"), _T("btn_up"), _T("btn_refresh") }) {
+        if (wcscmp(name, _T("btn_back")) != 0 && wcscmp(name, _T("btn_forward")) != 0
+            && wcscmp(name, _T("btn_up")) != 0 && wcscmp(name, _T("btn_refresh")) != 0) {
+            size(name, ToolbarBtnW, CmdBtnH);
+        }
+        if (CControlUI* c = find(name)) {
+            if (wcscmp(name, _T("btn_delete")) == 0) {
+                c->SetAttribute(_T("hotbkcolor"), dark ? _T("#33E81123") : _T("#FFFEE2E2"));
+                c->SetAttribute(_T("pushedbkcolor"), dark ? _T("#4DE81123") : _T("#FFFECACA"));
+            } else {
+                c->SetAttribute(_T("hotbkcolor"), cmdHot);
+                c->SetAttribute(_T("pushedbkcolor"), cmdPush);
+            }
+        }
+    }
     padLeft(_T("btn_new"), 0);
     padLeft(_T("btn_cut"), ToolbarSepMargin);
     for (LPCTSTR name : { _T("btn_copy"), _T("btn_paste"), _T("btn_rename"), _T("btn_share"), _T("btn_delete") })

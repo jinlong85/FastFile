@@ -184,8 +184,19 @@ void CMainWnd::ApplyDwmChrome()
     ::DwmExtendFrameIntoClientArea(m_hWnd, &margins);
     if (CControlUI* bar = m_PaintManager.FindControl(_T("titlebar"))) {
         bar->SetAttribute(_T("bkcolor"),
-            m_micaActive ? UiTokens::ColorTransparent : (dark ? L"#FF202020" : L"#FFEDEDED"));
+            dark ? L"#FF202020" : (m_micaActive ? UiTokens::ColorTransparent : L"#FFEDEDED"));
         bar->Invalidate();
+    }
+    for (LPCTSTR rootName : { _T("outer_gutter"), _T("chrome_root") }) {
+        if (CControlUI* root = m_PaintManager.FindControl(rootName)) {
+            root->SetAttribute(_T("bkcolor"), dark ? L"#FF202020" : UiTokens::ColorTransparent);
+            root->Invalidate();
+        }
+    }
+    if (CControlUI* addBtn = m_PaintManager.FindControl(_T("btn_tab_add"))) {
+        addBtn->SetAttribute(_T("hotbkcolor"), dark ? L"#20FFFFFF" : L"#14000000");
+        addBtn->SetAttribute(_T("pushedbkcolor"), dark ? L"#30FFFFFF" : L"#22000000");
+        addBtn->Invalidate();
     }
     const LPCWSTR captionText = dark ? L"#FFF3F3F3" : UiTokens::ColorTextPrimary;
     for (LPCTSTR name : { _T("minbtn"), _T("maxbtn"), _T("restorebtn"), _T("closebtn") }) {
@@ -449,6 +460,23 @@ void CMainWnd::ApplyUiChromeTokens()
         m_pPreviewTitle->SetAttribute(_T("textcolor"), textPrimary);
         m_pPreviewTitle->SetAttribute(_T("font"), _T("5"));  // FontPreviewTitle
         m_pPreviewTitle->SetAttribute(_T("bkcolor"), UiTokens::ColorTransparent);
+    }
+    if (CControlUI* dt = m_PaintManager.FindControl(_T("preview_details_title"))) {
+        dt->SetAttribute(_T("textcolor"), dark ? L"#FFE0E0E0" : L"#FF303030");
+    }
+    if (CControlUI* sep = m_PaintManager.FindControl(_T("preview_sep_details"))) {
+        sep->SetAttribute(_T("bkcolor"), dark ? L"#FF333333" : L"#FFE8E8E8");
+    }
+    if (CControlUI* shareBtn = m_PaintManager.FindControl(_T("btn_preview_share"))) {
+        shareBtn->SetAttribute(_T("textcolor"), dark ? L"#FFF3F3F3" : L"#FF303030");
+        shareBtn->SetAttribute(_T("bkcolor"), dark ? L"#FF2B2B2B" : L"#FFFFFFFF");
+        shareBtn->SetAttribute(_T("hotbkcolor"), dark ? L"#FF383838" : L"#FFF3F3F3");
+        shareBtn->SetAttribute(_T("pushedbkcolor"), dark ? L"#FF454545" : L"#FFE5E5E5");
+        shareBtn->SetAttribute(_T("bordercolor"), dark ? L"#FF404040" : L"#FFD6D6D6");
+    }
+    if (m_pChkRecursive) {
+        m_pChkRecursive->SetAttribute(_T("textcolor"), textSecondary);
+        m_pChkRecursive->SetAttribute(_T("hotbkcolor"), dark ? L"#FF2D2D2D" : L"#FFE5E5E5");
     }
     if (CControlUI* fh = m_PaintManager.FindControl(_T("fav_bar_hint"))) {
         fh->SetAttribute(_T("font"), _T("0"));

@@ -741,7 +741,7 @@ bool CTabStripUI::DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopControl
         const bool hovered = (i == m_hot && !selected);
         DrawTabGlass(g, rc, selected, hovered);
         DrawTabIcon(g, i, rc);
-        DrawTabText(g, i, rc, selected ? GetSysColor(COLOR_WINDOWTEXT)
+        DrawTabText(g, i, rc, selected ? (m_dark ? RGB(0xFF, 0xFF, 0xFF) : GetSysColor(COLOR_WINDOWTEXT))
             : (m_dark ? RGB(0xB3, 0xB3, 0xB3) : RGB(0x5C, 0x5C, 0x5C)));
         if (!m_tabs[i].isPinned && (selected || hovered || m_hotClose == i)) {
             RECT cr = m_tabs[i].close;

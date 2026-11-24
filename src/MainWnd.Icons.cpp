@@ -1413,7 +1413,7 @@ void AddVectorCoverage(int kind, float ox, float oy, float em, int w, int h, std
 // grey / accent / chevron layers. Disabled icons are the whole icon at 36% alpha (#C2C2C2 /
 // #A3CEEF on white); the chevron switches to its own disabled grey.
 std::vector<Gdiplus::ARGB> RenderCommandCanvas(int kind, int w, int h, int iconX, int iconY, int iconPx,
-                                               float chevX, float chevCY, float chevEm, bool dim)
+                                               float chevX, float chevCY, float chevEm, bool dim, bool dark)
 {
     constexpr int s = 4;
     const int hw = w * s, hh = h * s;
@@ -1471,9 +1471,13 @@ std::vector<Gdiplus::ARGB> RenderCommandCanvas(int kind, int w, int h, int iconX
     const auto g = DownsampleCoverage(grey, w, h, s);
     const auto b = DownsampleCoverage(blue, w, h, s);
     const auto c = chev.empty() ? std::vector<float>(size_t(w) * size_t(h), 0.0f) : DownsampleCoverage(chev, w, h, s);
-    const Gdiplus::ARGB greyInk = kind == CmdIconMore ? UiTokens::ArgbCmdMore : UiTokens::ArgbCmdIcon;
-    const Gdiplus::ARGB blueInk = UiTokens::ArgbCmdAccent;
-    const Gdiplus::ARGB chevInk = dim ? UiTokens::ArgbCmdChevronDisabled : UiTokens::ArgbCmdChevron;
+    const Gdiplus::ARGB greyInk = dark
+        ? (kind == CmdIconMore ? 0xFFF3F3F3u : 0xFFE5E5E5u)
+        : (kind == CmdIconMore ? UiTokens::ArgbCmdMore : UiTokens::ArgbCmdIcon);
+    const Gdiplus::ARGB blueInk = dark ? 0xFF60CDFFu : UiTokens::ArgbCmdAccent;
+    const Gdiplus::ARGB chevInk = dark
+        ? (dim ? 0xFF6E6E6Eu : 0xFFD0D0D0u)
+        : (dim ? UiTokens::ArgbCmdChevronDisabled : UiTokens::ArgbCmdChevron);
     const float iconAlpha = dim ? float(UiTokens::CmdDisabledAlpha) / 255.0f : 1.0f;
     auto ch = [](Gdiplus::ARGB c, int shift) { return float((c >> shift) & 0xFF); };
     std::vector<Gdiplus::ARGB> out(size_t(w) * size_t(h), 0);
@@ -1513,9 +1517,10 @@ std::wstring CMainWnd::GetCommandCanvasBmp(int kind, int w, int h, int iconX, in
 {
     if (w < 8 || h < 8 || w > 512 || h > 256 || iconPx < 8 || iconPx > 128) return {};
     const wchar_t* face = CommandIconFace();
-    wchar_t keybuf[160] = {};
-    swprintf_s(keybuf, L"cmdc-v7:%d@%dx%d:%d,%d,%d:%.2f,%.2f,%.2f%s:%s", kind, w, h, iconX, iconY, iconPx,
-        chevX, chevCY, chevEm, dim ? L"#dim" : L"", face ? face : L"vector");
+    const bool dark = IsDarkThemeActive();
+    wchar_t keybuf[176] = {};
+    swprintf_s(keybuf, L"cmdc-v8:%d@%dx%d:%d,%d,%d:%.2f,%.2f,%.2f%s%s:%s", kind, w, h, iconX, iconY, iconPx,
+        chevX, chevCY, chevEm, dim ? L"#dim" : L"", dark ? L"#dark" : L"", face ? face : L"vector");
     const std::wstring key = keybuf;
     {
         std::lock_guard<std::mutex> lock(m_iconCacheMutex);
@@ -1526,11 +1531,11 @@ std::wstring CMainWnd::GetCommandCanvasBmp(int kind, int w, int h, int iconX, in
     if (m_iconCacheDir.empty() || !EnsureGdiplus())
         return {};
     wchar_t name[96] = {};
-    swprintf_s(name, L"cmdc_%08X_%d_%dx%d_%d_v7.png",
-        static_cast<unsigned>(std::hash<std::wstring>{}(key) & 0xFFFFFFFFu), kind, w, h, dim ? 1 : 0);
+    swprintf_s(name, L"cmdc_%08X_%d_%dx%d_%d_%d_v8.png",
+        static_cast<unsigned>(std::hash<std::wstring>{}(key) & 0xFFFFFFFFu), kind, w, h, dim ? 1 : 0, dark ? 1 : 0);
     const std::wstring pngPath = m_iconCacheDir + name;
     if (!::PathFileExistsW(pngPath.c_str())) {
-        const auto pixels = RenderCommandCanvas(kind, w, h, iconX, iconY, iconPx, chevX, chevCY, chevEm, dim);
+        const auto pixels = RenderCommandCanvas(kind, w, h, iconX, iconY, iconPx, chevX, chevCY, chevEm, dim, dark);
         if (!SaveArgbPng(pixels, w, h, pngPath)) return {};
     }
     std::lock_guard<std::mutex> lock(m_iconCacheMutex);
