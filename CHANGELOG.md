@@ -2,9 +2,15 @@
 
 面向使用者的改动记录（开发细节 / 踩坑见 [HANDOFF.md](HANDOFF.md)）。
 版本号来自根目录 [VERSION](VERSION)，安装包产物在 `dist\FastFile-Setup-<版本>.exe`。
-当前 GitHub 发行版为 [**1.0.39（预发布）**](https://github.com/jinlong85/FastFile/releases/tag/v1.0.39)，安装包已发布并提供应用内在线更新。
+当前 GitHub 发行版为 [**1.0.40（预发布）**](https://github.com/jinlong85/FastFile/releases/tag/v1.0.40)，安装包已发布并提供应用内在线更新。
 
 ## 2026-11-24
+
+### 1.0.40
+
+- **修复深色模式详细信息视图中“名称”排序列整列变白、表头文字发黑看不清的问题**：
+  - 在深色模式下拦截 `LVM_SETSELECTEDCOLUMN` 并在 `ApplyListDarkMode()` 与 `WM_PAINT` 中强制清除系统浅色排序列高亮（`ListView_SetSelectedColumn(-1)`），同时在 `DrawListIcon` 的 `CDDS_SUBITEM` 阶段显式锁定深色单元格背景与浅色文字，彻底消除排序列（如「名称」列）变白导致白字不可见的问题；
+  - 调用 `uxtheme.dll` 窗口级暗色开关（`AllowDarkModeForWindow`）并在 `ListSubclass` 中为 `SysHeader32` 表头 `NM_CUSTOMDRAW` 强制设置浅色文字（`#E0E0E0`），修复「名称 / 修改日期 / 类型 / 大小」表头文字在深色模式下发黑难以辨认的问题。
 
 ### 1.0.39
 

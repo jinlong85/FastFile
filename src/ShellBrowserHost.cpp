@@ -35,6 +35,17 @@ void EnsureBufferedList(HWND list)
 }
 
 
+void AllowDarkModeForWindow(HWND window, bool dark)
+{
+    if (!window || !IsWindow(window)) return;
+    if (HMODULE uxtheme = GetModuleHandleW(L"uxtheme.dll")) {
+        using AllowDarkModeForWindowFn = BOOL(WINAPI*)(HWND, BOOL);
+        if (auto allow = reinterpret_cast<AllowDarkModeForWindowFn>(GetProcAddress(uxtheme, MAKEINTRESOURCEA(133)))) {
+            allow(window, dark ? TRUE : FALSE);
+        }
+    }
+}
+
 void ApplyProcessPreferredDarkMode(bool dark)
 {
     if (HMODULE uxtheme = GetModuleHandleW(L"uxtheme.dll")) {
@@ -1330,18 +1341,22 @@ void ShellBrowserHost::SetDarkMode(bool dark)
 void ShellBrowserHost::ApplyListDarkMode()
 {
     if (m_hostWindow && IsWindow(m_hostWindow)) {
+        AllowDarkModeForWindow(m_hostWindow, m_darkMode);
         SetWindowTheme(m_hostWindow, m_darkMode ? L"DarkMode_Explorer" : L"Explorer", nullptr);
         InvalidateRect(m_hostWindow, nullptr, TRUE);
     }
     if (m_viewWindow && IsWindow(m_viewWindow)) {
+        AllowDarkModeForWindow(m_viewWindow, m_darkMode);
         SetWindowTheme(m_viewWindow, m_darkMode ? L"DarkMode_Explorer" : L"Explorer", nullptr);
         InvalidateRect(m_viewWindow, nullptr, TRUE);
     }
     if (!m_listWindow || !IsWindow(m_listWindow)) return;
+    AllowDarkModeForWindow(m_listWindow, m_darkMode);
     SetWindowTheme(m_listWindow, m_darkMode ? L"DarkMode_Explorer" : L"Explorer", nullptr);
     if (m_darkMode) {
         const COLORREF bg = RGB(0x19, 0x19, 0x19);
         const COLORREF fg = RGB(0xF3, 0xF3, 0xF3);
+        ListView_SetSelectedColumn(m_listWindow, -1);
         ListView_SetBkColor(m_listWindow, bg);
         ListView_SetTextBkColor(m_listWindow, bg);
         ListView_SetTextColor(m_listWindow, fg);
@@ -1353,6 +1368,7 @@ void ShellBrowserHost::ApplyListDarkMode()
         ListView_SetTextColor(m_listWindow, fg);
     }
     if (HWND header = ListView_GetHeader(m_listWindow)) {
+        AllowDarkModeForWindow(header, m_darkMode);
         SetWindowTheme(header, m_darkMode ? L"DarkMode_ItemsView" : L"ItemsView", nullptr);
         InvalidateRect(header, nullptr, TRUE);
     }
@@ -1443,21 +1459,44 @@ LRESULT ShellBrowserHost::DrawListIcon(NMLVCUSTOMDRAW* draw)
         }
         return CDRF_DODEFAULT;
     }
+    if (draw->nmcd.dwDrawStage == (CDDS_ITEMPREPAINT | CDDS_SUBITEM)) {
+        if (isDetails && m_darkMode) {
+            const bool selected = (ListView_GetItemState(m_listWindow, itemIndex, LVIS_SELECTED) & LVIS_SELECTED) != 0;
+            if (!selected && !(draw->nmcd.uItemState & CDIS_HOT)) {
+                COLORREF bg = RGB(0x19, 0x19, 0x19);
+                std::wstring itemPath;
+                if (GetItemPath(itemIndex, itemPath)) {
+                    const FileTagInfo tag = FileTagManager::Instance().GetTag(itemPath);
+                    if (tag.color != FileTagColor::None) {
+                        bg = BlendTagTint(bg, FileTagManager::GetColorRef(tag.color), 14);
+                    }
+                }
+                draw->clrTextBk = bg;
+                draw->clrText = RGB(0xF3, 0xF3, 0xF3);
+            }
+        }
+        return CDRF_DODEFAULT;
+    }
     if (draw->nmcd.dwDrawStage != CDDS_ITEMPREPAINT) return CDRF_DODEFAULT;
     // Details keeps native text, columns, focus and selection painting, with subtle tag row tint.
     if (isDetails) {
         const bool selected = (ListView_GetItemState(m_listWindow, itemIndex, LVIS_SELECTED) & LVIS_SELECTED) != 0;
         if (!selected && !(draw->nmcd.uItemState & CDIS_HOT)) {
+            const COLORREF baseBg = m_darkMode ? RGB(0x19, 0x19, 0x19) : RGB(255, 255, 255);
+            COLORREF bg = baseBg;
             std::wstring itemPath;
             if (GetItemPath(itemIndex, itemPath)) {
                 const FileTagInfo tag = FileTagManager::Instance().GetTag(itemPath);
                 if (tag.color != FileTagColor::None) {
-                    const COLORREF baseBg = m_darkMode ? RGB(0x19, 0x19, 0x19) : RGB(255, 255, 255);
-                    draw->clrTextBk = BlendTagTint(baseBg, FileTagManager::GetColorRef(tag.color), m_darkMode ? 14 : 9);
+                    bg = BlendTagTint(baseBg, FileTagManager::GetColorRef(tag.color), m_darkMode ? 14 : 9);
                 }
             }
+            if (m_darkMode || bg != baseBg) {
+                draw->clrTextBk = bg;
+                if (m_darkMode) draw->clrText = RGB(0xF3, 0xF3, 0xF3);
+            }
         }
-        return CDRF_NOTIFYPOSTPAINT;
+        return m_darkMode ? (CDRF_NOTIFYPOSTPAINT | CDRF_NOTIFYSUBITEMDRAW) : CDRF_NOTIFYPOSTPAINT;
     }
 
     // List mode: custom draw item row to accommodate custom 26-px row height.
@@ -2428,12 +2467,25 @@ LRESULT CALLBACK ShellBrowserHost::ListSubclass(HWND window, UINT msg, WPARAM wp
         if (msg == WM_ERASEBKGND) {
             if (PaintDarkEraseBkgnd(window, wp)) return 1;
         }
-        if (msg == LVM_SETBKCOLOR || msg == LVM_SETTEXTBKCOLOR) {
+        if (msg == LVM_SETSELECTEDCOLUMN) {
+            wp = static_cast<WPARAM>(-1);
+        } else if (msg == LVM_SETBKCOLOR || msg == LVM_SETTEXTBKCOLOR) {
             lp = static_cast<LPARAM>(RGB(0x19, 0x19, 0x19));
         } else if (msg == LVM_SETTEXTCOLOR) {
             lp = static_cast<LPARAM>(RGB(0xF3, 0xF3, 0xF3));
+        } else if (msg == WM_NOTIFY && lp) {
+            auto* hdr = reinterpret_cast<NMHDR*>(lp);
+            if (hdr->code == NM_CUSTOMDRAW && hdr->hwndFrom == ListView_GetHeader(window)) {
+                auto* cd = reinterpret_cast<NMCUSTOMDRAW*>(lp);
+                if (cd->dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
+                if (cd->dwDrawStage == CDDS_ITEMPREPAINT) {
+                    SetTextColor(cd->hdc, RGB(0xE0, 0xE0, 0xE0));
+                    return CDRF_DODEFAULT;
+                }
+            }
         } else if (msg == WM_THEMECHANGED) {
             const LRESULT res = DefSubclassProc(window, msg, wp, lp);
+            ListView_SetSelectedColumn(window, -1);
             ListView_SetBkColor(window, RGB(0x19, 0x19, 0x19));
             ListView_SetTextBkColor(window, RGB(0x19, 0x19, 0x19));
             ListView_SetTextColor(window, RGB(0xF3, 0xF3, 0xF3));
@@ -2441,10 +2493,15 @@ LRESULT CALLBACK ShellBrowserHost::ListSubclass(HWND window, UINT msg, WPARAM wp
         }
     }
     if(msg==WM_PAINT) {
-        if (host && host->m_darkMode && ListView_GetBkColor(window) != RGB(0x19, 0x19, 0x19)) {
-            ListView_SetBkColor(window, RGB(0x19, 0x19, 0x19));
-            ListView_SetTextBkColor(window, RGB(0x19, 0x19, 0x19));
-            ListView_SetTextColor(window, RGB(0xF3, 0xF3, 0xF3));
+        if (host && host->m_darkMode) {
+            if (ListView_GetSelectedColumn(window) != -1) {
+                ListView_SetSelectedColumn(window, -1);
+            }
+            if (ListView_GetBkColor(window) != RGB(0x19, 0x19, 0x19)) {
+                ListView_SetBkColor(window, RGB(0x19, 0x19, 0x19));
+                ListView_SetTextBkColor(window, RGB(0x19, 0x19, 0x19));
+                ListView_SetTextColor(window, RGB(0xF3, 0xF3, 0xF3));
+            }
         }
         ++host->m_counters.listPaints;
         RECT update{},client{};

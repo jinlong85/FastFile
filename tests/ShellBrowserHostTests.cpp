@@ -126,8 +126,11 @@ struct ShellBrowserHostTestAccess {
         check(settled(folder, 2), "dark-mode folder settles after F5 refresh");
         if (host.m_listWindow) {
             ListView_SetBkColor(host.m_listWindow, RGB(255, 255, 255));
+            ListView_SetSelectedColumn(host.m_listWindow, 0);
             check(ListView_GetBkColor(host.m_listWindow) == RGB(0x19, 0x19, 0x19),
                 "dark-mode list view blocks white LVM_SETBKCOLOR reset on F5 refresh");
+            check(ListView_GetSelectedColumn(host.m_listWindow) == -1,
+                "dark-mode list view clears sorted-column white highlight");
         }
         // Right-click tag submenu injection regression: injecting into a popup exposes
         // all 6 colors + star + clear and forwards WM_COMMAND activation to parent.
