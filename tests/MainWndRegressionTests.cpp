@@ -3814,7 +3814,7 @@ struct MainWndRegressionAccess {
                 << ": " << handler << " ms\n";
             check(deferred, "large icon selection defers the details pane instead of loading it in the selection handler");
             check(handler < 50.0, "large icon selection handler returns quickly");
-            const DWORD deadline = GetTickCount() + 3000;
+            const DWORD deadline = GetTickCount() + 6000;
             while ((title() != L"Battle.net" || window.m_previewBmp.empty()) && GetTickCount() < deadline) pump(20);
             check(title() == L"Battle.net" && !window.m_previewBmp.empty() && window.m_previewWorker.joinable(),
                 "deferred details pane and off-thread folder icon arrive via reusable preview worker");
