@@ -95,6 +95,33 @@ struct ShellBrowserHostTestAccess {
             && trace.find("event=refresh-retry")!=std::string::npos && trace.find("event=timeout")!=std::string::npos
             && trace.find("listCount=1")!=std::string::npos,"diagnostics record failure, retry, timeout and actual populated view");
         log.close();
+        // Dark-mode anti-flash regression: SetVisible(true) or Shell ShowWindow during an
+        // in-flight navigation must not reveal the host before OnNavigationComplete.
+        host.SetDarkMode(true);
+        check(host.m_hostWindow != nullptr, "dark mode attaches ExplorerBrowserControl host window");
+        if (host.m_hostWindow) {
+            host.FreezeDarkNavigation();
+            check(host.m_darkNavFrozen && (GetWindowLongPtrW(host.m_hostWindow, GWL_STYLE) & WS_VISIBLE) == 0,
+                "dark navigation freezes and hides host window");
+            host.SetVisible(true);
+            ::ShowWindow(host.m_hostWindow, SW_SHOWNA);
+            check(host.m_darkNavFrozen && (GetWindowLongPtrW(host.m_hostWindow, GWL_STYLE) & WS_VISIBLE) == 0,
+                "SetVisible/ShowWindow cannot reveal host while dark navigation is frozen");
+            host.UnfreezeDarkNavigation();
+            check(!host.m_darkNavFrozen && (GetWindowLongPtrW(host.m_hostWindow, GWL_STYLE) & WS_VISIBLE) != 0,
+                "unfreezing dark navigation restores host visibility");
+        }
+        check(host.Navigate(folder), "dark-mode navigation to folder starts");
+        host.SetVisible(true);
+        check(settled(folder), "dark-mode navigation completes and populates folder");
+        check(!host.m_darkNavFrozen, "dark-mode navigation unfreezes on completion");
+        if (host.m_hostWindow) {
+            check((GetWindowLongPtrW(host.m_hostWindow, GWL_STYLE) & WS_VISIBLE) != 0,
+                "dark-mode host window is visible after navigation completes");
+        }
+        check(host.m_listWindow != nullptr && ListView_GetBkColor(host.m_listWindow) == RGB(0x19, 0x19, 0x19),
+            "dark-mode list view keeps dark background color after navigation");
+        host.SetDarkMode(false);
         host.Destroy();pump();
         CoTaskMemFree(target);CoTaskMemFree(nextTarget);
         DeleteFileW((next+L"\\native-view.txt").c_str());RemoveDirectoryW(next.c_str());

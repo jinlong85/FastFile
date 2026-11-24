@@ -253,6 +253,7 @@ public:
         if (m_owner) {
             m_owner->CancelThumbRequests();
             m_owner->AttachViewFilter(view);
+            m_owner->AttachNativeViewWindows(view);
             IFolderView2* folderView=nullptr;
             if(SUCCEEDED(view->QueryInterface(IID_PPV_ARGS(&folderView)))) {
                 m_owner->ApplyViewMode(folderView);
@@ -502,6 +503,7 @@ void ShellBrowserHost::PollNavigation()
     if(m_navigationDeadline && GetTickCount64()>=m_navigationDeadline) {
         m_pendingNavigation.clear();m_navigationQueued=false;m_navigationDeadline=0;
         m_navigationFailed=true;
+        UnfreezeDarkNavigation();
         TraceNavigation(L"timeout",HRESULT_FROM_WIN32(ERROR_TIMEOUT));
         auto* path=new (std::nothrow) std::wstring(m_lastNavigation);
         if(!path || !PostMessageW(m_parent,m_navigationMessage,1,reinterpret_cast<LPARAM>(path)))delete path;
@@ -814,6 +816,9 @@ bool ShellBrowserHost::SetVisible(bool visible)
 {
     if (!m_browser)
         return false;
+    m_visible = visible;
+    if (visible && m_darkNavFrozen)
+        return true;
     IShellView* view = nullptr;
     HWND viewWindow = nullptr;
     if (SUCCEEDED(m_browser->GetCurrentView(IID_PPV_ARGS(&view))) && view) {
@@ -829,8 +834,9 @@ bool ShellBrowserHost::SetVisible(bool visible)
             container = GetParent(container);
         ::ShowWindow(container, visible ? SW_SHOWNA : SW_HIDE);
         if (visible && container != viewWindow) ::ShowWindow(viewWindow, SW_SHOWNA);
+    } else if (!visible && m_hostWindow && IsWindow(m_hostWindow)) {
+        ::ShowWindow(m_hostWindow, SW_HIDE);
     }
-    m_visible = visible;
     return true;
 }
 
@@ -1026,28 +1032,17 @@ bool ShellBrowserHost::ApplyViewMode(IFolderView2* view)
     return SUCCEEDED(hr) && SUCCEEDED(flags);
 }
 
-void ShellBrowserHost::StyleNativeView(IFolderView2* view)
+void ShellBrowserHost::AttachNativeViewWindows(IShellView* shell)
 {
-    ApplyGrouping(view,false);
-    IShellView* shell = nullptr;
+    if (!shell) return;
     HWND root = nullptr;
-    if (SUCCEEDED(view->QueryInterface(IID_PPV_ARGS(&shell)))) {
-        shell->GetWindow(&root); shell->Release();
-    }
+    shell->GetWindow(&root);
     HWND list = nullptr;
     if (root) EnumChildWindows(root, [](HWND child, LPARAM param) -> BOOL {
         wchar_t name[64]{}; GetClassNameW(child, name, _countof(name));
         if (wcscmp(name, WC_LISTVIEWW) != 0) return TRUE;
         *reinterpret_cast<HWND*>(param) = child; return FALSE;
     }, reinterpret_cast<LPARAM>(&list));
-    for (HWND frame = list ? list : root; frame && frame != m_parent; frame = GetParent(frame)) {
-        const LONG_PTR style = GetWindowLongPtrW(frame, GWL_STYLE);
-        const LONG_PTR exStyle = GetWindowLongPtrW(frame, GWL_EXSTYLE);
-        if (!(style & WS_BORDER) && !(exStyle & (WS_EX_CLIENTEDGE | WS_EX_STATICEDGE | WS_EX_WINDOWEDGE))) continue;
-        SetWindowLongPtrW(frame, GWL_STYLE, style & ~WS_BORDER);
-        SetWindowLongPtrW(frame, GWL_EXSTYLE, exStyle & ~(WS_EX_CLIENTEDGE | WS_EX_STATICEDGE | WS_EX_WINDOWEDGE));
-        SetWindowPos(frame, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-    }
     if (list != m_listWindow) {
         RestoreListSpacing();
         m_customTileHeight=false;
@@ -1066,6 +1061,26 @@ void ShellBrowserHost::StyleNativeView(IFolderView2* view)
             }
             ApplyListDarkMode();
         }
+    }
+}
+
+void ShellBrowserHost::StyleNativeView(IFolderView2* view)
+{
+    ApplyGrouping(view,false);
+    IShellView* shell = nullptr;
+    HWND root = nullptr;
+    if (SUCCEEDED(view->QueryInterface(IID_PPV_ARGS(&shell)))) {
+        AttachNativeViewWindows(shell);
+        shell->GetWindow(&root); shell->Release();
+    }
+    HWND list = m_listWindow;
+    for (HWND frame = list ? list : root; frame && frame != m_parent; frame = GetParent(frame)) {
+        const LONG_PTR style = GetWindowLongPtrW(frame, GWL_STYLE);
+        const LONG_PTR exStyle = GetWindowLongPtrW(frame, GWL_EXSTYLE);
+        if (!(style & WS_BORDER) && !(exStyle & (WS_EX_CLIENTEDGE | WS_EX_STATICEDGE | WS_EX_WINDOWEDGE))) continue;
+        SetWindowLongPtrW(frame, GWL_STYLE, style & ~WS_BORDER);
+        SetWindowLongPtrW(frame, GWL_EXSTYLE, exStyle & ~(WS_EX_CLIENTEDGE | WS_EX_STATICEDGE | WS_EX_WINDOWEDGE));
+        SetWindowPos(frame, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
     }
     EnsureBufferedList(list);
     if (list && m_iconSlot) {
@@ -1270,8 +1285,9 @@ void ShellBrowserHost::FreezeDarkNavigation()
     if (!m_darkMode || m_darkNavFrozen) return;
     if (!m_hostWindow || !IsWindow(m_hostWindow)) AttachHostWindow();
     if (!m_hostWindow || !IsWindow(m_hostWindow)) return;
-    SendMessageW(m_hostWindow, WM_SETREDRAW, FALSE, 0);
     m_darkNavFrozen = true;
+    SendMessageW(m_hostWindow, WM_SETREDRAW, FALSE, 0);
+    ::ShowWindow(m_hostWindow, SW_HIDE);
 }
 
 void ShellBrowserHost::UnfreezeDarkNavigation()
@@ -1280,8 +1296,13 @@ void ShellBrowserHost::UnfreezeDarkNavigation()
     m_darkNavFrozen = false;
     if (m_hostWindow && IsWindow(m_hostWindow)) {
         SendMessageW(m_hostWindow, WM_SETREDRAW, TRUE, 0);
-        RedrawWindow(m_hostWindow, nullptr, nullptr,
-            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+        if (m_visible) {
+            ::ShowWindow(m_hostWindow, SW_SHOWNA);
+            if (m_viewWindow && IsWindow(m_viewWindow) && m_viewWindow != m_hostWindow)
+                ::ShowWindow(m_viewWindow, SW_SHOWNA);
+            RedrawWindow(m_hostWindow, nullptr, nullptr,
+                RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+        }
     }
 }
 
@@ -1989,6 +2010,10 @@ LRESULT ShellBrowserHost::DrawIconItem(NMLVCUSTOMDRAW* draw)
 LRESULT CALLBACK ShellBrowserHost::HostSubclass(HWND window, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR data)
 {
     auto* host = reinterpret_cast<ShellBrowserHost*>(data);
+    if (msg == WM_WINDOWPOSCHANGING && host && host->m_darkNavFrozen && lp) {
+        auto* pos = reinterpret_cast<WINDOWPOS*>(lp);
+        pos->flags &= ~SWP_SHOWWINDOW;
+    }
     if (msg == WM_ERASEBKGND && host && host->m_darkMode) {
         if (PaintDarkEraseBkgnd(window, wp)) return 1;
     }

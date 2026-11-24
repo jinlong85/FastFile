@@ -386,6 +386,7 @@ void CMainWnd::ApplyUiChromeTokens()
     // Body / list surface
     setBk(_T("body_host"), content);
     setBk(_T("list_host"), content);
+    setBk(_T("icon_scroll"), content);
     if (m_pFileList)
         m_pFileList->SetAttribute(_T("bkcolor"), content);
 

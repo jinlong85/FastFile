@@ -237,6 +237,7 @@ private:
     bool m_darkNavFrozen = false;
     void ApplyListDarkMode();
     void AttachHostWindow();
+    void AttachNativeViewWindows(IShellView* view);
     void FreezeDarkNavigation();
     void UnfreezeDarkNavigation();
     int m_groupingMode=-1;
