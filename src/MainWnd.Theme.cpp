@@ -124,6 +124,40 @@ bool CMainWnd::IsSystemDarkTheme()
     return (st == ERROR_SUCCESS) && (value == 0);
 }
 
+COLORREF CMainWnd::GetSystemAccentColor(bool dark)
+{
+    DWORD abgr = 0;
+    DWORD size = sizeof(abgr);
+    const LSTATUS st = ::RegGetValueW(
+        HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\DWM",
+        L"AccentColor",
+        RRF_RT_REG_DWORD,
+        nullptr,
+        &abgr,
+        &size);
+    if (st == ERROR_SUCCESS && (abgr & 0x00FFFFFFu) != 0) {
+        int r = static_cast<int>(abgr & 0xFFu);
+        int g = static_cast<int>((abgr >> 8) & 0xFFu);
+        int b = static_cast<int>((abgr >> 16) & 0xFFu);
+        if (dark) {
+            // Lift dark accent colors slightly for crisp contrast on #1C1C1C/#242424 surfaces.
+            r = (std::min)(255, r + (255 - r) * 32 / 100);
+            g = (std::min)(255, g + (255 - g) * 32 / 100);
+            b = (std::min)(255, b + (255 - b) * 32 / 100);
+        }
+        return RGB(r, g, b);
+    }
+    return dark ? RGB(0x60, 0xCD, 0xFF) : RGB(0x00, 0x67, 0xC0);
+}
+
+std::wstring CMainWnd::FormatDuiColor(COLORREF color)
+{
+    wchar_t buf[16]{};
+    swprintf_s(buf, L"#FF%02X%02X%02X", GetRValue(color), GetGValue(color), GetBValue(color));
+    return buf;
+}
+
 bool CMainWnd::IsDarkThemeActive() const
 {
     if (m_settings.themeMode == 2) return true;
@@ -170,8 +204,9 @@ void CMainWnd::ApplyDwmChrome()
     const bool dark = IsDarkThemeActive();
     const BOOL darkMode = dark ? TRUE : FALSE;
     ::DwmSetWindowAttribute(m_hWnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
-    const COLORREF borderNone = DWMWA_COLOR_NONE;
-    ::DwmSetWindowAttribute(m_hWnd, DWMWA_BORDER_COLOR, &borderNone, sizeof(borderNone));
+    // Preserve Windows 11's native 1px translucent Fluent border around rounded corners.
+    const COLORREF borderDefault = 0xFFFFFFFF; // DWMWA_COLOR_DEFAULT
+    ::DwmSetWindowAttribute(m_hWnd, DWMWA_BORDER_COLOR, &borderDefault, sizeof(borderDefault));
 
     int backdrop = DWMSBT_TABBEDWINDOW;
     if (m_settings.backdropType == 1) backdrop = DWMSBT_MAINWINDOW;
@@ -185,12 +220,12 @@ void CMainWnd::ApplyDwmChrome()
     ::DwmExtendFrameIntoClientArea(m_hWnd, &margins);
     if (CControlUI* bar = m_PaintManager.FindControl(_T("titlebar"))) {
         bar->SetAttribute(_T("bkcolor"),
-            dark ? L"#FF202020" : (m_micaActive ? UiTokens::ColorTransparent : L"#FFEDEDED"));
+            dark ? L"#FF1C1C1C" : (m_micaActive ? UiTokens::ColorTransparent : L"#FFEBEFF5"));
         bar->Invalidate();
     }
     for (LPCTSTR rootName : { _T("outer_gutter"), _T("chrome_root") }) {
         if (CControlUI* root = m_PaintManager.FindControl(rootName)) {
-            root->SetAttribute(_T("bkcolor"), dark ? L"#FF202020" : UiTokens::ColorSurface);
+            root->SetAttribute(_T("bkcolor"), dark ? L"#FF1C1C1C" : UiTokens::ColorSurface);
             root->Invalidate();
         }
     }
@@ -313,13 +348,14 @@ void CMainWnd::ApplyUiChromeTokens()
         UiTokens::PreviewPad, UiTokens::PreviewPad);
 
     const bool dark = IsDarkThemeActive();
-    const LPCWSTR surf = dark ? L"#FF202020" : UiTokens::ColorSurface;
+    const std::wstring accentStr = FormatDuiColor(GetSystemAccentColor(dark));
+    const LPCWSTR surf = dark ? L"#FF242424" : UiTokens::ColorSurface;
     const LPCWSTR content = dark ? L"#FF191919" : UiTokens::ColorContent;
-    const LPCWSTR border = dark ? L"#FF333333" : UiTokens::ColorChromeDivider;
-    const LPCWSTR borderLight = dark ? L"#FF383838" : UiTokens::ColorBorder;
-    const LPCWSTR borderStrong = dark ? L"#FF3F3F3F" : UiTokens::ColorBorderStrong;
-    const LPCWSTR fieldBg = dark ? L"#FF2B2B2B" : UiTokens::ColorFieldBg;
-    const LPCWSTR fieldBorder = dark ? L"#FF3E3E3E" : UiTokens::ColorFieldBorder;
+    const LPCWSTR border = dark ? L"#FF2F2F2F" : UiTokens::ColorChromeDivider;
+    const LPCWSTR borderLight = dark ? L"#FF333333" : UiTokens::ColorBorder;
+    const LPCWSTR borderStrong = dark ? L"#FF383838" : UiTokens::ColorBorderStrong;
+    const LPCWSTR fieldBg = dark ? L"#FF2D2D2D" : UiTokens::ColorFieldBg;
+    const LPCWSTR fieldBorder = dark ? L"#FF3D3D3D" : UiTokens::ColorFieldBorder;
     const LPCWSTR textPrimary = dark ? L"#FFF3F3F3" : UiTokens::ColorTextPrimary;
     const LPCWSTR textSecondary = dark ? L"#FFB3B3B3" : UiTokens::ColorTextSecondary;
     const LPCWSTR textMuted = dark ? L"#FF9A9A9A" : UiTokens::ColorTextMuted;
@@ -342,9 +378,9 @@ void CMainWnd::ApplyUiChromeTokens()
         setBk(band, surf);
         setBorder(band, border, hair.GetData());
     }
-    setBk(_T("favorites_bar"), content);
+    setBk(_T("favorites_bar"), surf);
     setBorder(_T("favorites_bar"), border, hair.GetData());
-    setBk(_T("toolbar"), content);
+    setBk(_T("toolbar"), dark ? L"#FF202020" : content);
     setBk(_T("address_bar"), surf);
     setBorder(_T("address_bar"), UiTokens::ColorTransparent, _T("0"));
     setBorder(_T("toolbar"), UiTokens::ColorTransparent, _T("0"));
@@ -353,10 +389,10 @@ void CMainWnd::ApplyUiChromeTokens()
         if (CControlUI* c = m_PaintManager.FindControl(field)) {
             c->SetAttribute(_T("bkcolor"), fieldBg);
             const bool editing = m_addressEditMode && wcscmp(field, _T("path_host")) == 0;
-            c->SetAttribute(_T("bordercolor"), editing ? UiTokens::ColorFieldFocus : fieldBorder);
+            c->SetAttribute(_T("bordercolor"), editing ? accentStr.c_str() : fieldBorder);
             c->SetAttribute(_T("bordersize"), _T("1"));
             CDuiString round;
-            round.Format(_T("%d,%d"), DpiScale(UiTokens::FieldRound), DpiScale(UiTokens::FieldRound));
+            round.Format(_T("%d,%d"), DpiScale(6), DpiScale(6));
             c->SetAttribute(_T("borderround"), round.GetData());
         }
     }

@@ -1458,6 +1458,16 @@ struct MainWndRegressionAccess {
             && window.m_PaintManager.FindControl(_T("btn_ptag_clear")) != nullptr,
             "preview pane exposes quick-tag color bar without star button");
 
+        // 4d. Win11 system accent color formatting sanity
+        {
+            const COLORREF lightAccent = CMainWnd::GetSystemAccentColor(false);
+            const COLORREF darkAccent = CMainWnd::GetSystemAccentColor(true);
+            const std::wstring formatted = CMainWnd::FormatDuiColor(lightAccent);
+            check(formatted.size() == 9 && formatted.compare(0, 3, L"#FF") == 0,
+                "FormatDuiColor produces #FFRRGGBB string for Win11 system accent");
+            check(darkAccent != 0, "GetSystemAccentColor(true) returns visible dark-mode accent color");
+        }
+
         // 5. CMainWnd tagging operations integration
         window.ApplyTagColorToSelection(FileTagColor::Green);
         window.ToggleStarSelection();

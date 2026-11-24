@@ -360,7 +360,10 @@ void CMainWnd::OnItemActivate(CControlUI* pSender)
 
 void CMainWnd::RefreshListing()
 {
-    LoadQuickAccess();
+    const ULONGLONG nowTick = ::GetTickCount64();
+    if (m_quickRows.empty() || (nowTick - m_lastQuickAccessTick) >= 5000) {
+        LoadQuickAccess();
+    }
     if (m_currentPath.empty()) {
         UpdateStatus(_T("当前路径为空"));
         return;

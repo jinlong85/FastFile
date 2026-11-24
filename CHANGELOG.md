@@ -2,7 +2,17 @@
 
 面向使用者的改动记录（开发细节 / 踩坑见 [HANDOFF.md](HANDOFF.md)）。
 版本号来自根目录 [VERSION](VERSION)，安装包产物在 `dist\FastFile-Setup-<版本>.exe`。
-当前 GitHub 发行版为 [**1.0.40（预发布）**](https://github.com/jinlong85/FastFile/releases/tag/v1.0.40)，安装包已发布并提供应用内在线更新。
+当前 GitHub 发行版为 [**1.0.41（预发布）**](https://github.com/jinlong85/FastFile/releases/tag/v1.0.41)，安装包已发布并提供应用内在线更新。
+
+## 2026-11-25
+
+### 1.0.41
+
+- **深度融入 Windows 11 视觉语言，提升整体美观度与交互流畅度**：
+  - **Win11 原生窗口边框与层次质感**：恢复 Windows 11 原生 1px 半透明圆角边框（`DWMWA_COLOR_DEFAULT`），重塑深/浅色三层 Fluent 表面层次（标题栏 `#1C1C1C` → 活动标签/地址栏/收藏栏/侧边栏 `#242424` → 主内容区 `#191919`），输入栏升级 6px 圆角；
+  - **跟随 Windows 11 系统主题色（Accent Color）**：实时读取系统 DWM 主题色并响应 `WM_DWMCOLORIZATIONCOLORCHANGED` / `WM_SETTINGCHANGE`，地址栏焦点框与外观动态跟随系统强调色；
+  - **标签栏精修（对齐 Win11 资源管理器）**：移除深色标题栏右侧的半截浅灰接缝，仅在非活动/非悬停标签间显示柔和分隔线，关闭按钮与 `+` 新建按钮升级全圆角胶囊悬停态，活动标签与下方工具栏无缝融合；
+  - **UI 流畅度优化**：对 `RefreshListing()` 内的 `LoadQuickAccess()` 增加 5 秒节流（不再在每次点击文件夹时于主线程同步枚举系统“快速访问”COM 对象），并拦截主窗口 `WM_ERASEBKGND` 且在拖拽窗口缩放期间暂停后台定时同步，显著降低切目录与缩放卡顿。
 
 ## 2026-11-24
 

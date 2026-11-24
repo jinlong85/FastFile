@@ -62,6 +62,8 @@ public:
     LRESULT HandleExplorerAgentMessage(const COPYDATASTRUCT& data);
     static bool RestoreNativeFolderHandlers();
     static bool IsSystemDarkTheme();
+    static COLORREF GetSystemAccentColor(bool dark);
+    static std::wstring FormatDuiColor(COLORREF color);
     bool IsDarkThemeActive() const;
     static void ReadSystemIntegration(FastFileSettings& settings);
     static bool ApplySystemIntegration(const FastFileSettings& settings);
@@ -810,7 +812,9 @@ private:
     int m_leftNavDragStartY = 0;
     int m_leftNavDragStartH = 0;
     int m_captionHot = -1;           // hovered caption button (min/max/restore/close)
-    bool m_micaActive = false;       // DWM system backdrop accepted
+    bool m_micaActive = false;
+    bool m_inSizeMove = false;
+    ULONGLONG m_lastQuickAccessTick = 0;       // DWM system backdrop accepted
     int m_leftPanelDesignW = 220;                         // sidebar width @96 DPI
     int m_previewPaneDesignW = UiTokens::PreviewPaneW;    // preview width @96 DPI
     int m_thisPcTilesLayoutW = 0;                         // physical central viewport width

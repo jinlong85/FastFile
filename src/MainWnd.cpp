@@ -538,6 +538,15 @@ void CMainWnd::OnClick(TNotifyUI& msg)
 
 LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
+    if (uMsg == WM_ERASEBKGND) {
+        return 1; // DuiLib double-buffers WM_PAINT; suppress default Win32 erase flicker on resize.
+    }
+    if (uMsg == WM_ENTERSIZEMOVE) {
+        m_inSizeMove = true;
+    } else if (uMsg == WM_EXITSIZEMOVE) {
+        m_inSizeMove = false;
+        SyncLayoutDependents();
+    }
     if (uMsg == WM_CAPTURECHANGED || uMsg == WM_CANCELMODE || uMsg == WM_KILLFOCUS)
         CancelScrollBarGestures();
     // The search box width follows the row (clamp(240, 30%, 435) logical); set it before
@@ -797,12 +806,12 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     }
     if (uMsg == WM_TIMER) {
         if (wParam == kTimerQuickAccessSync) {
-            if (IsWindowVisible(m_hWnd) && !IsIconic(m_hWnd)) LoadQuickAccess();
+            if (!m_inSizeMove && IsWindowVisible(m_hWnd) && !IsIconic(m_hWnd)) LoadQuickAccess();
             return 0;
         }
         if (wParam == kTimerVirtSync) { SyncVisibleIconWindow(false); return 0; }
         if (wParam == kTimerColWidth) {
-            if (!IsIconic(m_hWnd)) CaptureColumnWidths();
+            if (!m_inSizeMove && !IsIconic(m_hWnd)) CaptureColumnWidths();
             return 0;
         }
         if (wParam == kTimerDetailsSync) { UpdateDetailsWindow(false); return 0; }
@@ -1286,9 +1295,10 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             }
         }
     }
-    if (uMsg == WM_THEMECHANGED || (uMsg == WM_SETTINGCHANGE && wParam == 0)) {
+    constexpr UINT kMsgDwmColorizationChanged = 0x0320; // WM_DWMCOLORIZATIONCOLORCHANGED
+    if (uMsg == WM_THEMECHANGED || uMsg == kMsgDwmColorizationChanged || (uMsg == WM_SETTINGCHANGE && wParam == 0)) {
         ApplyUiChromeTokens();
-        ApplyDwmChrome();   // backdrop / AppsUseLightTheme changed while running
+        ApplyDwmChrome();   // backdrop / AppsUseLightTheme / Win11 accent color changed while running
         m_PaintManager.NeedUpdate();
     }
     return WindowImplBase::HandleMessage(uMsg, wParam, lParam);

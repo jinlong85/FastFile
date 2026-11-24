@@ -24,17 +24,36 @@ struct TabPalette {
 };
 
 const TabPalette kLight = {
-    0xFFFFFFFF, 0xFFE0E0E0, 0x1E000000,
+    0xFFFFFFFF, 0xFFE2E5EA, 0x14000000,
     0xFF5C5C5C, 0xFF1A1A1A,
-    0xFF9A9A9A, 0xFFC42B1C, 0x22E81123,
+    0xFF8A8A8A, 0xFFC42B1C, 0x22E81123,
 };
 const TabPalette kDark = {
-    0xFF2B2B2B, 0xFF3A3A3A, 0x24FFFFFF,
-    0xFFB3B3B3, 0xFFFFFFFF,
+    0xFF242424, 0xFF383838, 0x1AFFFFFF,
+    0xFFA8A8A8, 0xFFF5F5F5,
     0xFF9A9A9A, 0xFFFF99A4, 0x33E81123,
 };
 
 int Scaled(int designPx, int dpi) { return ::MulDiv(designPx, dpi, 96); }
+
+void BuildFullRoundedPath(Gdiplus::GraphicsPath& path, const RECT& rc, int radius)
+{
+    const float l = (float)rc.left + 0.5f, t = (float)rc.top + 0.5f;
+    const float r = (float)rc.right - 0.5f, b = (float)rc.bottom - 0.5f;
+    const float maxR = (std::min)(r - l, b - t) * 0.5f;
+    const float rad = (std::min)((float)radius, maxR);
+    const float d = rad * 2.0f;
+    path.Reset();
+    if (d <= 0.5f) {
+        path.AddRectangle(Gdiplus::RectF(l, t, r - l, b - t));
+        return;
+    }
+    path.AddArc(l, t, d, d, 180.0f, 90.0f);
+    path.AddArc(r - d, t, d, d, 270.0f, 90.0f);
+    path.AddArc(r - d, b - d, d, d, 0.0f, 90.0f);
+    path.AddArc(l, b - d, d, d, 90.0f, 90.0f);
+    path.CloseFigure();
+}
 
 // Builds the tab shape: rounded top corners, straight (and open) bottom edge.
 void BuildTopRoundedPath(Gdiplus::GraphicsPath& path, const RECT& rc, int radius)
@@ -661,15 +680,15 @@ void CTabStripUI::DrawCloseGlyph(Gdiplus::Graphics& g, const RECT& rc, bool hot)
     const TabPalette& pal = m_dark ? kDark : kLight;
     if (hot) {
         Gdiplus::GraphicsPath rr;
-        BuildTopRoundedPath(rr, rc, Scaled(4, m_dpi));
+        BuildFullRoundedPath(rr, rc, Scaled(4, m_dpi));
         Gdiplus::SolidBrush brush(Gdiplus::Color(pal.closeHotFill));
         g.FillPath(&brush, &rr);
     }
     const Gdiplus::ARGB color = hot ? pal.closeGlyphHot : pal.closeGlyph;
-    Gdiplus::Pen pen(Gdiplus::Color(color), (Gdiplus::REAL)Scaled(1, m_dpi) + 0.6f);
+    Gdiplus::Pen pen(Gdiplus::Color(color), (Gdiplus::REAL)Scaled(1, m_dpi) + 0.4f);
     pen.SetStartCap(Gdiplus::LineCapRound);
     pen.SetEndCap(Gdiplus::LineCapRound);
-    const int pad = Scaled(4, m_dpi);
+    const int pad = Scaled(5, m_dpi);
     g.DrawLine(&pen, (Gdiplus::REAL)(rc.left + pad), (Gdiplus::REAL)(rc.top + pad),
         (Gdiplus::REAL)(rc.right - pad), (Gdiplus::REAL)(rc.bottom - pad));
     g.DrawLine(&pen, (Gdiplus::REAL)(rc.right - pad), (Gdiplus::REAL)(rc.top + pad),
@@ -682,10 +701,10 @@ void CTabStripUI::DrawPlusGlyph(Gdiplus::Graphics& g, const RECT& rc)
     if (m_hotPlus > 0) {
         Gdiplus::SolidBrush brush(Gdiplus::Color(pal.hover));
         Gdiplus::GraphicsPath rr;
-        BuildTopRoundedPath(rr, rc, Scaled(6, m_dpi));
+        BuildFullRoundedPath(rr, rc, Scaled(5, m_dpi));
         g.FillPath(&brush, &rr);
     }
-    Gdiplus::Pen pen(Gdiplus::Color(pal.text), (Gdiplus::REAL)Scaled(1, m_dpi) + 0.6f);
+    Gdiplus::Pen pen(Gdiplus::Color(pal.text), (Gdiplus::REAL)Scaled(1, m_dpi) + 0.4f);
     pen.SetStartCap(Gdiplus::LineCapRound);
     pen.SetEndCap(Gdiplus::LineCapRound);
     const int cx = (rc.left + rc.right) / 2;
@@ -715,23 +734,12 @@ bool CTabStripUI::DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopControl
             Gdiplus::CombineModeIntersect);
     }
 
-    // The title band is left unpainted so the DWM backdrop (Mica Alt) shows through. A very
-    // light wash over the tab area keeps the white "active card" readable on top of it - the
-    // same trick Explorer uses for its slightly darker tab strip.
-    {
-        Gdiplus::SolidBrush wash(Gdiplus::Color(m_dark ? 0x18FFFFFF : 0x12000000));
-        // Only the strip's own content (tabs + "+") is tinted, like Explorer's tab band; the
-        // caption area to its right stays pure Mica.
-        int washRight = m_rcItem.left + Scaled(1, m_dpi);
-        if (!m_tabs.empty()) washRight = (std::max)(washRight, (int)m_tabs.back().body.right);
-        washRight = (std::max)(washRight, (int)m_plus.right + Scaled(4, m_dpi));
-        if (washRight > m_rcItem.right) washRight = m_rcItem.right;
-        const int wl = (std::max)((int)rcClip.left, (int)m_rcItem.left);
-        const int wr = (std::min)((int)rcClip.right, washRight);
-        if (wr > wl) {
-            g.FillRectangle(&wash, Gdiplus::Rect(wl, rcClip.top, wr - wl,
-                rcClip.bottom - rcClip.top));
-        }
+    // In light mode with Mica Alt, a whisper-subtle wash gives the active white tab card
+    // gentle lift; in dark mode, keep the titlebar surface unified without a partial seam.
+    if (!m_dark) {
+        Gdiplus::SolidBrush wash(Gdiplus::Color(0x0A000000));
+        g.FillRectangle(&wash, Gdiplus::Rect(rcClip.left, rcClip.top,
+            rcClip.right - rcClip.left, rcClip.bottom - rcClip.top));
     }
 
     for (int i = 0; i < (int)m_tabs.size(); ++i) {
@@ -741,21 +749,22 @@ bool CTabStripUI::DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopControl
         const bool hovered = (i == m_hot && !selected);
         DrawTabGlass(g, rc, selected, hovered);
         DrawTabIcon(g, i, rc);
-        DrawTabText(g, i, rc, selected ? (m_dark ? RGB(0xFF, 0xFF, 0xFF) : GetSysColor(COLOR_WINDOWTEXT))
-            : (m_dark ? RGB(0xB3, 0xB3, 0xB3) : RGB(0x5C, 0x5C, 0x5C)));
+        DrawTabText(g, i, rc, selected ? (m_dark ? RGB(0xF5, 0xF5, 0xF5) : GetSysColor(COLOR_WINDOWTEXT))
+            : (m_dark ? RGB(0xA8, 0xA8, 0xA8) : RGB(0x5C, 0x5C, 0x5C)));
         if (!m_tabs[i].isPinned && (selected || hovered || m_hotClose == i)) {
             RECT cr = m_tabs[i].close;
-            if (i != m_active && m_hotClose != i) { /* show a quiet X for hovered idle tabs */ }
             DrawCloseGlyph(g, cr, m_hotClose == i);
         }
     }
-    // Quiet separators do not consume tab width or change hit targets.
-    Gdiplus::SolidBrush separator(Gdiplus::Color(m_dark ? 0xFF505050 : 0xFFCFCFCF));
-    const int lineH=Scaled(16,m_dpi);
-    for(size_t i=1;i<m_tabs.size();++i) {
-        const int x=m_tabs[i-1].body.right+Scaled(UiTokens::TabCardGap,m_dpi)/2;
-        if(x>=rcClip.left && x<rcClip.right)
-            g.FillRectangle(&separator,x,m_rcItem.top+(m_rcItem.bottom-m_rcItem.top-lineH)/2,1,lineH);
+    // Win11 Explorer quiet separators: only between non-active, non-hovered adjacent tabs.
+    Gdiplus::SolidBrush separator(Gdiplus::Color(m_dark ? 0xFF3A3A3A : 0xFFD4D7DC));
+    const int lineH = Scaled(14, m_dpi);
+    for (size_t i = 1; i < m_tabs.size(); ++i) {
+        const int idx = static_cast<int>(i);
+        if (idx == m_active || idx - 1 == m_active || idx == m_hot || idx - 1 == m_hot) continue;
+        const int x = m_tabs[i - 1].body.right + Scaled(UiTokens::TabCardGap, m_dpi) / 2;
+        if (x >= rcClip.left && x < rcClip.right)
+            g.FillRectangle(&separator, x, m_rcItem.top + (m_rcItem.bottom - m_rcItem.top - lineH) / 2, 1, lineH);
     }
     DrawPlusGlyph(g, m_plus);
     (void)pal;

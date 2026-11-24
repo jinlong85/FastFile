@@ -63,7 +63,7 @@ void CMainWnd::UpdateFavoritesHighlight()
             pinned ? L"取消收藏当前文件夹" : L"收藏当前文件夹");
     }
     const bool dark = IsDarkThemeActive();
-    const LPCWSTR surf = dark ? L"#FF202020" : UiTokens::ColorSurface;
+    const LPCWSTR surf = dark ? L"#FF242424" : UiTokens::ColorSurface;
     const LPCWSTR selBg = dark ? L"#FF363636" : UiTokens::ColorNavSelected;
     const LPCWSTR textFg = dark ? L"#FFF3F3F3" : UiTokens::ColorTextPrimary;
     auto stylePin = [&](CContainerUI* host) {
@@ -532,6 +532,7 @@ void CMainWnd::ApplyQuickSnapshot(const QuickSnapshot& snapshot)
 
 void CMainWnd::LoadQuickAccess()
 {
+    m_lastQuickAccessTick = ::GetTickCount64();
     if (!m_hWnd || m_quickReadPending || m_quickReadStopping) return;
     if (m_quickReadThread.joinable()) m_quickReadThread.join();
     m_quickReadPending = true;
@@ -885,7 +886,7 @@ void CMainWnd::RebuildLeftQuickRows()
         btn->SetAttribute(_T("valign"), _T("vcenter"));
         btn->SetAttribute(_T("endellipsis"), _T("true"));
         const bool dark = IsDarkThemeActive();
-        btn->SetAttribute(_T("bkcolor"), dark ? L"#FF202020" : UiTokens::ColorSurface);
+        btn->SetAttribute(_T("bkcolor"), dark ? L"#FF242424" : UiTokens::ColorSurface);
         btn->SetAttribute(_T("hotbkcolor"), dark ? L"#FF2D2D2D" : UiTokens::ColorNavHover);
         btn->SetAttribute(_T("pushedbkcolor"), dark ? L"#FF363636" : UiTokens::ColorNavSelected);
         btn->SetAttribute(_T("textcolor"), dark ? L"#FFF3F3F3" : UiTokens::ColorTextPrimary);
@@ -1032,7 +1033,7 @@ void CMainWnd::RebuildLeftTagRows()
         btn->SetAttribute(_T("align"), _T("left"));
         btn->SetAttribute(_T("valign"), _T("vcenter"));
         btn->SetAttribute(_T("endellipsis"), _T("true"));
-        btn->SetAttribute(_T("bkcolor"), dark ? L"#FF202020" : UiTokens::ColorSurface);
+        btn->SetAttribute(_T("bkcolor"), dark ? L"#FF242424" : UiTokens::ColorSurface);
         btn->SetAttribute(_T("hotbkcolor"), dark ? L"#FF2D2D2D" : UiTokens::ColorNavHover);
         btn->SetAttribute(_T("pushedbkcolor"), dark ? L"#FF363636" : UiTokens::ColorNavSelected);
         btn->SetAttribute(_T("textcolor"), dark ? L"#FFF3F3F3" : UiTokens::ColorTextPrimary);
@@ -1060,7 +1061,7 @@ void CMainWnd::UpdateLeftTagHighlight()
 {
     if (!m_pLeftTagRows) return;
     const bool dark = IsDarkThemeActive();
-    const LPCWSTR surf = dark ? L"#FF202020" : UiTokens::ColorSurface;
+    const LPCWSTR surf = dark ? L"#FF242424" : UiTokens::ColorSurface;
     const LPCWSTR selBg = dark ? L"#FF363636" : UiTokens::ColorNavSelected;
     const LPCWSTR textFg = dark ? L"#FFF3F3F3" : UiTokens::ColorTextPrimary;
     bool tagOwnsSelection = false;
