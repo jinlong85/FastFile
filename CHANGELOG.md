@@ -2,9 +2,16 @@
 
 面向使用者的改动记录（开发细节 / 踩坑见 [HANDOFF.md](HANDOFF.md)）。
 版本号来自根目录 [VERSION](VERSION)，安装包产物在 `dist\FastFile-Setup-<版本>.exe`。
-当前 GitHub 发行版为 [**1.0.35（预发布）**](https://github.com/jinlong85/FastFile/releases/tag/v1.0.35)，安装包已发布并提供应用内在线更新。
+当前 GitHub 发行版为 [**1.0.36（预发布）**](https://github.com/jinlong85/FastFile/releases/tag/v1.0.36)，安装包已发布并提供应用内在线更新。
 
 ## 2026-11-24
+
+### 1.0.36
+
+- **修复深色模式下鼠标打开文件夹时中间区域短暂白屏闪烁的根因**：
+  - 修复 `RefreshListing()` 在 `Navigate()` 发起异步导航后紧接着调用 `SetVisible(true)`（内部调用 `ShowWindow(SW_SHOWNA)`）立刻解除 `WM_SETREDRAW(FALSE)` 冻结的问题：导航冻结期间 `SetVisible(true)` 仅记录目标可见状态，不提前显示原生宿主窗口，改为在 `OnNavigationComplete` 并完成 `ApplyListDarkMode()` 后由 `UnfreezeDarkNavigation()` 统一恢复显示；
+  - 在 `FreezeDarkNavigation()` 期间隐藏 `ExplorerBrowserControl` 宿主窗口（露出下方已涂黑的 `#191919` DuiLib 容器），并在 `HostSubclass` 拦截冻结期间的 `SWP_SHOWWINDOW` 与 `WM_PAINT` 深色兜底，同时在 `OnViewCreated` 提前挂接新视图子类化与深色背景；
+  - 补充 `icon_scroll` 深色背景同步与导航超时自动解冻兜底，并新增深色模式导航冻结回归测试。
 
 ### 1.0.35
 
