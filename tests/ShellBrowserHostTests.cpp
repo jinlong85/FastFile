@@ -123,7 +123,7 @@ struct ShellBrowserHostTestAccess {
         // F5 / Refresh dark-mode regression: DefView refresh or direct LVM_SETBKCOLOR(white)
         // must not revert the native SysListView32 background to white in dark mode.
         host.Refresh();
-        pump();
+        check(settled(folder, 2), "dark-mode folder settles after F5 refresh");
         if (host.m_listWindow) {
             ListView_SetBkColor(host.m_listWindow, RGB(255, 255, 255));
             check(ListView_GetBkColor(host.m_listWindow) == RGB(0x19, 0x19, 0x19),
@@ -133,6 +133,7 @@ struct ShellBrowserHostTestAccess {
         // all 6 colors + star + clear and forwards WM_COMMAND activation to parent.
         host.m_tagCommandMessage = WM_APP + 9;
         host.SelectAll();
+        pump();
         HMENU testPopup = CreatePopupMenu();
         AppendMenuW(testPopup, MF_STRING, 1, L"打开");
         AppendMenuW(testPopup, MF_SEPARATOR, 0, nullptr);
