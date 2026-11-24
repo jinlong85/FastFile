@@ -140,7 +140,7 @@ struct ShellBrowserHostTestAccess {
         AppendMenuW(testPopup, MF_STRING, 2, L"属性");
         HMENU tagSub = host.InjectTagSubmenu(testPopup);
         check(tagSub != nullptr && GetMenuItemCount(tagSub) == 10,
-            "InjectTagSubmenu inserts 6 colors, star, clear and separators");
+            "InjectTagSubmenu inserts 6 colors, clear, custom-name manager and separators");
         if (host.m_viewWindow) {
             SendMessageW(host.m_viewWindow, WM_COMMAND, MAKEWPARAM(0x7F01, 0), 0);
             MSG tagMsg{};

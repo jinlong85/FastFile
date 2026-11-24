@@ -1451,12 +1451,12 @@ struct MainWndRegressionAccess {
             }
         }
 
-        // 4c. Preview pane quick-tag bar controls
+        // 4c. Preview pane quick-tag bar controls (color tags only; star removed)
         check(window.m_PaintManager.FindControl(_T("preview_tag_bar")) != nullptr
             && window.m_PaintManager.FindControl(_T("btn_ptag_1")) != nullptr
-            && window.m_PaintManager.FindControl(_T("btn_ptag_star")) != nullptr
+            && window.m_PaintManager.FindControl(_T("btn_ptag_star")) == nullptr
             && window.m_PaintManager.FindControl(_T("btn_ptag_clear")) != nullptr,
-            "preview pane exposes quick-tag bar controls");
+            "preview pane exposes quick-tag color bar without star button");
 
         // 5. CMainWnd tagging operations integration
         window.ApplyTagColorToSelection(FileTagColor::Green);

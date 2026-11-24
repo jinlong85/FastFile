@@ -182,12 +182,10 @@ void CMainWnd::UpdatePreviewTagBar()
     const bool dark = IsDarkThemeActive();
     FileTagColor commonColor = FileTagColor::None;
     bool hasCommonColor = false;
-    bool allStarred = true;
     bool anyTagged = false;
     for (size_t i = 0; i < items.size(); ++i) {
         const FileTagInfo info = mgr.GetTag(items[i].path);
-        if (info.color != FileTagColor::None || info.starred) anyTagged = true;
-        if (!info.starred) allStarred = false;
+        if (info.color != FileTagColor::None) anyTagged = true;
         if (i == 0) {
             commonColor = info.color;
             hasCommonColor = (info.color != FileTagColor::None);
@@ -210,11 +208,6 @@ void CMainWnd::UpdatePreviewTagBar()
             btn->Invalidate();
         }
     }
-    if (CControlUI* starBtn = m_PaintManager.FindControl(_T("btn_ptag_star"))) {
-        starBtn->SetText(allStarred ? _T("★") : _T("☆"));
-        starBtn->SetAttribute(_T("textcolor"), allStarred ? L"#FFFFB800" : (dark ? L"#FFA0A0A0" : L"#FF6B7280"));
-        starBtn->Invalidate();
-    }
     if (CControlUI* clearBtn = m_PaintManager.FindControl(_T("btn_ptag_clear"))) {
         clearBtn->SetVisible(anyTagged);
         clearBtn->SetAttribute(_T("textcolor"), dark ? L"#FFA0A0A0" : L"#FF6B7280");
@@ -227,7 +220,7 @@ void CMainWnd::UpdatePreviewTagBar()
         } else if (items.size() == 1 && items[0].isDir && !anyTagged) {
             const auto desc = mgr.GetDescendantSummary(items[0].path);
             if (desc.count > 0) {
-                text = L"含 " + std::to_wstring(desc.count) + L" 项标记";
+                text = L"含 " + std::to_wstring(desc.count) + L" 项标签";
             }
         }
         lbl->SetText(text.c_str());

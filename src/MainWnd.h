@@ -671,6 +671,7 @@ private:
 
     void ShowItemContextMenu(CControlUI* pItem, POINT ptScreen);
     void ShowTagNavContextMenu(CControlUI* btn, POINT ptScreen);
+    void ShowTagNamesDialog();
     void UpdatePreviewTagBar();
     // explore = navigation tree (CMF_EXPLORE), as in Explorer's folder pane.
     bool ShowShellContextMenu(const std::vector<std::wstring>& paths, POINT ptScreen, bool explore = false, bool includeFastFileTags = false);

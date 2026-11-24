@@ -94,12 +94,6 @@ public:
                 const int dotY = (m_iconPx > 0 && m_iconY > 0) ? (m_iconY + m_iconPx - dotR) : (rc.top + (rc.bottom - rc.top) / 2 + dotR);
                 FileTagManager::DrawTagDot(hDC, dotX, dotY, dotR, FileTagManager::GetColorRef(tag.color));
             }
-            if (tag.starred) {
-                const int starR = S(6);
-                const int starX = (m_iconPx > 0 && m_iconX > 0) ? (m_iconX + starR) : (rc.left + S(12));
-                const int starY = (m_iconPx > 0 && m_iconY > 0) ? (m_iconY + starR) : (rc.top + (rc.bottom - rc.top) / 2 - starR);
-                FileTagManager::DrawStar(hDC, starX, starY, starR);
-            }
         }
 
         if (oldFont) ::SelectObject(hDC, oldFont);

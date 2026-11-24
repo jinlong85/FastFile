@@ -476,9 +476,7 @@ void CMainWnd::OnClick(TNotifyUI& msg)
         return;
     }
     if (name.Find(_T("btn_ptag_")) == 0) {
-        if (name == _T("btn_ptag_star")) {
-            ToggleStarSelection();
-        } else if (name == _T("btn_ptag_clear")) {
+        if (name == _T("btn_ptag_clear")) {
             ApplyTagColorToSelection(FileTagColor::None);
         } else {
             const int ci = _ttoi(name.GetData() + 9);
@@ -572,8 +570,8 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             ApplyTagColorToSelection(FileTagColor::None);
         } else if (wParam >= 1 && wParam <= 6) {
             ApplyTagColorToSelection(static_cast<FileTagColor>(wParam));
-        } else if (wParam == 7) {
-            ToggleStarSelection();
+        } else if (wParam == 8) {
+            ShowTagNamesDialog();
         }
         return 0;
     }
@@ -1253,10 +1251,6 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                     ApplyTagColorToSelection(FileTagColor::None);
                     return 0;
                 }
-                if (wParam == 'B') {
-                    ToggleStarSelection();
-                    return 0;
-                }
             }
             // ---- file operations: Windows-native verbs (see RunFileCommand) ----
             if (const FileCommand command = FileCommandForKey(wParam, ctrl, shift, alt); command != FileCommand::None) {
@@ -1348,10 +1342,6 @@ LRESULT CMainWnd::TranslateAccelerator(MSG* message)
         }
         if (key == '0') {
             ApplyTagColorToSelection(FileTagColor::None);
-            return S_OK;
-        }
-        if (key == 'B') {
-            ToggleStarSelection();
             return S_OK;
         }
     }

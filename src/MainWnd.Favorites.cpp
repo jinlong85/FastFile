@@ -971,12 +971,14 @@ void CMainWnd::RebuildLeftTagRows()
     m_pLeftTagRows->RemoveAll();
 
     const auto allTags = FileTagManager::Instance().QueryTags(FileTagColor::None, false);
-    int starredCount = 0;
+    int totalColored = 0;
     int colorCounts[7] = {};
     for (const auto& kv : allTags) {
-        if (kv.second.starred) ++starredCount;
         const int ci = static_cast<int>(kv.second.color);
-        if (ci >= 1 && ci <= 6) ++colorCounts[ci];
+        if (ci >= 1 && ci <= 6) {
+            ++colorCounts[ci];
+            ++totalColored;
+        }
     }
 
     struct TagNavEntry {
@@ -989,12 +991,6 @@ void CMainWnd::RebuildLeftTagRows()
     };
     const bool dark = IsDarkThemeActive();
     std::vector<TagNavEntry> entries;
-    {
-        std::wstring label = L"星标项目";
-        if (starredCount > 0) label += L" (" + std::to_wstring(starredCount) + L")";
-        entries.push_back({ L"nav_tag_starred", label, L"::Tags:Starred",
-            L"查看所有星标/置顶项目（Alt+B 标星）", L'\u2605', RGB(255, 184, 0) });
-    }
     static constexpr const wchar_t* kColorPaths[7] = {
         L"", L"::Tags:Red", L"::Tags:Orange", L"::Tags:Yellow", L"::Tags:Green", L"::Tags:Blue", L"::Tags:Purple"
     };
@@ -1012,10 +1008,14 @@ void CMainWnd::RebuildLeftTagRows()
             FileTagManager::GetColorRef(color)
         });
     }
-    if (!allTags.empty()) {
-        std::wstring label = L"所有已标记 (" + std::to_wstring(allTags.size()) + L")";
+    if (totalColored > 0) {
+        std::wstring label = L"所有标签 (" + std::to_wstring(totalColored) + L")";
         entries.push_back({ L"nav_tag_all", label, L"::Tags",
-            L"跨目录查看所有带标签或星标的项目", L'\uE8EC',
+            L"跨目录查看所有带标签的项目", L'\uE8EC',
+            dark ? RGB(0xB3, 0xB3, 0xB3) : RGB(0x5C, 0x5C, 0x5C) });
+    } else {
+        entries.push_back({ L"nav_tag_all", L"所有标签", L"::Tags",
+            L"跨目录查看所有带标签的项目", L'\uE8EC',
             dark ? RGB(0xB3, 0xB3, 0xB3) : RGB(0x5C, 0x5C, 0x5C) });
     }
 

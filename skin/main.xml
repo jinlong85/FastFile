@@ -182,8 +182,7 @@
           <Button name="btn_ptag_4" text="" width="16" height="16" padding="0,6,0,6" bkcolor="#FF52C41A" borderround="8,8" bordersize="0" bordercolor="#FFFFFFFF" tooltip="绿色标签 (Alt+4)" />
           <Button name="btn_ptag_5" text="" width="16" height="16" padding="0,6,0,6" bkcolor="#FF1890FF" borderround="8,8" bordersize="0" bordercolor="#FFFFFFFF" tooltip="蓝色标签 (Alt+5)" />
           <Button name="btn_ptag_6" text="" width="16" height="16" padding="0,6,0,6" bkcolor="#FF722ED1" borderround="8,8" bordersize="0" bordercolor="#FFFFFFFF" tooltip="紫色标签 (Alt+6)" />
-          <Button name="btn_ptag_star" text="☆" font="0" width="24" height="22" padding="2,3,0,3" textcolor="#FF8A8A8A" bkcolor="#00000000" hotbkcolor="#18808080" borderround="4,4" tooltip="切换星标 (Alt+B)" />
-          <Button name="btn_ptag_clear" text="×" font="0" width="20" height="22" padding="0,3,0,3" textcolor="#FF8A8A8A" bkcolor="#00000000" hotbkcolor="#18808080" borderround="4,4" visible="false" tooltip="清除标签 (Alt+0)" />
+          <Button name="btn_ptag_clear" text="×" font="0" width="20" height="22" padding="2,3,0,3" textcolor="#FF8A8A8A" bkcolor="#00000000" hotbkcolor="#18808080" borderround="4,4" visible="false" tooltip="清除标签 (Alt+0)" />
           <Label name="preview_tag_label" text="" font="2" textcolor="#FF8A8A8A" valign="vcenter" endellipsis="true" />
         </HorizontalLayout>
         <Control name="preview_gap_action" height="10" visible="false" />

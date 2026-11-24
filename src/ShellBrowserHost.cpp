@@ -1371,7 +1371,8 @@ COLORREF BlendTagTint(COLORREF base, COLORREF tag, int alphaPct)
 }
 
 constexpr UINT kTagMenuCmdBase = 0x7F00;
-constexpr UINT kTagMenuCmdStar = 0x7F07;
+constexpr UINT kTagMenuCmdManage = 0x7F08;
+constexpr UINT kTagMenuCmdMax = 0x7F08;
 
 } // namespace
 
@@ -1403,24 +1404,18 @@ LRESULT ShellBrowserHost::DrawListIcon(NMLVCUSTOMDRAW* draw)
             if (GetItemPath(itemIndex, itemPath)) {
                 auto& mgr = FileTagManager::Instance();
                 const FileTagInfo tag = mgr.GetTag(itemPath);
-                const DescendantTagSummary desc = (tag.color == FileTagColor::None && !tag.starred)
+                const DescendantTagSummary desc = (tag.color == FileTagColor::None)
                     ? mgr.GetDescendantSummary(itemPath) : DescendantTagSummary{};
                 if (tag.color != FileTagColor::None) {
                     const int radius = MulDiv(3, m_dpi, 96) + 1;
                     FileTagManager::DrawTagDot(draw->nmcd.hdc, icon.left + w - radius, iconY + h - radius, radius, FileTagManager::GetColorRef(tag.color));
-                } else if (desc.count > 0) {
+                } else if (desc.count > 0 && desc.firstColor != FileTagColor::None) {
                     const int radius = MulDiv(3, m_dpi, 96) + 1;
-                    const COLORREF ringColor = (desc.firstColor != FileTagColor::None)
-                        ? FileTagManager::GetColorRef(desc.firstColor) : RGB(255, 184, 0);
-                    FileTagManager::DrawDescendantRing(draw->nmcd.hdc, icon.left + w - radius, iconY + h - radius, radius, ringColor);
-                }
-                if (tag.starred) {
-                    const int starR = MulDiv(4, m_dpi, 96) + 1;
-                    FileTagManager::DrawStar(draw->nmcd.hdc, icon.left + starR, iconY + starR, starR);
+                    FileTagManager::DrawDescendantRing(draw->nmcd.hdc, icon.left + w - radius, iconY + h - radius, radius, FileTagManager::GetColorRef(desc.firstColor));
                 }
 
-                // Draw pill badge / star / descendant count next to filename inside Name column.
-                if ((tag.color != FileTagColor::None || tag.starred || desc.count > 0)
+                // Draw pill badge / descendant count next to filename inside Name column.
+                if ((tag.color != FileTagColor::None || (desc.count > 0 && desc.firstColor != FileTagColor::None))
                     && ListView_GetItemRect(m_listWindow, itemIndex, &labelRc, LVIR_LABEL)) {
                     wchar_t title[512]{};
                     ListView_GetItemText(m_listWindow, itemIndex, 0, title, _countof(title));
@@ -1436,21 +1431,12 @@ LRESULT ShellBrowserHost::DrawListIcon(NMLVCUSTOMDRAW* draw)
                     const int cy = (row.top + row.bottom) / 2;
                     int badgeX = labelRc.left + titleSz.cx + MulDiv(8, m_dpi, 96);
                     if (tag.color != FileTagColor::None) {
-                        const int used = FileTagManager::DrawTagPill(draw->nmcd.hdc, badgeX, cy, colRight, font,
-                            FileTagManager::GetColorRef(tag.color), mgr.GetDisplayName(tag.color), m_darkMode, m_dpi);
-                        if (used > 0) badgeX += used + MulDiv(4, m_dpi, 96);
-                    }
-                    if (tag.starred && badgeX + MulDiv(12, m_dpi, 96) <= colRight) {
-                        const int sr = MulDiv(5, m_dpi, 96);
-                        FileTagManager::DrawStar(draw->nmcd.hdc, badgeX + sr, cy, sr);
-                        badgeX += sr * 2 + MulDiv(4, m_dpi, 96);
-                    }
-                    if (desc.count > 0 && tag.color == FileTagColor::None && !tag.starred) {
-                        const COLORREF ringColor = (desc.firstColor != FileTagColor::None)
-                            ? FileTagManager::GetColorRef(desc.firstColor) : RGB(255, 184, 0);
-                        const std::wstring hint = L"含" + std::to_wstring(desc.count) + L"项标记";
                         FileTagManager::DrawTagPill(draw->nmcd.hdc, badgeX, cy, colRight, font,
-                            ringColor, hint, m_darkMode, m_dpi);
+                            FileTagManager::GetColorRef(tag.color), mgr.GetDisplayName(tag.color), m_darkMode, m_dpi);
+                    } else if (desc.count > 0 && desc.firstColor != FileTagColor::None) {
+                        const std::wstring hint = L"含" + std::to_wstring(desc.count) + L"项标签";
+                        FileTagManager::DrawTagPill(draw->nmcd.hdc, badgeX, cy, colRight, font,
+                            FileTagManager::GetColorRef(desc.firstColor), hint, m_darkMode, m_dpi);
                     }
                 }
             }
@@ -1516,15 +1502,9 @@ LRESULT ShellBrowserHost::DrawListIcon(NMLVCUSTOMDRAW* draw)
             if (tag.color != FileTagColor::None) {
                 const int radius = MulDiv(3, m_dpi, 96) + 1;
                 FileTagManager::DrawTagDot(draw->nmcd.hdc, iconLeft + w - radius, iconY + h - radius, radius, FileTagManager::GetColorRef(tag.color));
-            } else if (desc.count > 0) {
+            } else if (desc.count > 0 && desc.firstColor != FileTagColor::None) {
                 const int radius = MulDiv(3, m_dpi, 96) + 1;
-                const COLORREF ringColor = (desc.firstColor != FileTagColor::None)
-                    ? FileTagManager::GetColorRef(desc.firstColor) : RGB(255, 184, 0);
-                FileTagManager::DrawDescendantRing(draw->nmcd.hdc, iconLeft + w - radius, iconY + h - radius, radius, ringColor);
-            }
-            if (tag.starred) {
-                const int starR = MulDiv(4, m_dpi, 96) + 1;
-                FileTagManager::DrawStar(draw->nmcd.hdc, iconLeft + starR, iconY + starR, starR);
+                FileTagManager::DrawDescendantRing(draw->nmcd.hdc, iconLeft + w - radius, iconY + h - radius, radius, FileTagManager::GetColorRef(desc.firstColor));
             }
         }
         wchar_t title[1024];
@@ -1538,24 +1518,17 @@ LRESULT ShellBrowserHost::DrawListIcon(NMLVCUSTOMDRAW* draw)
         const int iconRight = (w > 0) ? (iconLeft + w) : (iconLeft + MulDiv(16, m_dpi, 96));
         RECT text{iconRight + MulDiv(4, m_dpi, 96), row.top, row.right - MulDiv(4, m_dpi, 96), row.bottom};
         DrawTextW(draw->nmcd.hdc, title, -1, &text, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
-        if (tag.color != FileTagColor::None || tag.starred || desc.count > 0) {
+        if (tag.color != FileTagColor::None || (desc.count > 0 && desc.firstColor != FileTagColor::None)) {
             SIZE titleSz{};
             GetTextExtentPoint32W(draw->nmcd.hdc, title, static_cast<int>(wcslen(title)), &titleSz);
             int badgeX = text.left + titleSz.cx + MulDiv(6, m_dpi, 96);
             const int cy = (row.top + row.bottom) / 2;
             if (tag.color != FileTagColor::None) {
-                const int used = FileTagManager::DrawTagPill(draw->nmcd.hdc, badgeX, cy, text.right, font,
-                    FileTagManager::GetColorRef(tag.color), FileTagManager::Instance().GetDisplayName(tag.color), m_darkMode, m_dpi);
-                if (used > 0) badgeX += used + MulDiv(4, m_dpi, 96);
-            }
-            if (tag.starred && badgeX + MulDiv(12, m_dpi, 96) <= text.right) {
-                const int sr = MulDiv(5, m_dpi, 96);
-                FileTagManager::DrawStar(draw->nmcd.hdc, badgeX + sr, cy, sr);
-            } else if (desc.count > 0 && tag.color == FileTagColor::None) {
-                const COLORREF ringColor = (desc.firstColor != FileTagColor::None)
-                    ? FileTagManager::GetColorRef(desc.firstColor) : RGB(255, 184, 0);
                 FileTagManager::DrawTagPill(draw->nmcd.hdc, badgeX, cy, text.right, font,
-                    ringColor, L"含" + std::to_wstring(desc.count) + L"项标记", m_darkMode, m_dpi);
+                    FileTagManager::GetColorRef(tag.color), FileTagManager::Instance().GetDisplayName(tag.color), m_darkMode, m_dpi);
+            } else if (desc.count > 0 && desc.firstColor != FileTagColor::None) {
+                FileTagManager::DrawTagPill(draw->nmcd.hdc, badgeX, cy, text.right, font,
+                    FileTagManager::GetColorRef(desc.firstColor), L"含" + std::to_wstring(desc.count) + L"项标签", m_darkMode, m_dpi);
             }
         }
         if ((item.state & LVIS_FOCUSED) && OwnsWindow(GetFocus())) DrawFocusRect(draw->nmcd.hdc, &row);
@@ -1576,21 +1549,16 @@ LRESULT ShellBrowserHost::DrawOverlayTagBadge(NMLVCUSTOMDRAW* draw)
     if (!GetItemPath(itemIndex, itemPath)) return CDRF_DODEFAULT;
     auto& mgr = FileTagManager::Instance();
     const FileTagInfo tag = mgr.GetTag(itemPath);
-    const DescendantTagSummary desc = (tag.color == FileTagColor::None && !tag.starred)
+    const DescendantTagSummary desc = (tag.color == FileTagColor::None)
         ? mgr.GetDescendantSummary(itemPath) : DescendantTagSummary{};
-    if (tag.color == FileTagColor::None && !tag.starred && desc.count == 0) return CDRF_DODEFAULT;
+    if (tag.color == FileTagColor::None && (desc.count == 0 || desc.firstColor == FileTagColor::None)) return CDRF_DODEFAULT;
     RECT icon{};
     if (!ListView_GetItemRect(m_listWindow, itemIndex, &icon, LVIR_ICON)) return CDRF_DODEFAULT;
     const int radius = std::clamp(static_cast<int>((icon.right - icon.left) / 6), MulDiv(4, m_dpi, 96), MulDiv(7, m_dpi, 96));
     if (tag.color != FileTagColor::None) {
         FileTagManager::DrawTagDot(draw->nmcd.hdc, icon.right - radius, icon.top + radius, radius, FileTagManager::GetColorRef(tag.color));
-    } else if (desc.count > 0) {
-        const COLORREF ringColor = (desc.firstColor != FileTagColor::None)
-            ? FileTagManager::GetColorRef(desc.firstColor) : RGB(255, 184, 0);
-        FileTagManager::DrawDescendantRing(draw->nmcd.hdc, icon.right - radius, icon.top + radius, radius, ringColor);
-    }
-    if (tag.starred) {
-        FileTagManager::DrawStar(draw->nmcd.hdc, icon.left + radius, icon.top + radius, radius + 1);
+    } else if (desc.count > 0 && desc.firstColor != FileTagColor::None) {
+        FileTagManager::DrawDescendantRing(draw->nmcd.hdc, icon.right - radius, icon.top + radius, radius, FileTagManager::GetColorRef(desc.firstColor));
     }
     return CDRF_DODEFAULT;
 }
@@ -1986,10 +1954,6 @@ void ShellBrowserHost::DrawPlaceholder(HDC dc, const std::wstring& path, const R
         const int radius = MulDiv(6, m_dpi, 96);
         FileTagManager::DrawTagDot(dc, cell.left + pad + m_iconSlot - radius, cell.top + pad + radius, radius, FileTagManager::GetColorRef(tag.color));
     }
-    if (tag.starred) {
-        const int starR = MulDiv(7, m_dpi, 96);
-        FileTagManager::DrawStar(dc, cell.left + pad + starR, cell.top + pad + starR, starR);
-    }
 }
 
 HICON ShellBrowserHost::AssociatedAppIcon(const std::wstring& path)
@@ -2122,22 +2086,16 @@ LRESULT ShellBrowserHost::DrawIconItem(NMLVCUSTOMDRAW* draw)
                 {
                     auto& mgr = FileTagManager::Instance();
                     const FileTagInfo tag = mgr.GetTag(fullPath);
-                    const DescendantTagSummary desc = (tag.color == FileTagColor::None && !tag.starred)
+                    const DescendantTagSummary desc = (tag.color == FileTagColor::None)
                         ? mgr.GetDescendantSummary(fullPath) : DescendantTagSummary{};
                     const int ix = cell.left + pad;
                     const int iy = cell.top + pad;
                     if (tag.color != FileTagColor::None) {
                         const int radius = MulDiv(6, m_dpi, 96);
                         FileTagManager::DrawTagDot(dc, ix + m_iconSlot - radius, iy + radius, radius, FileTagManager::GetColorRef(tag.color));
-                    } else if (desc.count > 0) {
+                    } else if (desc.count > 0 && desc.firstColor != FileTagColor::None) {
                         const int radius = MulDiv(6, m_dpi, 96);
-                        const COLORREF ringColor = (desc.firstColor != FileTagColor::None)
-                            ? FileTagManager::GetColorRef(desc.firstColor) : RGB(255, 184, 0);
-                        FileTagManager::DrawDescendantRing(dc, ix + m_iconSlot - radius, iy + radius, radius, ringColor);
-                    }
-                    if (tag.starred) {
-                        const int starR = MulDiv(7, m_dpi, 96);
-                        FileTagManager::DrawStar(dc, ix + starR, iy + starR, starR);
+                        FileTagManager::DrawDescendantRing(dc, ix + m_iconSlot - radius, iy + radius, radius, FileTagManager::GetColorRef(desc.firstColor));
                     }
                 }
                 CoTaskMemFree(fullPath);
@@ -2210,13 +2168,11 @@ HMENU ShellBrowserHost::InjectTagSubmenu(HMENU popup)
     GetSelection(sel);
     FileTagColor commonColor = FileTagColor::None;
     bool hasCommonColor = false;
-    bool allStarred = !sel.empty();
     bool anyTagged = false;
     auto& mgr = FileTagManager::Instance();
     for (size_t i = 0; i < sel.size(); ++i) {
         const FileTagInfo info = mgr.GetTag(sel[i].first);
-        if (info.color != FileTagColor::None || info.starred) anyTagged = true;
-        if (!info.starred) allStarred = false;
+        if (info.color != FileTagColor::None) anyTagged = true;
         if (i == 0) {
             commonColor = info.color;
             hasCommonColor = (info.color != FileTagColor::None);
@@ -2244,9 +2200,9 @@ HMENU ShellBrowserHost::InjectTagSubmenu(HMENU popup)
         InsertMenuItemW(sub, static_cast<UINT>(i - 1), TRUE, &mii);
     }
     AppendMenuW(sub, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(sub, allStarred ? (MF_STRING | MF_CHECKED) : MF_STRING, kTagMenuCmdStar, L"★ 星标 / 置顶\tAlt+B");
-    AppendMenuW(sub, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(sub, anyTagged ? MF_STRING : (MF_STRING | MF_GRAYED), kTagMenuCmdBase, L"清除标签\tAlt+0");
+    AppendMenuW(sub, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(sub, MF_STRING, kTagMenuCmdManage, L"自定义标签名称…");
 
     // Insert near the top (right after the first separator so "打开" stays first).
     UINT insertPos = 0;
@@ -2264,7 +2220,7 @@ HMENU ShellBrowserHost::InjectTagSubmenu(HMENU popup)
     subInfo.cbSize = sizeof(subInfo);
     subInfo.fMask = MIIM_SUBMENU | MIIM_STRING;
     subInfo.hSubMenu = sub;
-    subInfo.dwTypeData = const_cast<LPWSTR>(L"标签与星标");
+    subInfo.dwTypeData = const_cast<LPWSTR>(L"标签");
     if (!InsertMenuItemW(popup, insertPos, TRUE, &subInfo)) {
         DestroyMenu(sub);
         return nullptr;
@@ -2299,11 +2255,11 @@ LRESULT CALLBACK ShellBrowserHost::MenuFilterProc(int code, WPARAM wp, LPARAM lp
                 const UINT st = GetMenuState(sub, static_cast<UINT>(i), MF_BYPOSITION);
                 if (st != static_cast<UINT>(-1) && (st & MF_HILITE) && !(st & (MF_GRAYED | MF_DISABLED))) {
                     const UINT id = GetMenuItemID(sub, i);
-                    if (id >= kTagMenuCmdBase && id <= kTagMenuCmdStar) return id;
+                    if (id >= kTagMenuCmdBase && id <= kTagMenuCmdMax) return id;
                 }
             }
             const UINT hovered = s_activeMenuHost->m_hoveredTagCmd;
-            if (hovered >= kTagMenuCmdBase && hovered <= kTagMenuCmdStar) {
+            if (hovered >= kTagMenuCmdBase && hovered <= kTagMenuCmdMax) {
                 const UINT st = GetMenuState(sub, hovered, MF_BYCOMMAND);
                 if (st != static_cast<UINT>(-1) && !(st & (MF_GRAYED | MF_DISABLED))) return hovered;
             }
@@ -2316,7 +2272,7 @@ LRESULT CALLBACK ShellBrowserHost::MenuFilterProc(int code, WPARAM wp, LPARAM lp
         } else if (msg->message == WM_KEYDOWN && msg->wParam == VK_RETURN) {
             cmd = findActiveTagCmd(false);
         }
-        if (cmd >= kTagMenuCmdBase && cmd <= kTagMenuCmdStar) {
+        if (cmd >= kTagMenuCmdBase && cmd <= kTagMenuCmdMax) {
             s_activeMenuHost->m_activatedTagCmd = cmd;
             if (s_activeMenuHost->m_parent && s_activeMenuHost->m_tagCommandMessage) {
                 PostMessageW(s_activeMenuHost->m_parent, s_activeMenuHost->m_tagCommandMessage,
@@ -2355,7 +2311,7 @@ LRESULT CALLBACK ShellBrowserHost::ViewSubclass(HWND window, UINT msg, WPARAM wp
     if (msg == WM_MENUSELECT && host && host->m_injectedTagMenu) {
         const UINT flags = HIWORD(wp);
         const UINT itemId = LOWORD(wp);
-        if (flags != 0xFFFF && !(flags & MF_POPUP) && itemId >= kTagMenuCmdBase && itemId <= kTagMenuCmdStar) {
+        if (flags != 0xFFFF && !(flags & MF_POPUP) && itemId >= kTagMenuCmdBase && itemId <= kTagMenuCmdMax) {
             host->m_hoveredTagCmd = itemId;
         } else if (flags != 0xFFFF) {
             host->m_hoveredTagCmd = 0;
@@ -2363,7 +2319,7 @@ LRESULT CALLBACK ShellBrowserHost::ViewSubclass(HWND window, UINT msg, WPARAM wp
     }
     if (msg == WM_COMMAND && host && host->m_tagCommandMessage) {
         const UINT cmd = LOWORD(wp);
-        if (cmd >= kTagMenuCmdBase && cmd <= kTagMenuCmdStar) {
+        if (cmd >= kTagMenuCmdBase && cmd <= kTagMenuCmdMax) {
             if (host->m_activatedTagCmd == 0 && host->m_parent) {
                 host->m_activatedTagCmd = cmd;
                 PostMessageW(host->m_parent, host->m_tagCommandMessage, static_cast<WPARAM>(cmd - kTagMenuCmdBase), 0);

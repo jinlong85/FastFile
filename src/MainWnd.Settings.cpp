@@ -60,7 +60,7 @@ enum { Startup=110,StartupPath,External,Reuse,ClosePrompt,Density,Font,TabHeight
        View,Remember,Sort,Ascending,Grouping,Context,DefaultFolders,DefaultComputer,ExplorerTakeover,
        Browse=190,RestoreWindows,DetectIntegration,RepairIntegration,IntegrationDetails,ConfigureManager,
        AboutSummary,AboutPath,AboutRefresh,AboutInstall,AboutLogs,AboutCopy,AboutProject,AboutChanges,AboutFeedback,AboutLicense,AboutResult,AboutCheckUpdate,
-       Backdrop=208,ThemeMode=209,SyncFolderTagIcons=210 };
+       Backdrop=208,ThemeMode=209,SyncFolderTagIcons=210,EditTagNames=211 };
 static_assert(View==121 && DefaultFolders==127 && AboutCheckUpdate==207 && Backdrop==208,
     "New settings controls must preserve existing control IDs.");
 struct SettingsDialog {
@@ -68,6 +68,7 @@ struct SettingsDialog {
     FastFileSettings draft;std::function<bool(FastFileSettings)> save;
     std::function<void(HWND)> configure;
     std::function<void(const std::wstring&)> openFolder;
+    std::function<void()> editTagNames;
     FastFileAbout::Info about;
     HWND dialog=nullptr,tab=nullptr;HFONT font=nullptr;UINT dpi=96;int page=0;
     std::vector<Control> controls;
@@ -154,6 +155,7 @@ struct SettingsDialog {
         Combo(Ascending,L"排序方向",206,2,{L"升序",L"降序"},draft.sortAscending?0:1);
         Combo(Grouping,L"默认分组",248,2,{L"遵循 Windows 文件夹设置",L"不分组",L"修改日期",L"类型"},draft.grouping+1);
         Check(SyncFolderTagIcons,L"将文件夹颜色标签同步到 Windows 文件夹图标",296,2,draft.syncFolderTagIcons);
+        Add(L"BUTTON",L"自定义标签名称…",EditTagNames,30,336,160,30,WS_TABSTOP|BS_PUSHBUTTON,2);
         Check(DefaultFolders,L"默认使用 FastFile",74,3,draft.defaultFolders);
         Add(L"STATIC",L"通过 FastFile 打开文件夹、磁盘和“此电脑”，并接收其他应用的打开文件夹请求。",0,30,118,566,52,SS_LEFT,3);
         Add(L"STATIC",L"开启后，独立代理随登录启动；关闭窗口会退出界面进程。直接调用资源管理器的应用可能短暂显示原窗口，确认目录加载成功后自动转交。",0,30,182,566,76,SS_LEFT,3);
@@ -350,6 +352,7 @@ struct SettingsDialog {
                 SendMessageW(self->Item(TabHeight),CB_SETCURSEL,height-24,0);SendMessageW(self->Item(FavHeight),CB_SETCURSEL,height-24,0);return TRUE;
             }
             if(id==Browse) {self->BrowseFolder();return TRUE;}
+            if(id==EditTagNames) {if(self->editTagNames)self->editTagNames();return TRUE;}
             if(id==AboutCheckUpdate) {self->CheckUpdate();return TRUE;}
             if(id==AboutRefresh) {self->RefreshAbout();return TRUE;}
             if(id==AboutCopy) {
@@ -386,6 +389,7 @@ void CMainWnd::ShowSettings() {
     state.save=[this](FastFileSettings settings){return CommitSettings(settings);};
     state.configure=[this](HWND owner){ConfigureDefaultManager(owner);};
     state.openFolder=[this](const std::wstring& path){AddTab(path,true);};
+    state.editTagNames=[this](){ShowTagNamesDialog();};
     struct Template {DLGTEMPLATE dialog;WORD menu=0,cls=0;wchar_t title[4]=L"设置";} layout{};
     layout.dialog.style=WS_POPUP|WS_CAPTION|WS_SYSMENU|DS_MODALFRAME;
     layout.dialog.dwExtendedStyle=WS_EX_CONTROLPARENT;layout.dialog.cx=440;layout.dialog.cy=320;
