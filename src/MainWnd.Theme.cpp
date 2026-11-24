@@ -3,6 +3,7 @@
 // Behaviour is unchanged; declarations live in MainWnd.h.
 
 #include "MainWndInternal.h"
+#include "FavoriteStarUI.h"
 
 namespace {
 
@@ -189,9 +190,12 @@ void CMainWnd::ApplyDwmChrome()
     }
     for (LPCTSTR rootName : { _T("outer_gutter"), _T("chrome_root") }) {
         if (CControlUI* root = m_PaintManager.FindControl(rootName)) {
-            root->SetAttribute(_T("bkcolor"), dark ? L"#FF202020" : UiTokens::ColorTransparent);
+            root->SetAttribute(_T("bkcolor"), dark ? L"#FF202020" : UiTokens::ColorSurface);
             root->Invalidate();
         }
+    }
+    if (auto* star = dynamic_cast<CFavoriteStarUI*>(m_PaintManager.FindControl(_T("btn_favorite_toggle")))) {
+        star->SetDarkMode(dark);
     }
     if (CControlUI* addBtn = m_PaintManager.FindControl(_T("btn_tab_add"))) {
         addBtn->SetAttribute(_T("hotbkcolor"), dark ? L"#20FFFFFF" : L"#14000000");

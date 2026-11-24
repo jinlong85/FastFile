@@ -8,6 +8,8 @@ class CFavoriteStarUI : public DuiLib::CButtonUI {
 public:
     void SetPinned(bool pinned) { if (m_pinned != pinned) { m_pinned = pinned; Invalidate(); } }
     bool IsPinned() const { return m_pinned; }
+    void SetDarkMode(bool dark) { if (m_dark != dark) { m_dark = dark; Invalidate(); } }
+    bool IsDarkMode() const { return m_dark; }
     void PaintText(HDC) override {}
     void PaintStatusImage(HDC dc) override {
         const float scale = GetFixedWidth() / 32.0f;
@@ -26,7 +28,7 @@ public:
             bg.AddArc(box.GetRight() - d, box.GetBottom() - d, d, d, 0, 90);
             bg.AddArc(box.X, box.GetBottom() - d, d, d, 90, 90);
             bg.CloseFigure();
-            Gdiplus::SolidBrush fill(Gdiplus::Color(255, 232, 232, 232));
+            Gdiplus::SolidBrush fill(m_dark ? Gdiplus::Color(255, 56, 56, 56) : Gdiplus::Color(255, 232, 232, 232));
             g.FillPath(&fill, &bg);
         }
         // The star including its thin stroke fits a 16-logical-pixel square.
@@ -38,8 +40,11 @@ public:
         }
         Gdiplus::GraphicsPath star;
         star.AddPolygon(points, 10);
-        Gdiplus::Color color = m_pinned ? Gdiplus::Color(255, 199, 163, 0) :
-            hot ? Gdiplus::Color(255, 26, 26, 26) : Gdiplus::Color(255, 92, 92, 92);
+        Gdiplus::Color color = m_pinned
+            ? (m_dark ? Gdiplus::Color(255, 255, 200, 0) : Gdiplus::Color(255, 199, 163, 0))
+            : (hot
+                ? (m_dark ? Gdiplus::Color(255, 243, 243, 243) : Gdiplus::Color(255, 26, 26, 26))
+                : (m_dark ? Gdiplus::Color(255, 180, 180, 180) : Gdiplus::Color(255, 92, 92, 92)));
         if (m_pinned) { Gdiplus::SolidBrush fill(color); g.FillPath(&fill, &star); }
         Gdiplus::Pen pen(color, scale);
         pen.SetLineJoin(Gdiplus::LineJoinRound);
@@ -47,4 +52,5 @@ public:
     }
 private:
     bool m_pinned = false;
+    bool m_dark = false;
 };

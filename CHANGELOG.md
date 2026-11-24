@@ -2,9 +2,14 @@
 
 面向使用者的改动记录（开发细节 / 踩坑见 [HANDOFF.md](HANDOFF.md)）。
 版本号来自根目录 [VERSION](VERSION)，安装包产物在 `dist\FastFile-Setup-<版本>.exe`。
-当前 GitHub 发行版为 [**1.0.32（预发布）**](https://github.com/jinlong85/FastFile/releases/tag/v1.0.32)，安装包已发布并提供应用内在线更新。
+当前 GitHub 发行版为 [**1.0.33（预发布）**](https://github.com/jinlong85/FastFile/releases/tag/v1.0.33)，安装包已发布并提供应用内在线更新。
 
 ## 2026-11-24
+
+### 1.0.33
+
+- 修复浅色模式下外层根容器（`outer_gutter` / `chrome_root`）被误设为透明导致底部状态栏四周透出纯黑边框的回归问题，统一使用不透明主题底色。
+- 为左上角收藏星标控件（`CFavoriteStarUI`）增加深色模式适配，提升深色背景下空心星标可见度并修正悬停底色。
 
 ### 1.0.32
 
