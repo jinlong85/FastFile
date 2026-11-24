@@ -1376,28 +1376,87 @@ struct MainWndRegressionAccess {
         if (dc) {
             BITMAPINFO bmi{};
             bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-            bmi.bmiHeader.biWidth = 32;
+            bmi.bmiHeader.biWidth = 128;
             bmi.bmiHeader.biHeight = -32;
             bmi.bmiHeader.biPlanes = 1;
             bmi.bmiHeader.biBitCount = 32;
             void* bits = nullptr;
             HBITMAP bmp = ::CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
             if (bmp && bits) {
-                memset(bits, 0, 32 * 32 * 4);
+                memset(bits, 0, 128 * 32 * 4);
                 HGDIOBJ oldBmp = ::SelectObject(dc, bmp);
                 FileTagManager::DrawTagDot(dc, 10, 10, 5, RGB(255, 77, 79));
+                FileTagManager::DrawDescendantRing(dc, 10, 22, 4, RGB(24, 144, 255));
                 FileTagManager::DrawStar(dc, 22, 22, 6);
+                const int pillW = FileTagManager::DrawTagPill(dc, 34, 16, 124, nullptr,
+                    RGB(255, 77, 79), L"重要", true, 96);
+                check(pillW > 20, "DrawTagPill renders rounded pill and returns positive width");
                 const DWORD* px = static_cast<const DWORD*>(bits);
                 int painted = 0;
-                for (int i = 0; i < 32 * 32; ++i) {
+                for (int i = 0; i < 128 * 32; ++i) {
                     if ((px[i] & 0x00FFFFFF) != 0) ++painted;
                 }
-                check(painted > 20, "GDI+ anti-aliased DrawTagDot and DrawStar render visible pixels");
+                check(painted > 40, "GDI+ anti-aliased DrawTagDot, DrawDescendantRing, DrawStar and DrawTagPill render visible pixels");
                 ::SelectObject(dc, oldBmp);
                 ::DeleteObject(bmp);
             }
             ::DeleteDC(dc);
         }
+        {
+            HBITMAP menuBm = FileTagManager::CreateMenuColorBitmap(RGB(255, 77, 79), 16);
+            check(menuBm != nullptr, "CreateMenuColorBitmap produces 32-bit dot bitmap");
+            if (menuBm) ::DeleteObject(menuBm);
+        }
+
+        // 4b. Custom tag display names, parent folder descendant rollup, and Windows folder icon sync
+        {
+            mgr.SetCustomColorName(FileTagColor::Red, L"紧急");
+            check(mgr.GetDisplayName(FileTagColor::Red) == L"紧急", "custom tag name overrides display name");
+            check(FileTagManager::TagViewDisplayName(L"::Tags:Red") == L"紧急标签", "tag view display name reflects custom name");
+            mgr.SetCustomColorName(FileTagColor::Red, L"");
+            check(mgr.GetDisplayName(FileTagColor::Red) == L"红色", "clearing custom tag name restores default");
+
+            wchar_t tmpBuf[MAX_PATH]{};
+            if (::GetTempPathW(MAX_PATH, tmpBuf) > 0) {
+                const std::wstring parentDir = std::wstring(tmpBuf) + L"FastFileTagRollup_" + std::to_wstring(::GetTickCount64());
+                const std::wstring childDir = parentDir + L"\\Sub";
+                const std::wstring childFile = childDir + L"\\item.txt";
+                ::CreateDirectoryW(parentDir.c_str(), nullptr);
+                ::CreateDirectoryW(childDir.c_str(), nullptr);
+
+                mgr.SetColor(childFile, FileTagColor::Blue);
+                mgr.SetStarred(childFile, true);
+                const auto sumParent = mgr.GetDescendantSummary(parentDir);
+                const auto sumChild = mgr.GetDescendantSummary(childDir);
+                check(sumParent.count == 1 && sumParent.starredCount == 1 && sumParent.firstColor == FileTagColor::Blue,
+                    "ancestor folder rollup reports descendant tag count, star count, and color");
+                check(sumChild.count == 1 && sumChild.firstColor == FileTagColor::Blue,
+                    "direct parent folder rollup reports child tag");
+                mgr.ClearTag(childFile);
+                check(mgr.GetDescendantSummary(parentDir).count == 0, "clearing child tag clears ancestor rollup");
+
+                const std::wstring icoPath = FileTagManager::EnsureColorFolderIconFile(FileTagColor::Green);
+                check(!icoPath.empty() && ::GetFileAttributesW(icoPath.c_str()) != INVALID_FILE_ATTRIBUTES,
+                    "EnsureColorFolderIconFile generates valid .ico file");
+                const bool synced = FileTagManager::SyncFolderIcon(parentDir, FileTagColor::Green);
+                const std::wstring desktopIni = parentDir + L"\\desktop.ini";
+                check(synced && ::GetFileAttributesW(desktopIni.c_str()) != INVALID_FILE_ATTRIBUTES,
+                    "SyncFolderIcon writes desktop.ini for tagged folder");
+                FileTagManager::SyncFolderIcon(parentDir, FileTagColor::None);
+                ::SetFileAttributesW(desktopIni.c_str(), FILE_ATTRIBUTE_NORMAL);
+                ::DeleteFileW(desktopIni.c_str());
+                ::SetFileAttributesW(parentDir.c_str(), FILE_ATTRIBUTE_NORMAL);
+                ::RemoveDirectoryW(childDir.c_str());
+                ::RemoveDirectoryW(parentDir.c_str());
+            }
+        }
+
+        // 4c. Preview pane quick-tag bar controls
+        check(window.m_PaintManager.FindControl(_T("preview_tag_bar")) != nullptr
+            && window.m_PaintManager.FindControl(_T("btn_ptag_1")) != nullptr
+            && window.m_PaintManager.FindControl(_T("btn_ptag_star")) != nullptr
+            && window.m_PaintManager.FindControl(_T("btn_ptag_clear")) != nullptr,
+            "preview pane exposes quick-tag bar controls");
 
         // 5. CMainWnd tagging operations integration
         window.ApplyTagColorToSelection(FileTagColor::Green);

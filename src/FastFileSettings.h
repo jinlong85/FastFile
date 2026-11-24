@@ -22,6 +22,7 @@ struct FastFileSettings {
     int grouping = -1; // -1 Windows folder preference, 0 none, 1 date, 2 type
     int backdropType = 0; // 0 Mica Alt (Tabbed), 1 Mica, 2 Acrylic, 3 None (Classic solid)
     int themeMode = 1; // 0 follow system, 1 light, 2 dark
+    bool syncFolderTagIcons = true; // sync colored folder tags to Windows Explorer desktop.ini icons
     bool contextMenu = false;
     bool defaultFolders = false;
     bool defaultComputer = false;

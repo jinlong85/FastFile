@@ -159,7 +159,7 @@ void CMainWnd::InitWindow()
         const RECT bounds = m_pListHost->GetPos();
         m_shellBrowser = new (std::nothrow) ShellBrowserHost;
         if (!m_shellBrowser || !m_shellBrowser->Create(m_hWnd, bounds,
-                kMsgShellNavigation, kMsgShellSelection, kMsgShellFolderOpen)) {
+                kMsgShellNavigation, kMsgShellSelection, kMsgShellFolderOpen, kMsgShellTagAction)) {
             delete m_shellBrowser;
             m_shellBrowser = nullptr;
             UpdateStatus(_T("Windows 文件视图初始化失败"));
@@ -475,6 +475,32 @@ void CMainWnd::OnClick(TNotifyUI& msg)
         if (!ud.IsEmpty()) NavigateTo(ud.GetData(), true);
         return;
     }
+    if (name.Find(_T("btn_ptag_")) == 0) {
+        if (name == _T("btn_ptag_star")) {
+            ToggleStarSelection();
+        } else if (name == _T("btn_ptag_clear")) {
+            ApplyTagColorToSelection(FileTagColor::None);
+        } else {
+            const int ci = _ttoi(name.GetData() + 9);
+            if (ci >= 1 && ci <= 6) {
+                const auto color = static_cast<FileTagColor>(ci);
+                // Toggle off if all selected items already carry this color.
+                std::vector<ClipboardItem> items;
+                CollectSelectedItems(items);
+                if (items.empty() && !m_currentPath.empty() && !IsThisPcPath(m_currentPath))
+                    items.push_back({ m_currentPath, true });
+                bool allSame = !items.empty();
+                for (const auto& it : items) {
+                    if (FileTagManager::Instance().GetTag(it.path).color != color) {
+                        allSame = false;
+                        break;
+                    }
+                }
+                ApplyTagColorToSelection(allSame ? FileTagColor::None : color);
+            }
+        }
+        return;
+    }
     if (name == _T("btn_toggle_preview")) {
         SetPreviewVisible(!m_previewVisible);
         if (m_previewVisible) UpdatePreviewForSelection();
@@ -539,6 +565,16 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     }
     if (uMsg == kMsgShellSelection) {
         SyncShellViewSelection();
+        return 0;
+    }
+    if (uMsg == kMsgShellTagAction) {
+        if (wParam == 0) {
+            ApplyTagColorToSelection(FileTagColor::None);
+        } else if (wParam >= 1 && wParam <= 6) {
+            ApplyTagColorToSelection(static_cast<FileTagColor>(wParam));
+        } else if (wParam == 7) {
+            ToggleStarSelection();
+        }
         return 0;
     }
     if (uMsg == kMsgPreviewIconReady) {
@@ -1052,6 +1088,12 @@ LRESULT CMainWnd::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 POINT ptScreen = ptClient;
                 ::ClientToScreen(m_hWnd, &ptScreen);
                 ShowFavoriteContextMenu(p, ptScreen);
+                return 0;
+            }
+            if (nm.Find(_T("nav_tag_c")) == 0) {
+                POINT ptScreen = ptClient;
+                ::ClientToScreen(m_hWnd, &ptScreen);
+                ShowTagNavContextMenu(p, ptScreen);
                 return 0;
             }
             p = p->GetParent();

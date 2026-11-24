@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -21,6 +22,12 @@ struct FileTagInfo {
     bool starred = false;
 };
 
+struct DescendantTagSummary {
+    int count = 0;
+    int starredCount = 0;
+    FileTagColor firstColor = FileTagColor::None;
+};
+
 class FileTagManager {
 public:
     static FileTagManager& Instance();
@@ -29,6 +36,7 @@ public:
     bool Save() const;
 
     FileTagInfo GetTag(const std::wstring& path) const;
+    DescendantTagSummary GetDescendantSummary(const std::wstring& folderPath) const;
     void SetColor(const std::wstring& path, FileTagColor color);
     void SetColorBatch(const std::vector<std::wstring>& paths, FileTagColor color);
     void SetStarred(const std::wstring& path, bool starred);
@@ -44,6 +52,17 @@ public:
     std::vector<std::pair<std::wstring, FileTagInfo>> QueryTags(
         FileTagColor colorFilter = FileTagColor::None, bool starredOnly = false) const;
 
+    // Custom display names for tag colors (persisted in tag_names.ini; empty resets to default).
+    std::wstring GetDisplayName(FileTagColor color) const;
+    void SetCustomColorName(FileTagColor color, const std::wstring& name);
+
+    // Optional Windows Explorer folder icon sync via desktop.ini / SHGetSetFolderCustomSettings.
+    void SetSyncFolderIcons(bool enabled);
+    bool IsSyncFolderIconsEnabled() const;
+    void SyncAllFolderIcons(bool enabled);
+    static std::wstring EnsureColorFolderIconFile(FileTagColor color);
+    static bool SyncFolderIcon(const std::wstring& folderPath, FileTagColor color);
+
     static COLORREF GetColorRef(FileTagColor color);
     static const wchar_t* GetColorName(FileTagColor color);
     static bool IsTagViewPath(const std::wstring& path);
@@ -57,14 +76,25 @@ public:
     static std::string SerializeTagsJson(const std::unordered_map<std::wstring, FileTagInfo>& tags);
 
     static void DrawTagDot(HDC dc, int cx, int cy, int radius, COLORREF fill, COLORREF border = RGB(255, 255, 255));
+    static void DrawDescendantRing(HDC dc, int cx, int cy, int radius, COLORREF color);
     static void DrawStar(HDC dc, int cx, int cy, int outerR, COLORREF fill = RGB(255, 184, 0), COLORREF border = RGB(212, 155, 0));
+    static int DrawTagPill(HDC dc, int x, int cy, int maxRight, HFONT font, COLORREF color,
+        const std::wstring& label, bool darkMode, int dpi);
+    static HBITMAP CreateMenuColorBitmap(COLORREF color, int size = 16);
 
 private:
     FileTagManager();
     static std::wstring GetTagFilePath();
+    static std::wstring GetTagNamesFilePath();
     bool SaveLocked() const;
+    void LoadCustomNamesLocked();
+    void SaveCustomNamesLocked() const;
+    void RebuildAncestorIndexLocked();
 
     mutable std::mutex m_mutex;
     std::unordered_map<std::wstring, FileTagInfo> m_tags;
+    std::unordered_map<std::wstring, DescendantTagSummary> m_ancestorSummary;
+    std::array<std::wstring, 7> m_customNames;
+    bool m_syncFolderIcons = true;
     bool m_loaded = false;
 };

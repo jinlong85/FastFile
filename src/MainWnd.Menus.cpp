@@ -168,12 +168,12 @@ void CMainWnd::OnMoreMenuClicked()
     ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
 
     HMENU tagMenu = ::CreatePopupMenu();
-    ::AppendMenuW(tagMenu, MF_STRING, 101, L"红色\tAlt+1");
-    ::AppendMenuW(tagMenu, MF_STRING, 102, L"橙色\tAlt+2");
-    ::AppendMenuW(tagMenu, MF_STRING, 103, L"黄色\tAlt+3");
-    ::AppendMenuW(tagMenu, MF_STRING, 104, L"绿色\tAlt+4");
-    ::AppendMenuW(tagMenu, MF_STRING, 105, L"蓝色\tAlt+5");
-    ::AppendMenuW(tagMenu, MF_STRING, 106, L"紫色\tAlt+6");
+    auto& tagMgr = FileTagManager::Instance();
+    for (int i = 1; i <= 6; ++i) {
+        const auto c = static_cast<FileTagColor>(i);
+        std::wstring label = tagMgr.GetDisplayName(c) + L"\tAlt+" + std::to_wstring(i);
+        ::AppendMenuW(tagMenu, MF_STRING, static_cast<UINT_PTR>(100 + i), label.c_str());
+    }
     ::AppendMenuW(tagMenu, MF_SEPARATOR, 0, nullptr);
     ::AppendMenuW(tagMenu, MF_STRING, 107, L"★ 星标 / 置顶\tAlt+B");
     ::AppendMenuW(tagMenu, MF_SEPARATOR, 0, nullptr);
@@ -349,6 +349,12 @@ bool CMainWnd::TrackPopupShellMenu(IContextMenu* pMenu, HMENU hMenu, POINT ptScr
     if (pcm3) pcm3->Release();
     if (pcm2) pcm2->Release();
 
+    if (cmd >= 0x7F00 && cmd <= 0x7F07) {
+        if (cmd == 0x7F00) ApplyTagColorToSelection(FileTagColor::None);
+        else if (cmd >= 0x7F01 && cmd <= 0x7F06) ApplyTagColorToSelection(static_cast<FileTagColor>(cmd - 0x7F00));
+        else if (cmd == 0x7F07) ToggleStarSelection();
+        return true;
+    }
     if (cmd < idCmdFirst || cmd >= idShellMax)
         return true; // cancelled
     // Windows runs the command itself (open, rename, delete, paste, properties, ...).
@@ -467,6 +473,115 @@ bool CMainWnd::ShowShellBackgroundContextMenu(const std::wstring& folderPath, PO
     return shown;
 }
 
+void CMainWnd::ShowTagNavContextMenu(CControlUI* btn, POINT ptScreen)
+{
+    if (!btn || !m_hWnd) return;
+    CDuiString nm = btn->GetName();
+    if (nm.Find(_T("nav_tag_c")) != 0) return;
+    const int ci = _ttoi(nm.GetData() + 9);
+    if (ci < 1 || ci > 6) return;
+    const auto color = static_cast<FileTagColor>(ci);
+
+    HMENU hMenu = ::CreatePopupMenu();
+    if (!hMenu) return;
+    ::AppendMenuW(hMenu, MF_STRING, 1, L"重命名标签…");
+    ::AppendMenuW(hMenu, MF_STRING, 2, L"恢复默认名称");
+    const UINT cmd = ::TrackPopupMenuEx(hMenu,
+        TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON | TPM_RETURNCMD,
+        ptScreen.x, ptScreen.y, m_hWnd, nullptr);
+    ::DestroyMenu(hMenu);
+
+    auto& mgr = FileTagManager::Instance();
+    if (cmd == 2) {
+        mgr.SetCustomColorName(color, L"");
+        RebuildLeftTagRows();
+        UpdatePreviewTagBar();
+        if (m_shellBrowser && m_shellBrowser->IsCreated()) m_shellBrowser->Redraw();
+        UpdateStatus(_T("已恢复默认标签名称"));
+        return;
+    }
+    if (cmd != 1) return;
+
+    struct RenameTagDlg {
+        std::wstring value;
+        std::wstring title;
+        HWND edit = nullptr;
+        HFONT font = nullptr;
+        static INT_PTR CALLBACK Proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
+            auto* self = reinterpret_cast<RenameTagDlg*>(::GetWindowLongPtrW(wnd, DWLP_USER));
+            if (msg == WM_INITDIALOG) {
+                self = reinterpret_cast<RenameTagDlg*>(lp);
+                ::SetWindowLongPtrW(wnd, DWLP_USER, lp);
+                ::SetWindowTextW(wnd, self->title.c_str());
+                const UINT dpi = ::GetDpiForWindow(wnd) ? ::GetDpiForWindow(wnd) : 96;
+                auto sc = [&](int v) { return MulDiv(v, dpi, 96); };
+                self->font = ::CreateFontW(-sc(13), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+                HWND lbl = ::CreateWindowExW(0, L"STATIC", L"输入新的标签名称（留空恢复默认）：",
+                    WS_CHILD | WS_VISIBLE | SS_LEFT, sc(16), sc(14), sc(288), sc(20), wnd, nullptr, ::GetModuleHandleW(nullptr), nullptr);
+                self->edit = ::CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", self->value.c_str(),
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, sc(16), sc(40), sc(288), sc(28), wnd,
+                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(1001)), ::GetModuleHandleW(nullptr), nullptr);
+                HWND ok = ::CreateWindowExW(0, L"BUTTON", L"确定",
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, sc(140), sc(80), sc(76), sc(28), wnd,
+                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDOK)), ::GetModuleHandleW(nullptr), nullptr);
+                HWND cancel = ::CreateWindowExW(0, L"BUTTON", L"取消",
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, sc(228), sc(80), sc(76), sc(28), wnd,
+                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDCANCEL)), ::GetModuleHandleW(nullptr), nullptr);
+                for (HWND c : { lbl, self->edit, ok, cancel }) {
+                    if (c && self->font) ::SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(self->font), TRUE);
+                }
+                RECT r{ 0, 0, sc(320), sc(122) };
+                ::AdjustWindowRectExForDpi(&r, ::GetWindowLongW(wnd, GWL_STYLE), FALSE, ::GetWindowLongW(wnd, GWL_EXSTYLE), dpi);
+                RECT owner{};
+                ::GetWindowRect(::GetParent(wnd), &owner);
+                ::SetWindowPos(wnd, nullptr,
+                    (owner.left + owner.right - (r.right - r.left)) / 2,
+                    (owner.top + owner.bottom - (r.bottom - r.top)) / 2,
+                    r.right - r.left, r.bottom - r.top, SWP_NOZORDER);
+                ::SetFocus(self->edit);
+                ::SendMessageW(self->edit, EM_SETSEL, 0, -1);
+                return FALSE;
+            }
+            if (!self) return FALSE;
+            if (msg == WM_COMMAND) {
+                if (LOWORD(wp) == IDOK) {
+                    wchar_t buf[64]{};
+                    ::GetWindowTextW(self->edit, buf, _countof(buf));
+                    self->value = buf;
+                    ::EndDialog(wnd, IDOK);
+                    return TRUE;
+                }
+                if (LOWORD(wp) == IDCANCEL) {
+                    ::EndDialog(wnd, IDCANCEL);
+                    return TRUE;
+                }
+            }
+            if (msg == WM_CLOSE) {
+                ::EndDialog(wnd, IDCANCEL);
+                return TRUE;
+            }
+            return FALSE;
+        }
+        ~RenameTagDlg() { if (font) ::DeleteObject(font); }
+    } dlg;
+    dlg.value = mgr.GetDisplayName(color);
+    dlg.title = std::wstring(L"重命名") + FileTagManager::GetColorName(color) + L"标签";
+    struct Template { DLGTEMPLATE dialog; WORD menu = 0, cls = 0, title = 0; } layout{};
+    layout.dialog.style = WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME;
+    layout.dialog.cx = 200;
+    layout.dialog.cy = 80;
+    if (::DialogBoxIndirectParamW(::GetModuleHandleW(nullptr), &layout.dialog, m_hWnd,
+            RenameTagDlg::Proc, reinterpret_cast<LPARAM>(&dlg)) == IDOK) {
+        mgr.SetCustomColorName(color, dlg.value);
+        RebuildLeftTagRows();
+        UpdatePreviewTagBar();
+        if (m_shellBrowser && m_shellBrowser->IsCreated()) m_shellBrowser->Redraw();
+        std::wstring tip = L"标签已重命名为：" + mgr.GetDisplayName(color);
+        UpdateStatus(tip.c_str());
+    }
+}
+
 void CMainWnd::ShowItemContextMenu(CControlUI* /*pItem*/, POINT ptScreen)
 {
     std::vector<ClipboardItem> items;
@@ -479,7 +594,7 @@ void CMainWnd::ShowItemContextMenu(CControlUI* /*pItem*/, POINT ptScreen)
     paths.reserve(items.size());
     for (const auto& it : items)
         paths.push_back(it.path);
-    if (!ShowShellContextMenu(paths, ptScreen))
+    if (!ShowShellContextMenu(paths, ptScreen, false, !m_trackMenuHook))
         UpdateStatus(_T("无法显示 Windows 右键菜单"));
 }
 
@@ -502,12 +617,72 @@ void CMainWnd::ShowKeyboardContextMenu()
     ShowItemContextMenu(nullptr, point);
 }
 
-bool CMainWnd::ShowShellContextMenu(const std::vector<std::wstring>& paths, POINT ptScreen, bool explore)
+bool CMainWnd::ShowShellContextMenu(const std::vector<std::wstring>& paths, POINT ptScreen, bool explore, bool includeFastFileTags)
 {
     IContextMenu* pMenu = nullptr;
     if (!CreateShellItemContextMenu(paths, &pMenu)) return false;
     m_shellMenuPaths = paths;
-    const bool shown = ShowQueriedShellMenu(pMenu, ShellItemMenuFlags(::GetKeyState(VK_SHIFT) < 0, explore), ptScreen);
+    const UINT flags = ShellItemMenuFlags(::GetKeyState(VK_SHIFT) < 0, explore);
+    bool shown = false;
+    if (includeFastFileTags && !m_trackMenuHook && !paths.empty()) {
+        HMENU popup = nullptr;
+        UINT shellMax = 0;
+        if (QueryShellMenu(pMenu, flags, &popup, &shellMax)) {
+            std::vector<HBITMAP> bitmaps;
+            HMENU sub = ::CreatePopupMenu();
+            if (sub) {
+                auto& mgr = FileTagManager::Instance();
+                FileTagColor commonColor = FileTagColor::None;
+                bool hasCommonColor = false;
+                bool allStarred = true;
+                bool anyTagged = false;
+                for (size_t i = 0; i < paths.size(); ++i) {
+                    const FileTagInfo info = mgr.GetTag(paths[i]);
+                    if (info.color != FileTagColor::None || info.starred) anyTagged = true;
+                    if (!info.starred) allStarred = false;
+                    if (i == 0) {
+                        commonColor = info.color;
+                        hasCommonColor = (info.color != FileTagColor::None);
+                    } else if (info.color != commonColor) {
+                        hasCommonColor = false;
+                    }
+                }
+                for (int i = 1; i <= 6; ++i) {
+                    const auto color = static_cast<FileTagColor>(i);
+                    HBITMAP bm = FileTagManager::CreateMenuColorBitmap(FileTagManager::GetColorRef(color), DpiScale(14));
+                    if (bm) bitmaps.push_back(bm);
+                    std::wstring label = mgr.GetDisplayName(color) + L"\tAlt+" + std::to_wstring(i);
+                    MENUITEMINFOW mii{};
+                    mii.cbSize = sizeof(mii);
+                    mii.fMask = MIIM_ID | MIIM_STRING | MIIM_STATE | (bm ? MIIM_BITMAP : 0);
+                    mii.wID = 0x7F00 + static_cast<UINT>(i);
+                    mii.dwTypeData = const_cast<LPWSTR>(label.c_str());
+                    mii.fState = (hasCommonColor && commonColor == color) ? MFS_CHECKED : MFS_UNCHECKED;
+                    mii.hbmpItem = bm;
+                    ::InsertMenuItemW(sub, static_cast<UINT>(i - 1), TRUE, &mii);
+                }
+                ::AppendMenuW(sub, MF_SEPARATOR, 0, nullptr);
+                ::AppendMenuW(sub, allStarred ? (MF_STRING | MF_CHECKED) : MF_STRING, 0x7F07, L"★ 星标 / 置顶\tAlt+B");
+                ::AppendMenuW(sub, MF_SEPARATOR, 0, nullptr);
+                ::AppendMenuW(sub, anyTagged ? MF_STRING : (MF_STRING | MF_GRAYED), 0x7F00, L"清除标签\tAlt+0");
+
+                MENUITEMINFOW subInfo{};
+                subInfo.cbSize = sizeof(subInfo);
+                subInfo.fMask = MIIM_SUBMENU | MIIM_STRING;
+                subInfo.hSubMenu = sub;
+                subInfo.dwTypeData = const_cast<LPWSTR>(L"标签与星标");
+                ::InsertMenuItemW(popup, 0, TRUE, &subInfo);
+                ::InsertMenuW(popup, 1, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
+            }
+            m_lastShellMenuFlags = flags;
+            TrackPopupShellMenu(pMenu, popup, ptScreen, 1, shellMax);
+            ::DestroyMenu(popup);
+            for (HBITMAP bm : bitmaps) ::DeleteObject(bm);
+            shown = true;
+        }
+    } else {
+        shown = ShowQueriedShellMenu(pMenu, flags, ptScreen);
+    }
     m_shellMenuPaths.clear();
     pMenu->Release();
     return shown;

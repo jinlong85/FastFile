@@ -30,7 +30,7 @@ public:
     // The hosted view keeps its own Windows context menus: WM_CONTEXTMENU / NM_RCLICK are
     // never intercepted, so DefView builds, shows and invokes the unmodified classic menu.
     bool Create(HWND parent, const RECT& bounds, UINT navigationMessage,
-        UINT selectionMessage, UINT folderOpenMessage=0);
+        UINT selectionMessage, UINT folderOpenMessage=0, UINT tagCommandMessage=0);
     void Destroy();
     void SetBounds(const RECT& bounds);
     bool Navigate(const std::wstring& path, bool retryPending = false);
@@ -104,7 +104,11 @@ private:
     HIMAGELIST GetSystemSmallImageList();
     int ResolveItemIcon(int index, HIMAGELIST* outIml = nullptr);
     LRESULT DrawListIcon(NMLVCUSTOMDRAW* draw);
+    LRESULT DrawOverlayTagBadge(NMLVCUSTOMDRAW* draw);
     bool GetItemPath(int itemIndex, std::wstring& outPath) const;
+    HMENU InjectTagSubmenu(HMENU popup);
+    void ClearMenuColorBitmaps();
+    static LRESULT CALLBACK MenuFilterProc(int code, WPARAM wp, LPARAM lp);
     // Thumbnail cache (UI thread): key = item identity + slot size + size / mtime stamp.
     struct ThumbEntry { std::wstring key; HBITMAP bitmap = nullptr; size_t bytes = 0; };
     bool LookupThumb(const std::wstring& key, HBITMAP& bitmap);
@@ -219,6 +223,13 @@ private:
     UINT m_navigationMessage = 0;
     UINT m_selectionMessage = 0;
     UINT m_folderOpenMessage = 0;
+    UINT m_tagCommandMessage = 0;
+    HHOOK m_menuFilterHook = nullptr;
+    HMENU m_injectedTagMenu = nullptr;
+    UINT m_hoveredTagCmd = 0;
+    UINT m_activatedTagCmd = 0;
+    HBITMAP m_menuColorBitmaps[6] = {};
+    static inline ShellBrowserHost* s_activeMenuHost = nullptr;
     FOLDERVIEWMODE m_requestedMode = FVM_DETAILS;
     int m_requestedIconSize = -1;
     std::wstring m_lastNavigation;

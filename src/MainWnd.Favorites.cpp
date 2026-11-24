@@ -1001,13 +1001,13 @@ void CMainWnd::RebuildLeftTagRows()
     for (int ci = 1; ci <= 6; ++ci) {
         if (colorCounts[ci] <= 0) continue;
         const auto color = static_cast<FileTagColor>(ci);
-        std::wstring label = std::wstring(FileTagManager::GetColorName(color))
-            + L" (" + std::to_wstring(colorCounts[ci]) + L")";
+        const std::wstring dispName = FileTagManager::Instance().GetDisplayName(color);
+        std::wstring label = dispName + L" (" + std::to_wstring(colorCounts[ci]) + L")";
         entries.push_back({
             L"nav_tag_c" + std::to_wstring(ci),
             label,
             kColorPaths[ci],
-            std::wstring(L"查看所有") + FileTagManager::GetColorName(color) + L"标签项目",
+            L"查看所有" + dispName + L"标签项目（右键可重命名标签）",
             L'\u25CF',
             FileTagManager::GetColorRef(color)
         });

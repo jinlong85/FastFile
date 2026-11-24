@@ -175,6 +175,17 @@
         <Control name="preview_image" height="196" bkcolor="#FFFFFFFF" bordercolor="#00000000" bordersize="0" borderround="4,4" visible="false" />
         <Control name="preview_gap_title" height="12" visible="false" />
         <Label name="preview_title" text="预览" font="5" textcolor="#FF1A1A1A" height="28" endellipsis="true" />
+        <HorizontalLayout name="preview_tag_bar" height="28" visible="false" padding="0,4,0,0" childpadding="6">
+          <Button name="btn_ptag_1" text="" width="16" height="16" padding="0,6,0,6" bkcolor="#FFFF4D4F" borderround="8,8" bordersize="0" bordercolor="#FFFFFFFF" tooltip="红色标签 (Alt+1)" />
+          <Button name="btn_ptag_2" text="" width="16" height="16" padding="0,6,0,6" bkcolor="#FFFF7A45" borderround="8,8" bordersize="0" bordercolor="#FFFFFFFF" tooltip="橙色标签 (Alt+2)" />
+          <Button name="btn_ptag_3" text="" width="16" height="16" padding="0,6,0,6" bkcolor="#FFFFC53D" borderround="8,8" bordersize="0" bordercolor="#FFFFFFFF" tooltip="黄色标签 (Alt+3)" />
+          <Button name="btn_ptag_4" text="" width="16" height="16" padding="0,6,0,6" bkcolor="#FF52C41A" borderround="8,8" bordersize="0" bordercolor="#FFFFFFFF" tooltip="绿色标签 (Alt+4)" />
+          <Button name="btn_ptag_5" text="" width="16" height="16" padding="0,6,0,6" bkcolor="#FF1890FF" borderround="8,8" bordersize="0" bordercolor="#FFFFFFFF" tooltip="蓝色标签 (Alt+5)" />
+          <Button name="btn_ptag_6" text="" width="16" height="16" padding="0,6,0,6" bkcolor="#FF722ED1" borderround="8,8" bordersize="0" bordercolor="#FFFFFFFF" tooltip="紫色标签 (Alt+6)" />
+          <Button name="btn_ptag_star" text="☆" font="0" width="24" height="22" padding="2,3,0,3" textcolor="#FF8A8A8A" bkcolor="#00000000" hotbkcolor="#18808080" borderround="4,4" tooltip="切换星标 (Alt+B)" />
+          <Button name="btn_ptag_clear" text="×" font="0" width="20" height="22" padding="0,3,0,3" textcolor="#FF8A8A8A" bkcolor="#00000000" hotbkcolor="#18808080" borderround="4,4" visible="false" tooltip="清除标签 (Alt+0)" />
+          <Label name="preview_tag_label" text="" font="2" textcolor="#FF8A8A8A" valign="vcenter" endellipsis="true" />
+        </HorizontalLayout>
         <Control name="preview_gap_action" height="10" visible="false" />
         <Button name="btn_preview_share" text="共享" width="96" height="34" visible="false" align="center" textcolor="#FF303030" bkcolor="#FFFFFFFF" hotbkcolor="#FFF3F3F3" pushedbkcolor="#FFE5E5E5" bordercolor="#FFD6D6D6" bordersize="1" borderround="6,6" tooltip="共享" foreimage="" hotforeimage="" />
         <Control name="preview_gap_image" height="16" visible="false" />

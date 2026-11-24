@@ -138,6 +138,7 @@ private:
     static constexpr UINT kMsgShellNavigation = WM_APP + 0x453;
     static constexpr UINT kMsgShellSelection = WM_APP + 0x454;
     static constexpr UINT kMsgShellFolderOpen = WM_APP + 0x456;
+    static constexpr UINT kMsgShellTagAction = WM_APP + 0x457;
     struct DirEntry {
         std::wstring name;
         std::wstring fullPath;
@@ -669,8 +670,10 @@ private:
     bool RenameItem(const ClipboardItem& item, const std::wstring& newName);
 
     void ShowItemContextMenu(CControlUI* pItem, POINT ptScreen);
+    void ShowTagNavContextMenu(CControlUI* btn, POINT ptScreen);
+    void UpdatePreviewTagBar();
     // explore = navigation tree (CMF_EXPLORE), as in Explorer's folder pane.
-    bool ShowShellContextMenu(const std::vector<std::wstring>& paths, POINT ptScreen, bool explore = false);
+    bool ShowShellContextMenu(const std::vector<std::wstring>& paths, POINT ptScreen, bool explore = false, bool includeFastFileTags = false);
     bool ShowShellBackgroundContextMenu(const std::wstring& folderPath, POINT ptScreen);
     // 此电脑 itself (tree root, quick-access row, favourite chip): the Computer item's own menu.
     bool ShowThisPcContextMenu(POINT ptScreen, bool explore);

@@ -156,8 +156,84 @@ void CMainWnd::ShowPreviewDetails(bool showMeta, bool showImage, bool showAction
         sep->SetVisible(showMeta);
     if (CControlUI* gap = m_PaintManager.FindControl(_T("preview_gap_text")))
         gap->SetVisible(false);
+    UpdatePreviewTagBar();
     if (m_pPreviewPane)
         m_pPreviewPane->NeedUpdate();
+}
+
+void CMainWnd::UpdatePreviewTagBar()
+{
+    CControlUI* bar = m_PaintManager.FindControl(_T("preview_tag_bar"));
+    if (!bar) return;
+
+    std::vector<ClipboardItem> items;
+    CollectSelectedItems(items);
+    if (items.empty() && !m_currentPath.empty() && !IsThisPcPath(m_currentPath)
+        && !FileTagManager::IsTagViewPath(m_currentPath)) {
+        items.push_back({ m_currentPath, true });
+    }
+    if (items.empty()) {
+        bar->SetVisible(false);
+        return;
+    }
+
+    bar->SetVisible(true);
+    auto& mgr = FileTagManager::Instance();
+    const bool dark = IsDarkThemeActive();
+    FileTagColor commonColor = FileTagColor::None;
+    bool hasCommonColor = false;
+    bool allStarred = true;
+    bool anyTagged = false;
+    for (size_t i = 0; i < items.size(); ++i) {
+        const FileTagInfo info = mgr.GetTag(items[i].path);
+        if (info.color != FileTagColor::None || info.starred) anyTagged = true;
+        if (!info.starred) allStarred = false;
+        if (i == 0) {
+            commonColor = info.color;
+            hasCommonColor = (info.color != FileTagColor::None);
+        } else if (info.color != commonColor) {
+            hasCommonColor = false;
+        }
+    }
+
+    const LPCWSTR ringBorder = dark ? L"#FFFFFFFF" : L"#FF1A1A1A";
+    for (int i = 1; i <= 6; ++i) {
+        CDuiString btnName;
+        btnName.Format(_T("btn_ptag_%d"), i);
+        if (CControlUI* btn = m_PaintManager.FindControl(btnName)) {
+            const auto color = static_cast<FileTagColor>(i);
+            const bool active = hasCommonColor && commonColor == color;
+            btn->SetAttribute(_T("bordersize"), active ? _T("2") : _T("0"));
+            btn->SetAttribute(_T("bordercolor"), ringBorder);
+            std::wstring tip = mgr.GetDisplayName(color) + L"标签 (Alt+" + std::to_wstring(i) + L")";
+            btn->SetToolTip(tip.c_str());
+            btn->Invalidate();
+        }
+    }
+    if (CControlUI* starBtn = m_PaintManager.FindControl(_T("btn_ptag_star"))) {
+        starBtn->SetText(allStarred ? _T("★") : _T("☆"));
+        starBtn->SetAttribute(_T("textcolor"), allStarred ? L"#FFFFB800" : (dark ? L"#FFA0A0A0" : L"#FF6B7280"));
+        starBtn->Invalidate();
+    }
+    if (CControlUI* clearBtn = m_PaintManager.FindControl(_T("btn_ptag_clear"))) {
+        clearBtn->SetVisible(anyTagged);
+        clearBtn->SetAttribute(_T("textcolor"), dark ? L"#FFA0A0A0" : L"#FF6B7280");
+        clearBtn->Invalidate();
+    }
+    if (CControlUI* lbl = m_PaintManager.FindControl(_T("preview_tag_label"))) {
+        std::wstring text;
+        if (hasCommonColor) {
+            text = mgr.GetDisplayName(commonColor);
+        } else if (items.size() == 1 && items[0].isDir && !anyTagged) {
+            const auto desc = mgr.GetDescendantSummary(items[0].path);
+            if (desc.count > 0) {
+                text = L"含 " + std::to_wstring(desc.count) + L" 项标记";
+            }
+        }
+        lbl->SetText(text.c_str());
+        lbl->SetAttribute(_T("textcolor"), dark ? L"#FFB3B3B3" : L"#FF616161");
+        lbl->Invalidate();
+    }
 }
 
 void CMainWnd::ClearPreviewMeta()

@@ -883,6 +883,7 @@ void CMainWnd::ApplyTagColorToSelection(FileTagColor color)
     }
     FileTagManager::Instance().SetColorBatch(paths, color);
     RebuildLeftTagRows();
+    UpdatePreviewTagBar();
 
     if (m_shellBrowser && m_shellBrowser->IsCreated()) {
         m_shellBrowser->Redraw();
@@ -895,7 +896,7 @@ void CMainWnd::ApplyTagColorToSelection(FileTagColor color)
         UpdateStatus(msg.c_str());
     } else {
         std::wstring msg = L"已为 " + std::to_wstring(items.size()) + L" 个项目设置" +
-            FileTagManager::GetColorName(color) + L"标签";
+            FileTagManager::Instance().GetDisplayName(color) + L"标签";
         UpdateStatus(msg.c_str());
     }
 }
@@ -921,6 +922,7 @@ void CMainWnd::ToggleStarSelection()
     }
     FileTagManager::Instance().ToggleStarredBatch(paths);
     RebuildLeftTagRows();
+    UpdatePreviewTagBar();
 
     if (m_shellBrowser && m_shellBrowser->IsCreated()) {
         m_shellBrowser->Redraw();

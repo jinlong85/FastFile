@@ -28,7 +28,7 @@ FastFileSettings FastFileSettings::Load(const std::wstring& path) {
     FF_READ(startup);FF_READ(externalNewWindow);FF_READ(reuseTabs);FF_READ(confirmClose);
     FF_READ(density);FF_READ(navigationFont);FF_READ(tabHeight);FF_READ(favoritesHeight);
     FF_READ(tabWidthPercent);FF_READ(navigationScrollbar);FF_READ(defaultView);FF_READ(rememberViews);
-    FF_READ(sortColumn);FF_READ(sortAscending);FF_READ(grouping);FF_READ(backdropType);FF_READ(themeMode);
+    FF_READ(sortColumn);FF_READ(sortAscending);FF_READ(grouping);FF_READ(backdropType);FF_READ(themeMode);FF_READ(syncFolderTagIcons);
 #undef FF_READ
     wchar_t text[32768]{};GetPrivateProfileStringW(L"Preferences",L"startupPath",L"",text,_countof(text),path.c_str());
     s.startupPath=text;s.Normalize();return s;
@@ -42,7 +42,7 @@ bool FastFileSettings::Save(const std::wstring& path) const {
     FF_WRITE(startup);FF_WRITE(externalNewWindow);FF_WRITE(reuseTabs);FF_WRITE(confirmClose);
     FF_WRITE(density);FF_WRITE(navigationFont);FF_WRITE(tabHeight);FF_WRITE(favoritesHeight);
     FF_WRITE(tabWidthPercent);FF_WRITE(navigationScrollbar);FF_WRITE(defaultView);FF_WRITE(rememberViews);
-    FF_WRITE(sortColumn);FF_WRITE(sortAscending);FF_WRITE(grouping);FF_WRITE(backdropType);FF_WRITE(themeMode);
+    FF_WRITE(sortColumn);FF_WRITE(sortAscending);FF_WRITE(grouping);FF_WRITE(backdropType);FF_WRITE(themeMode);FF_WRITE(syncFolderTagIcons);
 #undef FF_WRITE
     text+=L"startupPath="+s.startupPath+L"\r\n";
     const auto temporary=path+L".tmp-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64());
@@ -60,7 +60,7 @@ enum { Startup=110,StartupPath,External,Reuse,ClosePrompt,Density,Font,TabHeight
        View,Remember,Sort,Ascending,Grouping,Context,DefaultFolders,DefaultComputer,ExplorerTakeover,
        Browse=190,RestoreWindows,DetectIntegration,RepairIntegration,IntegrationDetails,ConfigureManager,
        AboutSummary,AboutPath,AboutRefresh,AboutInstall,AboutLogs,AboutCopy,AboutProject,AboutChanges,AboutFeedback,AboutLicense,AboutResult,AboutCheckUpdate,
-       Backdrop=208,ThemeMode=209 };
+       Backdrop=208,ThemeMode=209,SyncFolderTagIcons=210 };
 static_assert(View==121 && DefaultFolders==127 && AboutCheckUpdate==207 && Backdrop==208,
     "New settings controls must preserve existing control IDs.");
 struct SettingsDialog {
@@ -153,6 +153,7 @@ struct SettingsDialog {
         Combo(Sort,L"默认排序",164,2,{L"名称",L"修改日期",L"类型",L"大小"},draft.sortColumn);
         Combo(Ascending,L"排序方向",206,2,{L"升序",L"降序"},draft.sortAscending?0:1);
         Combo(Grouping,L"默认分组",248,2,{L"遵循 Windows 文件夹设置",L"不分组",L"修改日期",L"类型"},draft.grouping+1);
+        Check(SyncFolderTagIcons,L"将文件夹颜色标签同步到 Windows 文件夹图标",296,2,draft.syncFolderTagIcons);
         Check(DefaultFolders,L"默认使用 FastFile",74,3,draft.defaultFolders);
         Add(L"STATIC",L"通过 FastFile 打开文件夹、磁盘和“此电脑”，并接收其他应用的打开文件夹请求。",0,30,118,566,52,SS_LEFT,3);
         Add(L"STATIC",L"开启后，独立代理随登录启动；关闭窗口会退出界面进程。直接调用资源管理器的应用可能短暂显示原窗口，确认目录加载成功后自动转交。",0,30,182,566,76,SS_LEFT,3);
@@ -206,6 +207,7 @@ struct SettingsDialog {
         s.themeMode=Choice(ThemeMode);
         s.defaultView=Choice(View);s.rememberViews=Checked(Remember);s.sortColumn=Choice(Sort);
         s.sortAscending=Choice(Ascending)==0;s.grouping=Choice(Grouping)-1;
+        s.syncFolderTagIcons=Checked(SyncFolderTagIcons);
         s.SetDefaultManager(Checked(DefaultFolders));
         s.Normalize();return s;
     }
@@ -465,6 +467,11 @@ bool CMainWnd::CommitSettings(FastFileSettings next) {
     if(next.sortColumn!=previous.sortColumn || next.sortAscending!=previous.sortAscending) {
         m_sortColumn=static_cast<SortColumn>(next.sortColumn);m_sortAscending=next.sortAscending;
     }
+    if(next.syncFolderTagIcons!=previous.syncFolderTagIcons) {
+        FileTagManager::Instance().SyncAllFolderIcons(next.syncFolderTagIcons);
+    } else {
+        FileTagManager::Instance().SetSyncFolderIcons(next.syncFolderTagIcons);
+    }
     ApplySettingsAppearance();
     if(next.defaultView!=previous.defaultView || next.rememberViews!=previous.rememberViews)SetViewMode(static_cast<ViewMode>(next.defaultView));
     ApplyShellViewMode();
@@ -481,9 +488,10 @@ bool CMainWnd::CommitIntegrationSettings(const FastFileSettings& settings) {
     UpdateShellWindowRegistration();UpdateExplorerTakeover();return true;
 }
 void CMainWnd::ApplySettingsAppearance() {
+    FileTagManager::Instance().SetSyncFolderIcons(m_settings.syncFolderTagIcons);
     ApplyDpiScaledFonts();ApplyDpiScaledChrome();ApplyUiChromeTokens();
     ApplyDwmChrome();
-    RebuildFavoritesBar();RebuildTabStrip();RebuildLeftQuickRows();RebuildLeftTagRows();RebuildBreadcrumb();UpdateNavButtons();
+    RebuildFavoritesBar();RebuildTabStrip();RebuildLeftQuickRows();RebuildLeftTagRows();RebuildBreadcrumb();UpdateNavButtons();UpdatePreviewTagBar();
     std::function<void(CTreeNodeUI*)> update=[&](CTreeNodeUI* node){
         if(!node)return;node->SetFixedHeight(DpiScale(m_settings.NavigationRowHeight()));
         for(int i=0;i<node->GetCountChild();++i)update(node->GetChildNode(i));

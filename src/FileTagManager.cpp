@@ -5,9 +5,11 @@
 #include <cstdlib>
 #include <cwctype>
 #include <objidl.h>
+#include <shlobj.h>
 #include <gdiplus.h>
 
 #pragma comment(lib, "gdiplus.lib")
+#pragma comment(lib, "shell32.lib")
 
 namespace {
 
@@ -208,6 +210,15 @@ std::wstring FileTagManager::GetTagFilePath() {
     return dir + L"\\file_tags.json";
 }
 
+std::wstring FileTagManager::GetTagNamesFilePath() {
+    wchar_t appdata[MAX_PATH] = {};
+    DWORD n = ::GetEnvironmentVariableW(L"APPDATA", appdata, MAX_PATH);
+    std::wstring dir = (n > 0 && n < MAX_PATH) ? appdata : L".";
+    dir += L"\\FastFile";
+    ::CreateDirectoryW(dir.c_str(), nullptr);
+    return dir + L"\\tag_names.ini";
+}
+
 COLORREF FileTagManager::GetColorRef(FileTagColor color) {
     switch (color) {
     case FileTagColor::Red:    return RGB(255, 77, 79);   // #FF4D4F
@@ -261,7 +272,7 @@ std::wstring FileTagManager::TagViewDisplayName(const std::wstring& path) {
     bool starredOnly = false;
     if (!ParseTagViewPath(path, color, starredOnly)) return path;
     if (starredOnly) return L"★ 星标项目";
-    if (color != FileTagColor::None) return std::wstring(GetColorName(color)) + L"标签";
+    if (color != FileTagColor::None) return Instance().GetDisplayName(color) + L"标签";
     return L"所有已标记项目";
 }
 
@@ -382,7 +393,9 @@ std::string FileTagManager::SerializeTagsJson(const std::unordered_map<std::wstr
 void FileTagManager::Load() {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_tags.clear();
+    m_ancestorSummary.clear();
     m_loaded = true;
+    LoadCustomNamesLocked();
     const std::wstring filePath = GetTagFilePath();
     HANDLE file = ::CreateFileW(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
     if (file == INVALID_HANDLE_VALUE) return;
@@ -403,6 +416,7 @@ void FileTagManager::Load() {
     text.resize(read);
 
     m_tags = ParseTagsJson(text);
+    RebuildAncestorIndexLocked();
 }
 
 bool FileTagManager::SaveLocked() const {
@@ -446,30 +460,43 @@ void FileTagManager::SetColor(const std::wstring& path, FileTagColor color) {
 
 void FileTagManager::SetColorBatch(const std::vector<std::wstring>& paths, FileTagColor color) {
     if (paths.empty()) return;
-    std::lock_guard<std::mutex> lock(m_mutex);
-    bool changed = false;
-    for (const auto& path : paths) {
-        std::wstring norm = Normalize(path);
-        if (norm.empty()) continue;
-        if (color == FileTagColor::None) {
-            auto it = m_tags.find(norm);
-            if (it != m_tags.end()) {
-                it->second.color = FileTagColor::None;
-                if (!it->second.starred) {
-                    m_tags.erase(it);
+    bool syncIcons = false;
+    std::vector<std::wstring> syncPaths;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        syncIcons = m_syncFolderIcons;
+        bool changed = false;
+        for (const auto& path : paths) {
+            std::wstring norm = Normalize(path);
+            if (norm.empty()) continue;
+            if (color == FileTagColor::None) {
+                auto it = m_tags.find(norm);
+                if (it != m_tags.end()) {
+                    it->second.color = FileTagColor::None;
+                    if (!it->second.starred) {
+                        m_tags.erase(it);
+                    }
+                    changed = true;
+                    if (syncIcons) syncPaths.push_back(path);
                 }
-                changed = true;
-            }
-        } else {
-            auto& entry = m_tags[norm];
-            if (entry.color != color) {
-                entry.color = color;
-                changed = true;
+            } else {
+                auto& entry = m_tags[norm];
+                if (entry.color != color) {
+                    entry.color = color;
+                    changed = true;
+                    if (syncIcons) syncPaths.push_back(path);
+                }
             }
         }
+        if (changed) {
+            RebuildAncestorIndexLocked();
+            SaveLocked();
+        }
     }
-    if (changed) {
-        SaveLocked();
+    if (syncIcons) {
+        for (const auto& p : syncPaths) {
+            SyncFolderIcon(p, color);
+        }
     }
 }
 
@@ -484,12 +511,14 @@ void FileTagManager::SetStarred(const std::wstring& path, bool starred) {
             if (it->second.color == FileTagColor::None) {
                 m_tags.erase(it);
             }
+            RebuildAncestorIndexLocked();
             SaveLocked();
         }
     } else {
         auto& entry = m_tags[norm];
         if (!entry.starred) {
             entry.starred = true;
+            RebuildAncestorIndexLocked();
             SaveLocked();
         }
     }
@@ -522,6 +551,7 @@ void FileTagManager::ToggleStarredBatch(const std::vector<std::wstring>& paths) 
         }
     }
     if (changed) {
+        RebuildAncestorIndexLocked();
         SaveLocked();
     }
 }
@@ -529,11 +559,19 @@ void FileTagManager::ToggleStarredBatch(const std::vector<std::wstring>& paths) 
 void FileTagManager::ClearTag(const std::wstring& path) {
     std::wstring norm = Normalize(path);
     if (norm.empty()) return;
-    std::lock_guard<std::mutex> lock(m_mutex);
-    auto it = m_tags.find(norm);
-    if (it != m_tags.end()) {
-        m_tags.erase(it);
-        SaveLocked();
+    bool shouldClearIcon = false;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        auto it = m_tags.find(norm);
+        if (it != m_tags.end()) {
+            shouldClearIcon = m_syncFolderIcons && (it->second.color != FileTagColor::None);
+            m_tags.erase(it);
+            RebuildAncestorIndexLocked();
+            SaveLocked();
+        }
+    }
+    if (shouldClearIcon) {
+        SyncFolderIcon(path, FileTagColor::None);
     }
 }
 
@@ -542,6 +580,7 @@ bool FileTagManager::RenamePath(const std::wstring& oldPath, const std::wstring&
     const std::wstring newNorm = Normalize(newPath);
     std::lock_guard<std::mutex> lock(m_mutex);
     if (!RenameInMap(m_tags, oldNorm, newNorm)) return false;
+    RebuildAncestorIndexLocked();
     SaveLocked();
     return true;
 }
@@ -556,6 +595,7 @@ size_t FileTagManager::RenamePathsBatch(const std::vector<std::pair<std::wstring
         }
     }
     if (movedCount > 0) {
+        RebuildAncestorIndexLocked();
         SaveLocked();
     }
     return movedCount;
@@ -578,6 +618,7 @@ size_t FileTagManager::PruneMissingPaths() {
     for (const auto& key : toErase) {
         m_tags.erase(key);
     }
+    RebuildAncestorIndexLocked();
     SaveLocked();
     return toErase.size();
 }
@@ -666,4 +707,386 @@ void FileTagManager::DrawStar(HDC dc, int cx, int cy, int outerR, COLORREF fill,
     ::SetDCBrushColor(dc, oldBrColor);
     ::SelectObject(dc, oldPen);
     ::SelectObject(dc, oldBr);
+}
+
+void FileTagManager::RebuildAncestorIndexLocked() {
+    m_ancestorSummary.clear();
+    for (const auto& kv : m_tags) {
+        if (kv.second.color == FileTagColor::None && !kv.second.starred) continue;
+        std::wstring cur = kv.first;
+        while (true) {
+            const size_t slash = cur.find_last_of(L'\\');
+            if (slash == std::wstring::npos) break;
+            if (slash == 2 && cur.size() >= 3 && cur[1] == L':') {
+                // Stop above drive root (don't index "c:\")
+                break;
+            }
+            cur.resize(slash);
+            if (cur.size() <= 2) break;
+            auto& summary = m_ancestorSummary[cur];
+            ++summary.count;
+            if (kv.second.starred) ++summary.starredCount;
+            if (summary.firstColor == FileTagColor::None && kv.second.color != FileTagColor::None) {
+                summary.firstColor = kv.second.color;
+            }
+        }
+    }
+}
+
+DescendantTagSummary FileTagManager::GetDescendantSummary(const std::wstring& folderPath) const {
+    const std::wstring norm = Normalize(folderPath);
+    if (norm.empty()) return {};
+    std::lock_guard<std::mutex> lock(m_mutex);
+    auto it = m_ancestorSummary.find(norm);
+    if (it != m_ancestorSummary.end()) return it->second;
+    return {};
+}
+
+void FileTagManager::LoadCustomNamesLocked() {
+    for (auto& n : m_customNames) n.clear();
+    const std::wstring iniPath = GetTagNamesFilePath();
+    for (int i = 1; i <= 6; ++i) {
+        wchar_t key[16]{};
+        swprintf_s(key, L"Color%d", i);
+        wchar_t buf[64]{};
+        ::GetPrivateProfileStringW(L"TagNames", key, L"", buf, _countof(buf), iniPath.c_str());
+        std::wstring name = buf;
+        while (!name.empty() && (name.front() == L' ' || name.front() == L'\t')) name.erase(name.begin());
+        while (!name.empty() && (name.back() == L' ' || name.back() == L'\t')) name.pop_back();
+        if (name.size() > 24) name.resize(24);
+        m_customNames[static_cast<size_t>(i)] = std::move(name);
+    }
+}
+
+void FileTagManager::SaveCustomNamesLocked() const {
+    const std::wstring iniPath = GetTagNamesFilePath();
+    for (int i = 1; i <= 6; ++i) {
+        wchar_t key[16]{};
+        swprintf_s(key, L"Color%d", i);
+        const auto& name = m_customNames[static_cast<size_t>(i)];
+        ::WritePrivateProfileStringW(L"TagNames", key, name.empty() ? nullptr : name.c_str(), iniPath.c_str());
+    }
+}
+
+std::wstring FileTagManager::GetDisplayName(FileTagColor color) const {
+    const int idx = static_cast<int>(color);
+    if (idx >= 1 && idx <= 6) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (!m_customNames[static_cast<size_t>(idx)].empty()) {
+            return m_customNames[static_cast<size_t>(idx)];
+        }
+    }
+    return GetColorName(color);
+}
+
+void FileTagManager::SetCustomColorName(FileTagColor color, const std::wstring& name) {
+    const int idx = static_cast<int>(color);
+    if (idx < 1 || idx > 6) return;
+    std::wstring cleaned = name;
+    while (!cleaned.empty() && (cleaned.front() == L' ' || cleaned.front() == L'\t')) cleaned.erase(cleaned.begin());
+    while (!cleaned.empty() && (cleaned.back() == L' ' || cleaned.back() == L'\t')) cleaned.pop_back();
+    if (cleaned.size() > 24) cleaned.resize(24);
+    if (cleaned == GetColorName(color)) cleaned.clear();
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_customNames[static_cast<size_t>(idx)] = std::move(cleaned);
+    SaveCustomNamesLocked();
+}
+
+void FileTagManager::SetSyncFolderIcons(bool enabled) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_syncFolderIcons = enabled;
+}
+
+bool FileTagManager::IsSyncFolderIconsEnabled() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_syncFolderIcons;
+}
+
+void FileTagManager::SyncAllFolderIcons(bool enabled) {
+    std::vector<std::pair<std::wstring, FileTagColor>> folders;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_syncFolderIcons = enabled;
+        for (const auto& kv : m_tags) {
+            if (kv.second.color != FileTagColor::None) {
+                folders.push_back({ kv.first, kv.second.color });
+            }
+        }
+    }
+    for (const auto& pair : folders) {
+        SyncFolderIcon(pair.first, enabled ? pair.second : FileTagColor::None);
+    }
+}
+
+namespace {
+
+bool FindPngEncoderClsid(CLSID* outClsid) {
+    UINT num = 0, size = 0;
+    if (Gdiplus::GetImageEncodersSize(&num, &size) != Gdiplus::Ok || size == 0) return false;
+    std::vector<BYTE> buf(size);
+    auto* info = reinterpret_cast<Gdiplus::ImageCodecInfo*>(buf.data());
+    if (Gdiplus::GetImageEncoders(num, size, info) != Gdiplus::Ok) return false;
+    for (UINT i = 0; i < num; ++i) {
+        if (info[i].MimeType && wcscmp(info[i].MimeType, L"image/png") == 0) {
+            *outClsid = info[i].Clsid;
+            return true;
+        }
+    }
+    return false;
+}
+
+void AddRoundRectPath(Gdiplus::GraphicsPath& path, Gdiplus::REAL x, Gdiplus::REAL y,
+                      Gdiplus::REAL w, Gdiplus::REAL h, Gdiplus::REAL r) {
+    const Gdiplus::REAL d = r * 2.0f;
+    path.AddArc(x, y, d, d, 180.0f, 90.0f);
+    path.AddArc(x + w - d, y, d, d, 270.0f, 90.0f);
+    path.AddArc(x + w - d, y + h - d, d, d, 0.0f, 90.0f);
+    path.AddArc(x, y + h - d, d, d, 90.0f, 90.0f);
+    path.CloseFigure();
+}
+
+Gdiplus::Color ShiftColor(COLORREF base, int delta) {
+    const int r = std::clamp(static_cast<int>(GetRValue(base)) + delta, 0, 255);
+    const int g = std::clamp(static_cast<int>(GetGValue(base)) + delta, 0, 255);
+    const int b = std::clamp(static_cast<int>(GetBValue(base)) + delta, 0, 255);
+    return Gdiplus::Color(255, static_cast<BYTE>(r), static_cast<BYTE>(g), static_cast<BYTE>(b));
+}
+
+} // namespace
+
+std::wstring FileTagManager::EnsureColorFolderIconFile(FileTagColor color) {
+    const int idx = static_cast<int>(color);
+    if (idx < 1 || idx > 6) return {};
+    static const wchar_t* kNames[7] = { L"", L"red", L"orange", L"yellow", L"green", L"blue", L"purple" };
+    wchar_t appdata[MAX_PATH] = {};
+    DWORD n = ::GetEnvironmentVariableW(L"APPDATA", appdata, MAX_PATH);
+    std::wstring dir = (n > 0 && n < MAX_PATH) ? appdata : L".";
+    dir += L"\\FastFile";
+    ::CreateDirectoryW(dir.c_str(), nullptr);
+    dir += L"\\icons";
+    ::CreateDirectoryW(dir.c_str(), nullptr);
+    const std::wstring icoPath = dir + L"\\folder_" + kNames[idx] + L".ico";
+    if (::GetFileAttributesW(icoPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        return icoPath;
+    }
+    if (!EnsureTagGdiplus()) return {};
+    CLSID pngClsid{};
+    if (!FindPngEncoderClsid(&pngClsid)) return {};
+
+    constexpr int kSize = 128;
+    Gdiplus::Bitmap bmp(kSize, kSize, PixelFormat32bppARGB);
+    {
+        Gdiplus::Graphics g(&bmp);
+        g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+        g.Clear(Gdiplus::Color(0, 0, 0, 0));
+
+        const COLORREF base = GetColorRef(color);
+        // Back folder plate with top-left tab
+        Gdiplus::GraphicsPath backPath;
+        backPath.AddArc(8.0f, 18.0f, 16.0f, 16.0f, 180.0f, 90.0f);
+        backPath.AddLine(16.0f, 18.0f, 48.0f, 18.0f);
+        backPath.AddLine(48.0f, 18.0f, 60.0f, 30.0f);
+        backPath.AddLine(60.0f, 30.0f, 112.0f, 30.0f);
+        backPath.AddArc(104.0f, 30.0f, 16.0f, 16.0f, 270.0f, 90.0f);
+        backPath.AddArc(104.0f, 94.0f, 16.0f, 16.0f, 0.0f, 90.0f);
+        backPath.AddArc(8.0f, 94.0f, 16.0f, 16.0f, 90.0f, 90.0f);
+        backPath.CloseFigure();
+        Gdiplus::SolidBrush backBrush(ShiftColor(base, -36));
+        g.FillPath(&backBrush, &backPath);
+
+        // Front folder body with subtle gradient
+        Gdiplus::GraphicsPath frontPath;
+        AddRoundRectPath(frontPath, 8.0f, 38.0f, 112.0f, 72.0f, 9.0f);
+        Gdiplus::LinearGradientBrush frontBrush(
+            Gdiplus::PointF(8.0f, 38.0f), Gdiplus::PointF(8.0f, 110.0f),
+            ShiftColor(base, 18), ShiftColor(base, -18));
+        g.FillPath(&frontBrush, &frontPath);
+
+        // Soft top highlight line
+        Gdiplus::Pen hiPen(Gdiplus::Color(90, 255, 255, 255), 2.0f);
+        g.DrawLine(&hiPen, 16.0f, 40.0f, 112.0f, 40.0f);
+    }
+
+    IStream* stream = nullptr;
+    if (FAILED(::CreateStreamOnHGlobal(nullptr, TRUE, &stream)) || !stream) return {};
+    if (bmp.Save(stream, &pngClsid, nullptr) != Gdiplus::Ok) {
+        stream->Release();
+        return {};
+    }
+    HGLOBAL hMem = nullptr;
+    if (FAILED(::GetHGlobalFromStream(stream, &hMem)) || !hMem) {
+        stream->Release();
+        return {};
+    }
+    const SIZE_T pngBytes = ::GlobalSize(hMem);
+    void* pngPtr = ::GlobalLock(hMem);
+    bool writtenOk = false;
+    if (pngPtr && pngBytes > 0 && pngBytes <= 1024u * 1024u) {
+        std::vector<BYTE> ico(22 + pngBytes, 0);
+        // ICONDIR (6 bytes)
+        ico[2] = 1; // type = ICO
+        ico[4] = 1; // count = 1
+        // ICONDIRENTRY (16 bytes)
+        ico[6] = static_cast<BYTE>(kSize);
+        ico[7] = static_cast<BYTE>(kSize);
+        ico[10] = 1; // planes
+        ico[12] = 32; // bpp
+        const DWORD sz = static_cast<DWORD>(pngBytes);
+        memcpy(&ico[14], &sz, sizeof(sz));
+        const DWORD offset = 22;
+        memcpy(&ico[18], &offset, sizeof(offset));
+        memcpy(&ico[22], pngPtr, pngBytes);
+
+        HANDLE f = ::CreateFileW(icoPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (f != INVALID_HANDLE_VALUE) {
+            DWORD written = 0;
+            writtenOk = ::WriteFile(f, ico.data(), static_cast<DWORD>(ico.size()), &written, nullptr)
+                && written == ico.size();
+            ::CloseHandle(f);
+        }
+    }
+    if (pngPtr) ::GlobalUnlock(hMem);
+    stream->Release();
+    return writtenOk ? icoPath : std::wstring{};
+}
+
+bool FileTagManager::SyncFolderIcon(const std::wstring& folderPath, FileTagColor color) {
+    if (folderPath.size() <= 3) return false; // Never touch drive roots like "C:\"
+    const DWORD attrs = ::GetFileAttributesW(folderPath.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES || !(attrs & FILE_ATTRIBUTE_DIRECTORY)) return false;
+
+    if (color == FileTagColor::None) {
+        // Only clear desktop.ini icon if it points to FastFile's own icon directory.
+        const std::wstring desktopIni = folderPath + L"\\desktop.ini";
+        if (::GetFileAttributesW(desktopIni.c_str()) == INVALID_FILE_ATTRIBUTES) return false;
+        wchar_t existing[MAX_PATH * 2]{};
+        ::GetPrivateProfileStringW(L".ShellClassInfo", L"IconResource", L"", existing, _countof(existing), desktopIni.c_str());
+        std::wstring lower = Normalize(existing);
+        if (lower.find(L"\\fastfile\\icons\\folder_") == std::wstring::npos) return false;
+
+        SHFOLDERCUSTOMSETTINGS fcs{};
+        fcs.dwSize = sizeof(fcs);
+        fcs.dwMask = FCSM_ICONFILE;
+        fcs.pszIconFile = nullptr;
+        fcs.cchIconFile = 0;
+        fcs.iIconIndex = 0;
+        const HRESULT hr = ::SHGetSetFolderCustomSettings(&fcs, folderPath.c_str(), FCS_FORCEWRITE);
+        ::SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW, folderPath.c_str(), nullptr);
+        return SUCCEEDED(hr);
+    }
+
+    const std::wstring iconFile = EnsureColorFolderIconFile(color);
+    if (iconFile.empty()) return false;
+    SHFOLDERCUSTOMSETTINGS fcs{};
+    fcs.dwSize = sizeof(fcs);
+    fcs.dwMask = FCSM_ICONFILE;
+    fcs.pszIconFile = const_cast<LPWSTR>(iconFile.c_str());
+    fcs.cchIconFile = 0;
+    fcs.iIconIndex = 0;
+    const HRESULT hr = ::SHGetSetFolderCustomSettings(&fcs, folderPath.c_str(), FCS_FORCEWRITE);
+    if (SUCCEEDED(hr)) {
+        ::SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW, folderPath.c_str(), nullptr);
+    }
+    return SUCCEEDED(hr);
+}
+
+void FileTagManager::DrawDescendantRing(HDC dc, int cx, int cy, int radius, COLORREF color) {
+    if (!dc || radius <= 0) return;
+    if (EnsureTagGdiplus()) {
+        Gdiplus::Graphics g(dc);
+        g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+        const Gdiplus::REAL x = static_cast<Gdiplus::REAL>(cx - radius);
+        const Gdiplus::REAL y = static_cast<Gdiplus::REAL>(cy - radius);
+        const Gdiplus::REAL d = static_cast<Gdiplus::REAL>(radius * 2);
+        Gdiplus::Pen pen(ColorRefToGdip(color, 210), 1.6f);
+        g.DrawEllipse(&pen, x, y, d, d);
+        return;
+    }
+    HGDIOBJ oldBr = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
+    HGDIOBJ oldPen = ::SelectObject(dc, ::GetStockObject(DC_PEN));
+    const COLORREF oldPenColor = ::SetDCPenColor(dc, color);
+    ::Ellipse(dc, cx - radius, cy - radius, cx + radius + 1, cy + radius + 1);
+    ::SetDCPenColor(dc, oldPenColor);
+    ::SelectObject(dc, oldPen);
+    ::SelectObject(dc, oldBr);
+}
+
+int FileTagManager::DrawTagPill(HDC dc, int x, int cy, int maxRight, HFONT font, COLORREF color,
+                                const std::wstring& label, bool darkMode, int dpi) {
+    if (!dc || label.empty() || x >= maxRight - 16) return 0;
+    const int saved = ::SaveDC(dc);
+    if (font) ::SelectObject(dc, font);
+    SIZE textSz{};
+    ::GetTextExtentPoint32W(dc, label.c_str(), static_cast<int>(label.size()), &textSz);
+    const int padX = MulDiv(6, dpi, 96);
+    const int dotR = MulDiv(3, dpi, 96);
+    const int dotGap = MulDiv(4, dpi, 96);
+    const int pillH = MulDiv(17, dpi, 96);
+    const int pillW = padX + dotR * 2 + dotGap + textSz.cx + padX;
+    if (x + pillW > maxRight) {
+        ::RestoreDC(dc, saved);
+        return 0;
+    }
+    const int top = cy - pillH / 2;
+    if (EnsureTagGdiplus()) {
+        Gdiplus::Graphics g(dc);
+        g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        Gdiplus::GraphicsPath path;
+        AddRoundRectPath(path, static_cast<Gdiplus::REAL>(x), static_cast<Gdiplus::REAL>(top),
+            static_cast<Gdiplus::REAL>(pillW), static_cast<Gdiplus::REAL>(pillH),
+            static_cast<Gdiplus::REAL>(pillH) / 2.0f);
+        Gdiplus::SolidBrush bgBrush(ColorRefToGdip(color, darkMode ? 52 : 34));
+        Gdiplus::Pen borderPen(ColorRefToGdip(color, darkMode ? 120 : 95), 1.0f);
+        g.FillPath(&bgBrush, &path);
+        g.DrawPath(&borderPen, &path);
+        Gdiplus::SolidBrush dotBrush(ColorRefToGdip(color, 255));
+        g.FillEllipse(&dotBrush,
+            static_cast<Gdiplus::REAL>(x + padX),
+            static_cast<Gdiplus::REAL>(cy - dotR),
+            static_cast<Gdiplus::REAL>(dotR * 2),
+            static_cast<Gdiplus::REAL>(dotR * 2));
+    } else {
+        DrawTagDot(dc, x + padX + dotR, cy, dotR, color);
+    }
+    ::SetBkMode(dc, TRANSPARENT);
+    ::SetTextColor(dc, darkMode ? RGB(0xEE, 0xEE, 0xEE) : RGB(0x2B, 0x2B, 0x2B));
+    RECT textRc{ x + padX + dotR * 2 + dotGap, top, x + pillW - padX, top + pillH };
+    ::DrawTextW(dc, label.c_str(), -1, &textRc, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+    ::RestoreDC(dc, saved);
+    return pillW;
+}
+
+HBITMAP FileTagManager::CreateMenuColorBitmap(COLORREF color, int size) {
+    if (size <= 0) size = 16;
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = size;
+    bi.bmiHeader.biHeight = -size;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HDC screenDc = ::GetDC(nullptr);
+    HBITMAP hbm = ::CreateDIBSection(screenDc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    ::ReleaseDC(nullptr, screenDc);
+    if (!hbm || !bits) {
+        if (hbm) ::DeleteObject(hbm);
+        return nullptr;
+    }
+    memset(bits, 0, static_cast<size_t>(size) * static_cast<size_t>(size) * 4);
+    if (EnsureTagGdiplus()) {
+        Gdiplus::Bitmap gdipBmp(size, size, size * 4, PixelFormat32bppPARGB, static_cast<BYTE*>(bits));
+        Gdiplus::Graphics g(&gdipBmp);
+        g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+        const Gdiplus::REAL pad = static_cast<Gdiplus::REAL>(size) * 0.18f;
+        const Gdiplus::REAL d = static_cast<Gdiplus::REAL>(size) - pad * 2.0f;
+        Gdiplus::SolidBrush br(ColorRefToGdip(color, 255));
+        Gdiplus::Pen pen(Gdiplus::Color(90, 0, 0, 0), 1.0f);
+        g.FillEllipse(&br, pad, pad, d, d);
+        g.DrawEllipse(&pen, pad, pad, d, d);
+    }
+    return hbm;
 }
