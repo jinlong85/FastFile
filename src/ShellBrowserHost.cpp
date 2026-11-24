@@ -2014,6 +2014,19 @@ LRESULT CALLBACK ShellBrowserHost::HostSubclass(HWND window, UINT msg, WPARAM wp
         auto* pos = reinterpret_cast<WINDOWPOS*>(lp);
         pos->flags &= ~SWP_SHOWWINDOW;
     }
+    if (msg == WM_PAINT && host && host->m_darkNavFrozen) {
+        PAINTSTRUCT ps{};
+        if (HDC dc = BeginPaint(window, &ps)) {
+            RECT rc{};
+            if (GetClientRect(window, &rc)) {
+                const COLORREF old = SetDCBrushColor(dc, RGB(0x19, 0x19, 0x19));
+                FillRect(dc, &rc, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+                SetDCBrushColor(dc, old);
+            }
+            EndPaint(window, &ps);
+            return 0;
+        }
+    }
     if (msg == WM_ERASEBKGND && host && host->m_darkMode) {
         if (PaintDarkEraseBkgnd(window, wp)) return 1;
     }
