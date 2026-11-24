@@ -120,6 +120,38 @@ struct ShellBrowserHostTestAccess {
         }
         check(host.m_listWindow != nullptr && ListView_GetBkColor(host.m_listWindow) == RGB(0x19, 0x19, 0x19),
             "dark-mode list view keeps dark background color after navigation");
+        // F5 / Refresh dark-mode regression: DefView refresh or direct LVM_SETBKCOLOR(white)
+        // must not revert the native SysListView32 background to white in dark mode.
+        host.Refresh();
+        pump();
+        if (host.m_listWindow) {
+            ListView_SetBkColor(host.m_listWindow, RGB(255, 255, 255));
+            check(ListView_GetBkColor(host.m_listWindow) == RGB(0x19, 0x19, 0x19),
+                "dark-mode list view blocks white LVM_SETBKCOLOR reset on F5 refresh");
+        }
+        // Right-click tag submenu injection regression: injecting into a popup exposes
+        // all 6 colors + star + clear and forwards WM_COMMAND activation to parent.
+        host.m_tagCommandMessage = WM_APP + 9;
+        host.SelectAll();
+        HMENU testPopup = CreatePopupMenu();
+        AppendMenuW(testPopup, MF_STRING, 1, L"打开");
+        AppendMenuW(testPopup, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(testPopup, MF_STRING, 2, L"属性");
+        HMENU tagSub = host.InjectTagSubmenu(testPopup);
+        check(tagSub != nullptr && GetMenuItemCount(tagSub) == 10,
+            "InjectTagSubmenu inserts 6 colors, star, clear and separators");
+        if (host.m_viewWindow) {
+            SendMessageW(host.m_viewWindow, WM_COMMAND, MAKEWPARAM(0x7F01, 0), 0);
+            MSG tagMsg{};
+            bool gotTagAction = false;
+            while (PeekMessageW(&tagMsg, parent, WM_APP + 9, WM_APP + 9, PM_REMOVE)) {
+                if (tagMsg.wParam == 1) gotTagAction = true;
+            }
+            check(gotTagAction, "injected tag menu command posts tag action to parent");
+            SendMessageW(host.m_viewWindow, WM_EXITMENULOOP, FALSE, 0);
+        }
+        DestroyMenu(testPopup);
+        host.m_tagCommandMessage = 0;
         host.SetDarkMode(false);
         host.Destroy();pump();
         CoTaskMemFree(target);CoTaskMemFree(nextTarget);

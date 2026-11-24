@@ -537,6 +537,7 @@ void ShellBrowserHost::Refresh()
         EnsureBufferedList(m_listWindow);
         const HRESULT result=view->Refresh();
         view->Release();
+        if (m_darkMode) ApplyListDarkMode();
         TraceNavigation(L"refresh",result);
     }
 }
@@ -2270,25 +2271,56 @@ HMENU ShellBrowserHost::InjectTagSubmenu(HMENU popup)
     }
     InsertMenuW(popup, insertPos + 1, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
     m_injectedTagMenu = sub;
+    m_hoveredTagCmd = 0;
+    m_activatedTagCmd = 0;
+    s_activeMenuHost = this;
+    if (!m_menuFilterHook) {
+        m_menuFilterHook = SetWindowsHookExW(WH_MSGFILTER, MenuFilterProc, nullptr, GetCurrentThreadId());
+    }
     return sub;
 }
 
 LRESULT CALLBACK ShellBrowserHost::MenuFilterProc(int code, WPARAM wp, LPARAM lp)
 {
-    if (code == MSGF_MENU && lp && s_activeMenuHost && s_activeMenuHost->m_injectedTagMenu) {
+    if (code == MSGF_MENU && lp && s_activeMenuHost && s_activeMenuHost->m_injectedTagMenu
+        && s_activeMenuHost->m_activatedTagCmd == 0) {
         const auto* msg = reinterpret_cast<const MSG*>(lp);
-        if (msg->message == WM_LBUTTONUP) {
-            const int idx = MenuItemFromPoint(nullptr, s_activeMenuHost->m_injectedTagMenu, msg->pt);
-            if (idx >= 0) {
-                const UINT id = GetMenuItemID(s_activeMenuHost->m_injectedTagMenu, idx);
-                if (id >= kTagMenuCmdBase && id <= kTagMenuCmdStar) {
-                    s_activeMenuHost->m_activatedTagCmd = id;
+        auto findActiveTagCmd = [&](bool checkCursorOnMenu) -> UINT {
+            HMENU sub = s_activeMenuHost->m_injectedTagMenu;
+            if (!sub) return 0;
+            if (checkCursorOnMenu) {
+                HWND hit = WindowFromPoint(msg->pt);
+                wchar_t cls[32]{};
+                if (!hit || !GetClassNameW(hit, cls, _countof(cls)) || wcscmp(cls, L"#32768") != 0)
+                    return 0;
+            }
+            const int count = GetMenuItemCount(sub);
+            for (int i = 0; i < count; ++i) {
+                const UINT st = GetMenuState(sub, static_cast<UINT>(i), MF_BYPOSITION);
+                if (st != static_cast<UINT>(-1) && (st & MF_HILITE) && !(st & (MF_GRAYED | MF_DISABLED))) {
+                    const UINT id = GetMenuItemID(sub, i);
+                    if (id >= kTagMenuCmdBase && id <= kTagMenuCmdStar) return id;
                 }
             }
+            const UINT hovered = s_activeMenuHost->m_hoveredTagCmd;
+            if (hovered >= kTagMenuCmdBase && hovered <= kTagMenuCmdStar) {
+                const UINT st = GetMenuState(sub, hovered, MF_BYCOMMAND);
+                if (st != static_cast<UINT>(-1) && !(st & (MF_GRAYED | MF_DISABLED))) return hovered;
+            }
+            return 0;
+        };
+
+        UINT cmd = 0;
+        if (msg->message == WM_LBUTTONUP || msg->message == WM_RBUTTONUP) {
+            cmd = findActiveTagCmd(true);
         } else if (msg->message == WM_KEYDOWN && msg->wParam == VK_RETURN) {
-            if (s_activeMenuHost->m_hoveredTagCmd >= kTagMenuCmdBase
-                && s_activeMenuHost->m_hoveredTagCmd <= kTagMenuCmdStar) {
-                s_activeMenuHost->m_activatedTagCmd = s_activeMenuHost->m_hoveredTagCmd;
+            cmd = findActiveTagCmd(false);
+        }
+        if (cmd >= kTagMenuCmdBase && cmd <= kTagMenuCmdStar) {
+            s_activeMenuHost->m_activatedTagCmd = cmd;
+            if (s_activeMenuHost->m_parent && s_activeMenuHost->m_tagCommandMessage) {
+                PostMessageW(s_activeMenuHost->m_parent, s_activeMenuHost->m_tagCommandMessage,
+                    static_cast<WPARAM>(cmd - kTagMenuCmdBase), 0);
             }
         }
     }
@@ -2310,10 +2342,15 @@ LRESULT CALLBACK ShellBrowserHost::ViewSubclass(HWND window, UINT msg, WPARAM wp
             host->m_menuFilterHook = SetWindowsHookExW(WH_MSGFILTER, MenuFilterProc, nullptr, GetCurrentThreadId());
         }
     }
-    if (msg == WM_INITMENUPOPUP && host && host->m_tagCommandMessage && HIWORD(lp) == 0 && !host->m_injectedTagMenu) {
-        const LRESULT defRes = DefSubclassProc(window, msg, wp, lp);
-        host->InjectTagSubmenu(reinterpret_cast<HMENU>(wp));
-        return defRes;
+    if (msg == WM_INITMENUPOPUP && host && host->m_tagCommandMessage && HIWORD(lp) == 0) {
+        if (host->m_injectedTagMenu && reinterpret_cast<HMENU>(wp) == host->m_injectedTagMenu) {
+            return 0;
+        }
+        if (!host->m_injectedTagMenu) {
+            const LRESULT defRes = DefSubclassProc(window, msg, wp, lp);
+            host->InjectTagSubmenu(reinterpret_cast<HMENU>(wp));
+            return defRes;
+        }
     }
     if (msg == WM_MENUSELECT && host && host->m_injectedTagMenu) {
         const UINT flags = HIWORD(wp);
@@ -2324,19 +2361,25 @@ LRESULT CALLBACK ShellBrowserHost::ViewSubclass(HWND window, UINT msg, WPARAM wp
             host->m_hoveredTagCmd = 0;
         }
     }
+    if (msg == WM_COMMAND && host && host->m_tagCommandMessage) {
+        const UINT cmd = LOWORD(wp);
+        if (cmd >= kTagMenuCmdBase && cmd <= kTagMenuCmdStar) {
+            if (host->m_activatedTagCmd == 0 && host->m_parent) {
+                host->m_activatedTagCmd = cmd;
+                PostMessageW(host->m_parent, host->m_tagCommandMessage, static_cast<WPARAM>(cmd - kTagMenuCmdBase), 0);
+            }
+            return 0;
+        }
+    }
     if (msg == WM_EXITMENULOOP && host) {
         if (host->m_menuFilterHook) {
             UnhookWindowsHookEx(host->m_menuFilterHook);
             host->m_menuFilterHook = nullptr;
         }
         if (s_activeMenuHost == host) s_activeMenuHost = nullptr;
-        const UINT cmd = host->m_activatedTagCmd;
         host->m_injectedTagMenu = nullptr;
         host->m_hoveredTagCmd = 0;
         host->m_activatedTagCmd = 0;
-        if (cmd >= kTagMenuCmdBase && cmd <= kTagMenuCmdStar && host->m_parent && host->m_tagCommandMessage) {
-            PostMessageW(host->m_parent, host->m_tagCommandMessage, static_cast<WPARAM>(cmd - kTagMenuCmdBase), 0);
-        }
     }
     // WM_CONTEXTMENU and NM_RCLICK pass straight through: DefView shows its own menu.
     if (msg == WM_NOTIFY && lp) {
@@ -2425,10 +2468,28 @@ void ShellBrowserHost::PaintScrollBar(HWND window)
 LRESULT CALLBACK ShellBrowserHost::ListSubclass(HWND window, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR data)
 {
     auto* host=reinterpret_cast<ShellBrowserHost*>(data);
-    if (msg == WM_ERASEBKGND && host && host->m_darkMode) {
-        if (PaintDarkEraseBkgnd(window, wp)) return 1;
+    if (host && host->m_darkMode) {
+        if (msg == WM_ERASEBKGND) {
+            if (PaintDarkEraseBkgnd(window, wp)) return 1;
+        }
+        if (msg == LVM_SETBKCOLOR || msg == LVM_SETTEXTBKCOLOR) {
+            lp = static_cast<LPARAM>(RGB(0x19, 0x19, 0x19));
+        } else if (msg == LVM_SETTEXTCOLOR) {
+            lp = static_cast<LPARAM>(RGB(0xF3, 0xF3, 0xF3));
+        } else if (msg == WM_THEMECHANGED) {
+            const LRESULT res = DefSubclassProc(window, msg, wp, lp);
+            ListView_SetBkColor(window, RGB(0x19, 0x19, 0x19));
+            ListView_SetTextBkColor(window, RGB(0x19, 0x19, 0x19));
+            ListView_SetTextColor(window, RGB(0xF3, 0xF3, 0xF3));
+            return res;
+        }
     }
     if(msg==WM_PAINT) {
+        if (host && host->m_darkMode && ListView_GetBkColor(window) != RGB(0x19, 0x19, 0x19)) {
+            ListView_SetBkColor(window, RGB(0x19, 0x19, 0x19));
+            ListView_SetTextBkColor(window, RGB(0x19, 0x19, 0x19));
+            ListView_SetTextColor(window, RGB(0xF3, 0xF3, 0xF3));
+        }
         ++host->m_counters.listPaints;
         RECT update{},client{};
         if(GetUpdateRect(window,&update,FALSE) && GetClientRect(window,&client)

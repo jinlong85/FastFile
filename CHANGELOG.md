@@ -2,9 +2,17 @@
 
 面向使用者的改动记录（开发细节 / 踩坑见 [HANDOFF.md](HANDOFF.md)）。
 版本号来自根目录 [VERSION](VERSION)，安装包产物在 `dist\FastFile-Setup-<版本>.exe`。
-当前 GitHub 发行版为 [**1.0.37（预发布）**](https://github.com/jinlong85/FastFile/releases/tag/v1.0.37)，安装包已发布并提供应用内在线更新。
+当前 GitHub 发行版为 [**1.0.38（预发布）**](https://github.com/jinlong85/FastFile/releases/tag/v1.0.38)，安装包已发布并提供应用内在线更新。
 
 ## 2026-11-24
+
+### 1.0.38
+
+- **修复深色模式下按 `F5` 刷新后中间文件视图变白的问题**：
+  - 在 `ShellBrowserHost::ListSubclass` 中拦截深色模式下的 `LVM_SETBKCOLOR` / `LVM_SETTEXTBKCOLOR` / `LVM_SETTEXTCOLOR` / `WM_THEMECHANGED` 并在 `WM_PAINT` 与 `Refresh()` 后兜底校验背景色，彻底阻止 `DefView` 刷新时将 `SysListView32` 重置回纯白；
+- **修复文件右键菜单「标签与星标」子菜单点击无效的问题**：
+  - 改用基于 `MF_HILITE` 高亮项扫描 + `WH_MSGFILTER` 立即派发（不再依赖对嵌套子菜单失效的 `MenuItemFromPoint(nullptr, ...)`），并在 `ViewSubclass` 中拦截子菜单 `WM_INITMENUPOPUP` 与 `WM_COMMAND`，确保左键点击、右键点击和回车都能稳定触发打标/星标操作；
+- 补充 `F5` 深色防变白与右键标签子菜单注入/派发两项回归测试。
 
 ### 1.0.37
 
